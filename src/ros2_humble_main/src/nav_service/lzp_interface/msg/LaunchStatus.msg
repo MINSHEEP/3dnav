@@ -1,0 +1,5 @@
+builtin_interfaces/Time timestamp
+bool mapping_running
+bool navigation_running
+int32 mapping_pid
+int32 navigation_pid

@@ -1,0 +1,131 @@
+small_point_lio:
+    ros__parameters:
+        # MID360 is about 0.23 m ahead of and 0.38 m above base_link. This box
+        # is in lidar_frame and removes the body, legs, mount and loose cables
+        # while retaining obstacles more than 0.12 m in front of the lidar.
+        self_filter_enabled: true
+        self_filter_min_xyz: [-0.75, -0.35, -0.65]
+        self_filter_max_xyz: [0.12, 0.35, 0.10]
+
+        lidar_topic: /livox/lidar                  # 点云话题名
+        imu_topic: /livox/imu                      # IMU话题名
+        lidar_type: livox_custom_msg              # 雷达类型 livox_custom_msg, livox_pointcloud2, custom_mid360_driver, unilidar
+        lidar_frame: livox_frame                   # 雷达坐标系
+        # Localization-map accumulation is intentionally disabled by default.
+        # Mapping mode enables it explicitly; navigation keeps it disabled to
+        # avoid wasting RAM on the 4 GB controller.
+        save_pcd: false                           # Deprecated compatibility alias
+        enable_localization_map: false
+
+        # Low-memory localization PCD filter. Each output voxel must be seen in
+        # several distinct sampled scans. Short-lived dynamic returns are
+        # pruned; only the filtered/downsampled cloud is ever written.
+        localization_pcd_voxel_size: 0.20
+        localization_pcd_min_observations: 4
+        localization_pcd_observation_stride: 3
+        localization_pcd_stale_frames: 150
+        localization_pcd_prune_interval_frames: 300
+        localization_pcd_max_voxels: 750000
+        localization_pcd_min_output_points: 2000
+        localization_pcd_staging_directory: /tmp/small_point_lio
+
+        # 点云过滤
+        point_filter_num: 1                        # 多少个点取一个点
+        min_distance: 0.5                          # 点云半径最小值，小于该值会被过滤
+        # 远距离点的噪声和宽松残差门限容易在退化场景中形成错误斜平面。
+        # LIO、Octomap 与定位 PCD 统一限制在 15 m。
+        max_distance: 15.0                         # LIO 匹配使用的最大半径
+        registered_cloud_max_distance: 15.0        # 发布/建图稠密点云的最大半径
+        space_downsample: true                     # 是否启用点云降采样
+        # 0.4 m 在 180° 转向时保留更多室内墙角几何，同时控制 4 GB 主机的点数。
+        # Preserve more indoor wall corners while turning.
+        space_downsample_leaf_size: 0.25
+
+        # IMU处理
+        gravity: [0.0, 0.0, -9.810]                # 重力
+        fix_gravity_direction: true                # 是否收集前200个IMU数据修正重力方向，重力的大小依旧从gravity参数获得
+        check_satu: true                           # 是否开启IMU的数据饱和检查
+        satu_acc: 3.0                              # IMU的加速度饱和阈值
+        satu_gyro: 35.0                            # IMU的角速度饱和阈值
+        # Multi-axis footfall impact vector-norm limit.
+        satu_acc_norm: 2.5                         # g
+        acc_norm: 1.0                              # IMU的加速度模长
+
+        # 地图
+        map_resolution: 0.25                       # 室内地图分辨率
+        init_map_size: 10                          # 接收到多少个点才初始化地图
+
+        # 雷达与IMU相对位姿
+        extrinsic_est_en: false                    # 雷达与IMU的相对位姿是否通过预测得到
+        # extrinsic_T: [0.18, -0.05, 0.12]
+        extrinsic_T: [-0.011, -0.02329, 0.04412]
+        extrinsic_R: [1.0, 0.0, 0.0,
+                      0.0, 1.0, 0.0,
+                      0.0, 0.0, 1.0]
+
+        # 滤波器参数
+        # R
+        laser_point_cov: 0.01                      # 激光点的协方差
+        # 已通过几何质量门限、且法向与重力方向一致的平面通常是地面或天花板。
+        # 对这些平面提高权重，抑制四足步态冲击造成的高度/垂直速度缓慢漂移。
+        gravity_aligned_plane_min_alignment: 0.90
+        gravity_aligned_plane_covariance_scale: 0.25
+        # Reduce trust in individual acceleration samples on a quadruped.
+        imu_meas_acc_cov: 0.10                     # IMU测量的加速度协方差
+        imu_meas_omg_cov: 0.01                     # IMU测量的角速度协方差
+        # Q
+        velocity_cov: 20.0                         # 速度的协方差
+        acceleration_cov: 500.0                    # 加速度的协方差
+        omg_cov: 1000.0                            # 角速度的协方差
+        ba_cov: 0.0001                             # 加速度偏置的协方差
+        bg_cov: 0.0001                             # 角速度偏置的协方差
+        # 平面与匹配质量门限：拒绝共线/过小邻域、远邻居和大残差关联。
+        plane_threshold: 0.10
+        plane_max_eigenvalue_ratio: 0.10            # 最小/次小特征值最大比例
+        plane_min_secondary_stddev: 0.10            # m，平面第二方向最小展开
+        match_max_neighbor_distance: 1.20           # m，查询点到平面邻居最大距离
+        point_plane_max_residual: 0.15              # m，固定点到平面残差硬门限
+        match_sqaured: 81.0
+        # Reject and roll back a scan batch with insufficient constraints.
+        scan_quality_min_attempted_points: 200
+        scan_quality_min_accepted_points: 40
+        # 有效比例会被大量候选点稀释；绝对有效约束达到该值时仍允许更新。
+        scan_quality_strong_accepted_points: 120
+        # The recorded MID360S run maintained 191--223 valid constraints per
+        # scan while the ratio briefly fell to 4.4%--4.9%.  Keep the absolute
+        # 200 attempted / 40 accepted guards and use 4% so a geometrically
+        # useful scan is not mistaken for estimator divergence. The strong
+        # absolute-count gate above also accepts the recorded 164/4666 case.
+        scan_quality_min_acceptance_ratio: 0.04
+
+        # 数据发布
+        publish_odometry_without_downsample: false # 是否发布高频的里程计，需要注意的是这并不能提高里程计的实时性，反而会导致性能下降，建议通过增加点云发布频率来获得高频和高实时性的里程计
+
+        # 四足机器人里程计保护。扫描匹配造成的短时位姿校正先软隔离：
+        # 保留滤波器时间连续性，但不发布该帧 odom、TF、点云，也不加入地图。
+        # 纯垂向异常不能单独急停；必须持续满 2 秒且同时存在独立的平面/航向
+        # 异常证据。平面/航向异常仍按连续帧确认；数值/滤波器故障立即急停。
+        odometry_guard_enabled: true
+        # 0.28 m/s browser command becomes about 0.42 m/s after bridge scaling.
+        odometry_guard_max_linear_speed: 0.8       # m/s
+        odometry_guard_max_vertical_speed: 0.8     # m/s，单帧超限先软隔离
+        odometry_guard_max_angular_speed: 2.0      # rad/s
+        odometry_guard_max_position_step: 0.15     # m，仅用于 <= 0.5 s 的间隔
+        odometry_guard_max_vertical_step: 0.20     # m，仅用于 <= 0.5 s 的间隔
+        odometry_guard_max_yaw_step: 0.80          # rad，仅用于 <= 0.5 s 的间隔
+        # 该累计量比较实际高度变化与滤波器垂直速度积分。四足步态下二者并非
+        # 独立观测，不能单独作为急停依据；现在只用于连续预警，不隔离点云。
+        odometry_guard_max_vertical_consistency_error: 0.25  # m
+        odometry_guard_vertical_consistency_time_constant: 5.0  # s
+        odometry_guard_vertical_consistency_warning_samples: 10
+        odometry_guard_vertical_consistency_recovery_ratio: 0.60
+        odometry_guard_vertical_consistency_recovery_samples: 20
+        odometry_guard_warmup_samples: 10
+        # Temporarily stop and attempt recovery before latching a hard fault.
+        odometry_guard_fault_samples: 8
+        odometry_guard_auto_recovery_enabled: true
+        odometry_guard_auto_recovery_healthy_samples: 5
+        odometry_guard_vertical_fault_duration: 2.0 # s，垂向异常联合确认时间窗
+        # 点云匹配质量异常只回退坏帧并自动恢复，不单独锁存永久故障。
+        # 此时间窗仅用于日志显示；恢复仍由连续健康扫描确认。
+        odometry_guard_scan_quality_recovery_window: 5.0

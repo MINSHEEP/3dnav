@@ -1,0 +1,5 @@
+# MultiNavigate.srv
+int32[] waypoint_ids
+---
+bool success
+string message

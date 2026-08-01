@@ -1,0 +1,10 @@
+string map_name
+---
+bool success
+string message
+int32 width
+int32 height
+float32 resolution
+float32[] origin
+bool has_changes  # 是否有未保存的更改
+int32[] image_data  # 图像数据（展平的数组）

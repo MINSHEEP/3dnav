@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>遥控 · 四足机器人导航</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260727-remote">
+    <script src="rosbridge_client.js?v=20260727-fragments"></script>
+    <script src="robot_ui_common.js?v=20260727-dog-status"></script>
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div class="brand">四足机器人导航</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a href="navigation.html">导航</a>
+            <a class="active" href="remote_control.html" aria-current="page">遥控</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main id="remote-workspace" class="remote-workspace remote-locked" data-lock-message="正在连接 ROS2…">
+        <section class="remote-stage" aria-label="实时图像和移动控制">
+            <div class="video-card">
+                <img id="camera-stream"
+                     alt="机械狗实时摄像头图像">
+                <div id="video-status" class="video-badge">● 正在通过机器人主机连接相机</div>
+            </div>
+
+            <section class="drive-panel">
+                <div class="drive-header">
+                    <div>
+                        <strong>移动控制</strong>
+                        <div class="hint">按住按钮或键盘按键移动，松开立即停止。</div>
+                    </div>
+                    <div class="speed-control">
+                        <button id="speed-down" type="button" aria-label="降低速度">－</button>
+                        <span>速度</span>
+                        <input id="speed-slider" type="range" min="0.1" max="1" step="0.1" value="0.5">
+                        <strong id="speed-label">0.5</strong>
+                        <button id="speed-up" type="button" aria-label="提高速度">＋</button>
+                    </div>
+                </div>
+                <div class="drive-grid" aria-label="方向控制">
+                    <button class="drive-button" type="button" data-move="q"><span class="key">Q</span>左转</button>
+                    <button class="drive-button" type="button" data-move="w"><span class="key">W</span>前进</button>
+                    <button class="drive-button" type="button" data-move="e"><span class="key">E</span>右转</button>
+                    <button class="drive-button" type="button" data-move="a"><span class="key">A</span>左移</button>
+                    <button class="drive-button drive-stop" id="btn-stop" type="button"><span class="key">X</span>停止</button>
+                    <button class="drive-button" type="button" data-move="d"><span class="key">D</span>右移</button>
+                    <span aria-hidden="true"></span>
+                    <button class="drive-button" type="button" data-move="s"><span class="key">S</span>后退</button>
+                    <span aria-hidden="true"></span>
+                </div>
+            </section>
+        </section>
+
+        <aside class="remote-panel">
+            <h1>独立遥控</h1>
+            <p class="subtitle">进入此页会先停止建图与导航节点，再开放控制。视频走相机 HTTP，控制和状态走 ROS2。</p>
+
+            <section class="section">
+                <div class="section-title">机械狗实时状态</div>
+                <div class="status-grid">
+                    <div id="card-dog-link" class="status-card"><span class="label">状态链路</span><span id="dog-link" class="value">等待</span></div>
+                    <div id="card-battery" class="status-card"><span class="label">电量</span><span id="battery-value" class="value">--</span></div>
+                    <div id="card-posture" class="status-card"><span class="label">当前姿态</span><span id="posture-value" class="value">未知</span></div>
+                    <div id="card-model" class="status-card"><span class="label">运动模式</span><span id="model-value" class="value">未知</span></div>
+                    <div id="card-obstacle" class="status-card"><span class="label">停障开关</span><span id="obstacle-value" class="value">未知</span></div>
+                    <div id="card-hardware" class="status-card"><span class="label">硬件故障</span><span id="hardware-value" class="value">等待</span></div>
+                </div>
+                <div id="hardware-detail" class="hardware-detail">尚未收到硬件状态。</div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">基础命令</div>
+                <div class="command-grid">
+                    <button class="command-button" type="button" data-command="reset"><span class="key">R</span>复位/解除急停</button>
+                    <button class="command-button danger" type="button" data-command="emergency"><span class="key">T</span>紧急停止</button>
+                    <button class="command-button" type="button" data-command="stand"><span class="key">Y</span>站立</button>
+                    <button class="command-button" type="button" data-command="lie_down"><span class="key">U</span>趴下</button>
+                    <button id="btn-model" class="command-button" type="button" data-command="toggle_model"><span class="key">I</span>高速/越障</button>
+                    <button id="btn-obstacle" class="command-button" type="button" data-command="toggle_obstacle_stop"><span class="key">O</span>切换停障</button>
+                    <button id="btn-idle" class="command-button" type="button" data-command="toggle_idle"><span class="key">P</span>原地模式</button>
+                    <button id="btn-help" class="command-button" type="button"><span class="key">H</span>使用帮助</button>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">自定义动作（随时可按 X/T 中断）</div>
+                <div class="command-grid actions">
+                    <button class="command-button" type="button" data-custom-action="1"><span class="key">1</span>点头</button>
+                    <button class="command-button" type="button" data-custom-action="2"><span class="key">2</span>摇头</button>
+                    <button class="command-button" type="button" data-custom-action="3"><span class="key">3</span>向左探头 5 秒</button>
+                    <button class="command-button" type="button" data-custom-action="4"><span class="key">4</span>向右探头 5 秒</button>
+                    <button class="command-button" type="button" data-custom-action="5"><span class="key">5</span>来回侧身</button>
+                    <button class="command-button" type="button" data-custom-action="6"><span class="key">6</span>向上抬头 5 秒</button>
+                    <button class="command-button" type="button" data-custom-action="7"><span class="key">7</span>向下低头 5 秒</button>
+                    <button class="command-button" type="button" data-custom-action="8"><span class="key">8</span>向左歪头 2 秒</button>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">官方动作</div>
+                <div class="command-grid actions">
+                    <button class="command-button" type="button" data-official-action="2"><span class="key">B</span>向前跳</button>
+                    <button class="command-button" type="button" data-official-action="5"><span class="key">C</span>撒尿</button>
+                    <button class="command-button" type="button" data-official-action="11"><span class="key">F</span>打招呼</button>
+                    <button class="command-button" type="button" data-official-action="13"><span class="key">G</span>扭身体</button>
+                    <button class="command-button" type="button" data-official-action="14"><span class="key">J</span>比心</button>
+                    <button class="command-button" type="button" data-official-action="15"><span class="key">K</span>拜年</button>
+                </div>
+            </section>
+
+            <section id="help-box" class="section help-box" hidden>
+                <div class="section-title">键盘帮助</div>
+                <p class="hint">
+                    <kbd>W/S</kbd> 前后，<kbd>A/D</kbd> 横移，<kbd>Q/E</kbd> 转向，<kbd>X</kbd> 停止；<br>
+                    <kbd>R</kbd> 复位，<kbd>T</kbd> 急停，<kbd>Y/U</kbd> 站立/趴下；<br>
+                    <kbd>I</kbd> 高速/越障，<kbd>O</kbd> 停障，<kbd>P</kbd> 原地；<br>
+                    <kbd>1–8</kbd> 自定义动作，<kbd>B/C/F/G/J/K</kbd> 官方动作；<br>
+                    <kbd>+</kbd>/<kbd>-</kbd> 调速，速度范围 0.1–1.0；<br>
+                    <kbd>Esc</kbd> 安全退出独立遥控会话。
+                </p>
+            </section>
+
+            <section class="section">
+                <div class="section-title">运行日志</div>
+                <div id="log-area" class="log-area" aria-live="polite"></div>
+            </section>
+        </aside>
+    </main>
+</div>
+
+<script>
+(() => {
+    'use strict';
+
+    const UI = window.RobotUi;
+    function cameraProxyUrl() {
+        let host = window.location.hostname || '192.168.66.103';
+        if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
+        return `http://${host}:8081/camera`;
+    }
+
+    const VIDEO_URL = cameraProxyUrl();
+    const MOVEMENT_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e']);
+    const CUSTOM_KEYS = Object.freeze({ '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8 });
+    const OFFICIAL_KEYS = Object.freeze({ b: 2, c: 5, f: 11, g: 13, j: 14, k: 15 });
+    const COMMAND_KEYS = Object.freeze({
+        r: 'reset',
+        t: 'emergency',
+        y: 'stand',
+        u: 'lie_down',
+        i: 'toggle_model',
+        o: 'toggle_obstacle_stop',
+        p: 'toggle_idle'
+    });
+
+    const log = UI.createLogger(document.getElementById('log-area'));
+    const workspace = document.getElementById('remote-workspace');
+    const connectionStatus = document.getElementById('connection-status');
+    const batteryStatus = document.getElementById('battery-status');
+    const speedSlider = document.getElementById('speed-slider');
+    const speedLabel = document.getElementById('speed-label');
+    const cameraStream = document.getElementById('camera-stream');
+    const videoStatus = document.getElementById('video-status');
+
+    let session;
+    let controlReady = false;
+    let speed = 0.5;
+    let heartbeatTimer = null;
+    let motionTimer = null;
+    let videoRetryTimer = null;
+    let activationGeneration = 0;
+    const movementKeys = new Set();
+
+    function setControlReady(ready, message) {
+        controlReady = Boolean(ready);
+        workspace.classList.toggle('remote-locked', !controlReady);
+        if (!ready && message) workspace.dataset.lockMessage = message;
+    }
+
+    function setSpeed(value) {
+        speed = Math.max(0.1, Math.min(1.0, Math.round(Number(value) * 10) / 10));
+        speedSlider.value = speed.toFixed(1);
+        speedLabel.textContent = speed.toFixed(1);
+    }
+
+    function velocityMessage() {
+        let x = 0;
+        let y = 0;
+        let yaw = 0;
+        if (movementKeys.has('w')) x += speed;
+        if (movementKeys.has('s')) x -= speed;
+        if (movementKeys.has('a')) y += speed;
+        if (movementKeys.has('d')) y -= speed;
+        if (movementKeys.has('q')) yaw += speed;
+        if (movementKeys.has('e')) yaw -= speed;
+        return {
+            linear: { x, y, z: 0 },
+            angular: { x: 0, y: 0, z: yaw }
+        };
+    }
+
+    function zeroVelocity() {
+        return {
+            linear: { x: 0, y: 0, z: 0 },
+            angular: { x: 0, y: 0, z: 0 }
+        };
+    }
+
+    function publishMotion() {
+        if (!controlReady || !session || !session.connected) return;
+        session.publish('/dog_remote/cmd_vel', UI.TYPES.twist, velocityMessage());
+    }
+
+    function startMotionLoop() {
+        if (motionTimer) return;
+        publishMotion();
+        motionTimer = window.setInterval(publishMotion, 50);
+    }
+
+    function clearMovementButtons() {
+        movementKeys.clear();
+        document.querySelectorAll('[data-move].held').forEach((button) => button.classList.remove('held'));
+        if (motionTimer) window.clearInterval(motionTimer);
+        motionTimer = null;
+    }
+
+    function publishZeroBurst() {
+        if (!session || !session.connected) return;
+        const zero = zeroVelocity();
+        session.publish('/dog_remote/cmd_vel', UI.TYPES.twist, zero);
+        window.setTimeout(() => session && session.connected
+            && session.publish('/dog_remote/cmd_vel', UI.TYPES.twist, zero), 25);
+        window.setTimeout(() => session && session.connected
+            && session.publish('/dog_remote/cmd_vel', UI.TYPES.twist, zero), 60);
+    }
+
+    function sendCommand(command, extra) {
+        if (!session || !session.connected) {
+            log('ROS2 未连接，命令未发送。');
+            return false;
+        }
+        if (!controlReady && command !== 'stop' && command !== 'emergency') {
+            log('独立遥控模式尚未准备完成，命令未发送。');
+            return false;
+        }
+        const payload = { command, ...(extra || {}) };
+        return session.publish('/dog_remote/command', UI.TYPES.string, {
+            data: JSON.stringify(payload)
+        });
+    }
+
+    function stopMotion(notifyBridge = true) {
+        clearMovementButtons();
+        publishZeroBurst();
+        if (notifyBridge) sendCommand('stop');
+    }
+
+    function runCommand(command) {
+        // keyboard_test.cpp stops the current directional command before
+        // every R/T/Y/U/I/O/P command.
+        stopMotion(false);
+        sendCommand(command);
+    }
+
+    function pressMovement(key, button) {
+        if (!controlReady) {
+            log('遥控节点仍在准备，请稍候。');
+            return;
+        }
+        // keyboard_test.cpp stores one current_direction_ only.  The newest
+        // pressed movement key replaces any previous direction.
+        movementKeys.clear();
+        document.querySelectorAll('[data-move].held').forEach(
+            (item) => item.classList.remove('held'));
+        movementKeys.add(key);
+        if (button) button.classList.add('held');
+        startMotionLoop();
+    }
+
+    function releaseMovement(key, button) {
+        movementKeys.delete(key);
+        if (button) button.classList.remove('held');
+        if (!movementKeys.size) {
+            if (motionTimer) window.clearInterval(motionTimer);
+            motionTimer = null;
+            publishZeroBurst();
+        } else {
+            publishMotion();
+        }
+    }
+
+    function startHeartbeat() {
+        if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+        session.publish('/dog_remote/heartbeat', UI.TYPES.empty, {});
+        heartbeatTimer = window.setInterval(() => {
+            if (session && session.connected && controlReady && !document.hidden) {
+                session.publish('/dog_remote/heartbeat', UI.TYPES.empty, {});
+            }
+        }, 100);
+    }
+
+    function releaseRemoteSession(reason) {
+        activationGeneration += 1;
+        setControlReady(false, reason);
+        if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+        stopMotion(false);
+        if (session && session.connected) {
+            session.publish('/dog_remote/enable', UI.TYPES.bool, { data: false });
+        }
+    }
+
+    async function activateRemoteSession(activeSession) {
+        releaseRemoteSession('正在停止建图/导航节点…');
+        const generation = activationGeneration;
+        try {
+            const result = await activeSession.call('/control_launch', UI.TYPES.controlLaunch, {
+                action: 'stop',
+                launch_type: 'all',
+                package_name: 'car_vel'
+            });
+            if (generation !== activationGeneration || document.hidden) return;
+            if (!result.success) throw new Error(result.message || '停止节点失败');
+            log(`建图/导航核心节点已停止：${result.message || '成功'}`);
+            activeSession.publish('/dog_remote/enable', UI.TYPES.bool, { data: true });
+            setControlReady(true);
+            startHeartbeat();
+            log('独立遥控模式已开启；键盘和页面按钮均可使用。');
+        } catch (error) {
+            if (generation !== activationGeneration) return;
+            setControlReady(false, '无法确认建图/导航节点已停止');
+            log(`无法开启独立遥控模式：${error.message || error}`);
+        }
+    }
+
+    function formatFailure(item) {
+        if (typeof item === 'string' || typeof item === 'number') return String(item);
+        try { return JSON.stringify(item); } catch (_error) { return String(item); }
+    }
+
+    function updateCardState(id, kind) {
+        const card = document.getElementById(id);
+        card.classList.toggle('good', kind === 'good');
+        card.classList.toggle('alert', kind === 'alert');
+        card.classList.toggle('stale', kind === 'stale');
+    }
+
+    function updateDogStatus(status) {
+        const fresh = status.connected === true && status.stale !== true;
+        document.getElementById('dog-link').textContent = fresh ? '在线' : '状态失联';
+        updateCardState('card-dog-link', fresh ? 'good' : 'stale');
+
+        const hasBattery = status.battery !== null
+            && status.battery !== undefined
+            && status.battery !== '';
+        const battery = hasBattery ? Number(status.battery) : NaN;
+        document.getElementById('battery-value').textContent = Number.isFinite(battery)
+            ? `${Math.round(battery)}%${fresh ? '' : '（旧值）'}`
+            : '--';
+        updateCardState('card-battery', !fresh ? 'stale' : battery <= 20 ? 'alert' : 'good');
+
+        document.getElementById('posture-value').textContent = status.posture || '未知';
+        updateCardState('card-posture', !fresh ? 'stale' : status.motion_mode === 4 ? 'alert' : 'good');
+
+        document.getElementById('model-value').textContent = status.model_label || '未知';
+        updateCardState('card-model', fresh ? 'good' : 'stale');
+
+        let obstacleText = '未知';
+        if (status.obstacle_stop_enabled === true) obstacleText = '已开启';
+        if (status.obstacle_stop_enabled === false) obstacleText = '已关闭';
+        document.getElementById('obstacle-value').textContent = obstacleText;
+        updateCardState('card-obstacle', !fresh ? 'stale' : status.obstacle_stop_enabled === false ? 'alert' : 'good');
+
+        const hasFault = status.hardware_error === true;
+        document.getElementById('hardware-value').textContent = hasFault ? '有故障' : fresh ? '正常' : '状态未知';
+        updateCardState('card-hardware', hasFault ? 'alert' : fresh ? 'good' : 'stale');
+        const failures = Array.isArray(status.hw_failures) ? status.hw_failures : [];
+        document.getElementById('hardware-detail').textContent = hasFault
+            ? `硬件错误值：${formatFailure(status.hardware_error_value)}\n${failures.map(formatFailure).join('\n') || '未返回细分故障项'}`
+            : fresh
+                ? '未检测到硬件故障。'
+                : `状态链路已失联。UDP 查询已发送 ${status.queries_sent || 0} 次，`
+                    + `收到 ${status.datagrams_received || 0} 个数据包，`
+                    + `本地监听端口 ${status.local_udp_port || '--'}。`;
+
+        document.getElementById('btn-model').classList.toggle('active', Number.isInteger(status.model));
+        document.getElementById('btn-obstacle').classList.toggle('active', status.obstacle_stop_enabled === true);
+        document.getElementById('btn-idle').classList.toggle('active', status.idle_mode_enabled === true);
+        if (status.emergency_latched === true) {
+            document.getElementById('hardware-detail').textContent += '\n遥控急停已锁定：请确认安全后按 R 复位。';
+        }
+        if (status.active_action) {
+            document.getElementById('hardware-detail').textContent += `\n正在执行：${status.active_action}`;
+        }
+    }
+
+    function handleRemoteEvent(message) {
+        try {
+            const event = JSON.parse(message.data);
+            if (event && event.message) log(event.message);
+        } catch (_error) {
+            if (message && message.data) log(message.data);
+        }
+    }
+
+    session = new UI.RosSession({
+        log,
+        onState: (connected, text) => {
+            UI.setConnectionStatus(connectionStatus, connected, text);
+            if (!connected) {
+                UI.setBatteryDisconnected(batteryStatus);
+                releaseRemoteSession('ROS2 已断开');
+            }
+        },
+        onReady: async (activeSession) => {
+            UI.subscribeDogStatus(activeSession, batteryStatus, updateDogStatus);
+            activeSession.subscribe('/dog_remote/events', UI.TYPES.string, handleRemoteEvent);
+            await activateRemoteSession(activeSession);
+        }
+    });
+
+    document.querySelectorAll('[data-move]').forEach((button) => {
+        const key = button.dataset.move;
+        button.addEventListener('pointerdown', (event) => {
+            event.preventDefault();
+            button.setPointerCapture(event.pointerId);
+            pressMovement(key, button);
+        });
+        const release = (event) => {
+            event.preventDefault();
+            releaseMovement(key, button);
+        };
+        button.addEventListener('pointerup', release);
+        button.addEventListener('pointercancel', release);
+        button.addEventListener('lostpointercapture', () => releaseMovement(key, button));
+    });
+
+    document.querySelectorAll('[data-command]').forEach((button) => {
+        button.addEventListener('click', () => runCommand(button.dataset.command));
+    });
+    document.querySelectorAll('[data-custom-action]').forEach((button) => {
+        button.addEventListener('click', () => sendCommand('custom_action', {
+            id: Number(button.dataset.customAction)
+        }));
+    });
+    document.querySelectorAll('[data-official-action]').forEach((button) => {
+        button.addEventListener('click', () => sendCommand('official_action', {
+            code: Number(button.dataset.officialAction)
+        }));
+    });
+
+    document.getElementById('btn-stop').addEventListener('click', () => stopMotion(true));
+    document.getElementById('speed-down').addEventListener('click', () => setSpeed(speed - 0.1));
+    document.getElementById('speed-up').addEventListener('click', () => setSpeed(speed + 0.1));
+    speedSlider.addEventListener('input', (event) => setSpeed(event.target.value));
+    document.getElementById('btn-help').addEventListener('click', () => {
+        const help = document.getElementById('help-box');
+        help.hidden = !help.hidden;
+        if (!help.hidden) help.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
+        const key = event.key.toLowerCase();
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            releaseRemoteSession('已按 ESC 退出独立遥控模式');
+            log('已安全退出独立遥控模式；刷新页面可重新进入。');
+            return;
+        }
+        if (MOVEMENT_KEYS.has(key)) {
+            event.preventDefault();
+            if (!movementKeys.has(key)) {
+                const button = document.querySelector(`[data-move="${key}"]`);
+                pressMovement(key, button);
+            }
+            return;
+        }
+        if (event.repeat) return;
+        if (key === 'x') {
+            event.preventDefault();
+            stopMotion(true);
+        } else if (key === 'h') {
+            event.preventDefault();
+            document.getElementById('btn-help').click();
+        } else if (key === '+' || key === '=') {
+            event.preventDefault();
+            setSpeed(speed + 0.1);
+        } else if (key === '-') {
+            event.preventDefault();
+            setSpeed(speed - 0.1);
+        } else if (Object.prototype.hasOwnProperty.call(COMMAND_KEYS, key)) {
+            event.preventDefault();
+            runCommand(COMMAND_KEYS[key]);
+        } else if (Object.prototype.hasOwnProperty.call(CUSTOM_KEYS, key)) {
+            event.preventDefault();
+            sendCommand('custom_action', { id: CUSTOM_KEYS[key] });
+        } else if (Object.prototype.hasOwnProperty.call(OFFICIAL_KEYS, key)) {
+            event.preventDefault();
+            sendCommand('official_action', { code: OFFICIAL_KEYS[key] });
+        }
+    });
+
+    document.addEventListener('keyup', (event) => {
+        const key = event.key.toLowerCase();
+        if (!MOVEMENT_KEYS.has(key)) return;
+        event.preventDefault();
+        releaseMovement(key, document.querySelector(`[data-move="${key}"]`));
+    });
+
+    window.addEventListener('blur', () => stopMotion(false));
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            releaseRemoteSession('页面已转入后台');
+        } else if (session && session.connected) {
+            activateRemoteSession(session);
+        }
+    });
+    window.addEventListener('beforeunload', () => releaseRemoteSession('页面即将关闭'));
+    window.addEventListener('pagehide', () => releaseRemoteSession('页面已离开'));
+
+    cameraStream.addEventListener('load', () => {
+        videoStatus.textContent = '● 实时图像已连接';
+        videoStatus.classList.remove('error');
+        if (videoRetryTimer) window.clearTimeout(videoRetryTimer);
+    });
+    cameraStream.addEventListener('error', () => {
+        videoStatus.textContent = '○ 图像连接失败，正在重试…';
+        videoStatus.classList.add('error');
+        if (videoRetryTimer) window.clearTimeout(videoRetryTimer);
+        videoRetryTimer = window.setTimeout(() => {
+            cameraStream.src = `${VIDEO_URL}?retry=${Date.now()}`;
+        }, 2000);
+    });
+
+    setSpeed(0.5);
+    cameraStream.src = VIDEO_URL;
+    log('遥控页面已加载，正在连接 ROS2，并准备停止建图/导航核心节点。');
+    log('遥控控制与状态桥接采用纯 UDP/JSON 协议。');
+    session.connect();
+})();
+</script>
+</body>
+</html>

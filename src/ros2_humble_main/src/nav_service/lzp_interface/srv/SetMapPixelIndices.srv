@@ -1,0 +1,7 @@
+# SetMapPixelIndices.srv
+string map_name          # 地图名称
+int32[] indices          # 要更新的像素索引列表（一维索引）
+uint8 pixel_value        # 要设置的像素值 (0-254)
+---
+bool success             # 操作是否成功
+string message          # 结果消息

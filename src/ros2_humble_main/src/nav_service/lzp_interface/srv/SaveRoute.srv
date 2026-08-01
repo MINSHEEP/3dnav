@@ -1,0 +1,5 @@
+lzp_interface/Route route
+---
+bool success
+string message
+int64 route_id

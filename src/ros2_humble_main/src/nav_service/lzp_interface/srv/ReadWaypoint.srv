@@ -1,0 +1,5 @@
+int32 id
+---
+lzp_interface/Waypoint waypoint
+bool found
+string message

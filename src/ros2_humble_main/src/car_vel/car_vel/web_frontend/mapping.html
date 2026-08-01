@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>建图 · 四足机器人导航</title>
+    <link rel="stylesheet" href="robot_ui.css">
+    <script src="rosbridge_client.js?v=20260727-fragments"></script>
+    <script src="robot_ui_common.js?v=20260727-dog-status"></script>
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div class="brand">四足机器人导航</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a class="active" href="mapping.html" aria-current="page">建图</a>
+            <a href="map_editor.html" data-leave-mapping>修图</a>
+            <a href="navigation.html" data-leave-mapping>导航</a>
+            <a href="remote_control.html" data-leave-mapping>遥控</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main class="workspace">
+        <section id="map-wrapper" class="map-wrapper" aria-label="实时建图地图">
+            <canvas id="map-canvas"></canvas>
+            <div class="map-overlay">实时显示 <code>/projected_map</code>，红色箭头为机械狗当前位置。右键拖拽平移，滚轮缩放。</div>
+            <div class="zoom-controls" aria-label="地图缩放">
+                <button id="btn-zoom-in" type="button" title="放大">＋</button>
+                <button id="btn-zoom-out" type="button" title="缩小">－</button>
+                <button id="btn-reset-view" type="button" title="复位视图">⌂</button>
+            </div>
+        </section>
+
+        <aside class="panel">
+            <h1>建图</h1>
+            <p class="subtitle">进入此页后会自动启动建图模式。通过键盘遥控机器人移动并构建二维栅格地图。</p>
+
+            <section class="section">
+                <div class="section-title">建图状态</div>
+                <div class="status-grid">
+                    <div class="status-card"><span class="label">模式</span><span id="mode-display" class="value">启动中</span></div>
+                    <div class="status-card"><span class="label">地图数据</span><span id="map-display" class="value">等待中</span></div>
+                    <div class="status-card"><span class="label">遥控</span><span id="remote-display" class="value">关闭</span></div>
+                </div>
+                <div class="row" style="margin-top:10px">
+                    <button id="btn-start-mapping" class="primary flex" type="button">开始建图</button>
+                    <button id="btn-stop-mapping" class="danger flex" type="button">停止建图</button>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">键盘遥控</div>
+                <div class="row toggle-row">
+                    <span>开启遥控模式</span>
+                    <button id="remote-toggle" class="toggle" type="button" aria-pressed="false" aria-label="切换遥控模式"></button>
+                </div>
+                <div class="row" style="margin-top:10px">
+                    <span style="font-size:13px;color:var(--muted)">速度</span>
+                    <input id="speed-slider" type="range" min="0.1" max="1" step="0.05" value="0.5">
+                    <strong id="speed-label" style="min-width:38px;text-align:right">0.50</strong>
+                </div>
+                <p id="keyboard-hint" class="hint disabled">
+                    <kbd>W</kbd>/<kbd>S</kbd> 前后　<kbd>A</kbd>/<kbd>D</kbd> 横移　<kbd>Q</kbd>/<kbd>E</kbd> 转向<br>
+                    <kbd>T</kbd>/<kbd>X</kbd> 急停　<kbd>+</kbd>/<kbd>-</kbd> 调速　<kbd>R</kbd> 发布原点位姿
+                </p>
+            </section>
+
+            <section class="section">
+                <div class="section-title">保存地图</div>
+                <div class="row">
+                    <input id="map-name" type="text" maxlength="64" placeholder="手动输入地图名称，例如 office_a">
+                    <button id="btn-save-map" class="success" type="button">保存</button>
+                </div>
+                <p class="hint">名称仅可使用英文、数字、下划线和连字符。保存会同时生成 PGM、YAML、动态过滤/降采样后的定位 PCD 与校验元数据；同名地图会以可回滚事务方式覆盖。</p>
+            </section>
+
+            <section class="section">
+                <div class="section-title">运行日志</div>
+                <div id="log-area" class="log-area" aria-live="polite"></div>
+            </section>
+        </aside>
+    </main>
+</div>
+
+<div id="leave-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="leave-title">
+    <div class="modal">
+        <h2 id="leave-title">当前地图尚未保存</h2>
+        <p>切换页面前，是否保存本次建图结果？</p>
+        <input id="leave-map-name" type="text" maxlength="64" placeholder="保存地图名称" style="margin-top:13px">
+        <div class="modal-actions">
+            <button id="btn-leave-cancel" type="button">取消切换</button>
+            <button id="btn-leave-discard" class="danger" type="button">放弃</button>
+            <button id="btn-leave-save" class="success" type="button">保存并切换</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    'use strict';
+    const UI = window.RobotUi;
+    const log = UI.createLogger(document.getElementById('log-area'));
+    const connectionStatus = document.getElementById('connection-status');
+    const batteryStatus = document.getElementById('battery-status');
+    const mapCanvas = new UI.MapCanvas(document.getElementById('map-canvas'), document.getElementById('map-wrapper'));
+    UI.bindZoomButtons(mapCanvas);
+
+    let mappingStarted = false;
+    let mappingDirty = false;
+    let currentMapFingerprint = '';
+    let savedMapFingerprint = '';
+    let pendingNavigationUrl = null;
+    let session;
+    let teleop;
+    let lioFaultLatched = false;
+    let lioWarningCode = '';
+    let latestProjectedMapStamp = -Infinity;
+
+    function setMode(text) { document.getElementById('mode-display').textContent = text; }
+    function setRemoteUi(enabled) {
+        const toggle = document.getElementById('remote-toggle');
+        toggle.classList.toggle('active', enabled);
+        toggle.setAttribute('aria-pressed', String(enabled));
+        document.getElementById('remote-display').textContent = enabled ? '开启' : '关闭';
+        document.getElementById('keyboard-hint').classList.toggle('disabled', !enabled);
+        document.getElementById('map-wrapper').classList.toggle('remote-active', enabled);
+    }
+
+    function validMapName(value) {
+        return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
+    }
+
+    function messageStampSeconds(message) {
+        const stamp = message && message.header && message.header.stamp;
+        const sec = Number(stamp && stamp.sec);
+        const nanosec = Number(stamp && stamp.nanosec);
+        if (!Number.isFinite(sec) || !Number.isFinite(nanosec)) return NaN;
+        return sec + nanosec * 1e-9;
+    }
+
+    function lioFaultDiagnostics(status) {
+        const details = [];
+        const reason = typeof status.reason === 'string' ? status.reason.trim() : '';
+        const reasonLabels = {
+            estimator_linear_speed: '估计器线速度超限',
+            pose_linear_speed: '位姿平移速度超限',
+            estimator_vertical_speed: '估计器垂直速度超限',
+            pose_vertical_speed: '高度变化速度超限',
+            vertical_consistency: '高度变化与内部垂直速度模型持续不一致',
+            estimator_angular_speed: '估计器角速度超限',
+            pose_angular_speed: '位姿角速度超限',
+            position_step: '单帧位置跳变超限',
+            vertical_step: '单帧高度跳变超限',
+            yaw_step: '单帧航向跳变超限',
+            persistent_vertical_with_planar_corroboration:
+                '垂向异常持续超过安全时间窗且伴随平面或航向异常',
+            non_monotonic_timestamp: '时间戳未递增',
+            imu_update_failures: 'IMU 更新连续失败',
+            filter_numerical_state: '滤波器数值状态异常',
+            non_finite_state: '状态包含非有限数值'
+        };
+        if (reason) details.push(`原因：${reasonLabels[reason] || reason}`);
+
+        const metrics = [
+            ['pose_linear_speed', '位姿线速度', 'm/s'],
+            ['estimator_linear_speed', '估计器线速度', 'm/s'],
+            ['position_z', '估计高度', 'm'],
+            ['pose_vertical_speed', '高度变化速度', 'm/s'],
+            ['estimator_vertical_speed', '估计器垂直速度', 'm/s'],
+            ['vertical_consistency_error', '高度/速度模型累计偏差', 'm'],
+            ['pose_angular_speed', '位姿角速度', 'rad/s'],
+            ['estimator_angular_speed', '估计器角速度', 'rad/s']
+        ].map(([field, label, unit]) => {
+            const raw = status[field];
+            const value = Number(raw);
+            if (raw === undefined || raw === null || raw === '' || !Number.isFinite(value)) return '';
+            return `${label} ${value.toFixed(3)} ${unit}`;
+        }).filter(Boolean);
+        if (metrics.length) details.push(metrics.join('，'));
+        return details.length ? `（${details.join('；')}）` : '';
+    }
+
+    // /projected_map is often republished even when no cell changes.  Sampling a
+    // small stable fingerprint avoids prompting to save again immediately after
+    // a successful save merely because of one such periodic publish.
+    function mapFingerprint(info, data) {
+        let hash = 2166136261;
+        const step = Math.max(1, Math.floor(data.length / 1024));
+        for (let index = 0; index < data.length; index += step) {
+            hash ^= (Number(data[index]) + 257) & 0xff;
+            hash = Math.imul(hash, 16777619);
+        }
+        return `${info.width}x${info.height}@${info.resolution}:${hash >>> 0}`;
+    }
+
+    async function setMappingMode(action) {
+        if (!session || !session.connected) { log('ROS2 尚未连接，暂不能切换建图模式。'); return false; }
+        const start = action === 'start';
+        setMode(start ? '启动中' : '停止中');
+        try {
+            const result = await session.call('/control_launch', UI.TYPES.controlLaunch, {
+                action, package_name: 'car_vel', launch_type: 'mapping'
+            });
+            if (!result.success) throw new Error(result.message || '启动管理器未返回成功');
+            const wasStarted = mappingStarted;
+            mappingStarted = start;
+            if (start && !wasStarted) {
+                mappingDirty = false;
+                savedMapFingerprint = '';
+            }
+            setMode(start ? '建图中' : '已停止');
+            log(`${start ? '已启动' : '已停止'}建图模式：${result.message || '成功'}`);
+            return true;
+        } catch (error) {
+            setMode('切换失败');
+            log(`建图模式切换失败：${error.message || error}`);
+            return false;
+        }
+    }
+
+    async function saveMap(nameOverride) {
+        if (lioFaultLatched) {
+            log('LIO 里程计已触发发散保护，本次建图数据可能损坏，禁止保存；请停止并重新开始建图。');
+            return false;
+        }
+        const field = document.getElementById('map-name');
+        const name = String(nameOverride || field.value).trim();
+        if (!validMapName(name)) {
+            log('请输入合法地图名称：英文或数字开头，可包含下划线和连字符。');
+            field.focus();
+            return false;
+        }
+        if (!session || !session.connected) { log('ROS2 尚未连接，无法保存地图。'); return false; }
+        document.getElementById('btn-save-map').disabled = true;
+        try {
+            const result = await session.call('/map_save', UI.TYPES.mapSave, { map_name: name });
+            if (!result.success) throw new Error(result.message || '保存失败');
+            mappingDirty = false;
+            savedMapFingerprint = currentMapFingerprint;
+            field.value = name;
+            log(`地图“${name}”已保存。`);
+            return true;
+        } catch (error) {
+            log(`保存地图失败：${error.message || error}`);
+            return false;
+        } finally {
+            document.getElementById('btn-save-map').disabled = false;
+        }
+    }
+
+    function publishOriginPose() {
+        if (!session || !session.connected) return;
+        session.publish('/initialpose', UI.TYPES.poseWithCovariance, UI.initialPoseMessage(0, 0, 0));
+        log('已发布原点初始位姿。');
+    }
+
+    function openLeaveModal(url) {
+        pendingNavigationUrl = url;
+        document.getElementById('leave-map-name').value = document.getElementById('map-name').value;
+        document.getElementById('leave-modal').classList.add('open');
+        document.getElementById('leave-map-name').focus();
+    }
+
+    function closeLeaveModal() {
+        pendingNavigationUrl = null;
+        document.getElementById('leave-modal').classList.remove('open');
+    }
+
+    function goPendingUrl() {
+        const url = pendingNavigationUrl;
+        closeLeaveModal();
+        if (url) window.location.href = url;
+    }
+
+    mapCanvas.onMapChanged = (info, data) => {
+        document.getElementById('map-display').textContent = `${info.width}×${info.height}`;
+        currentMapFingerprint = mapFingerprint(info, data);
+        if (mappingStarted && (!savedMapFingerprint || currentMapFingerprint !== savedMapFingerprint)) mappingDirty = true;
+    };
+
+    session = new UI.RosSession({
+        log,
+        onState: (connected, text) => {
+            UI.setConnectionStatus(connectionStatus, connected, text);
+            if (!connected) UI.setBatteryDisconnected(batteryStatus);
+        },
+        onReady: async (activeSession) => {
+            UI.subscribeDogStatus(activeSession, batteryStatus);
+            activeSession.subscribe('/projected_map', UI.TYPES.occupancyGrid, (message) => {
+                if (!message || !message.info || !message.data) return;
+                const stamp = messageStampSeconds(message);
+                if (Number.isFinite(stamp) && stamp > 0) {
+                    if (stamp <= latestProjectedMapStamp) return;
+                    latestProjectedMapStamp = stamp;
+                }
+                mapCanvas.setMap(message.info, message.data);
+            }, {
+                // Keep only the newest large grid if rendering or Wi-Fi falls
+                // briefly behind. Rosbridge may fragment this JSON payload;
+                // rosbridge_client.js reassembles it before this callback.
+                queueLength: 1,
+                throttleRate: 250
+            });
+            activeSession.subscribe('/Odometry', UI.TYPES.odometry, (message) => {
+                const pose = message && message.pose && message.pose.pose;
+                const position = pose && pose.position;
+                const orientation = pose && pose.orientation;
+                const x = Number(position && position.x);
+                const y = Number(position && position.y);
+                if (!orientation || !Number.isFinite(x) || !Number.isFinite(y)) return;
+                const yaw = UI.yawFromQuaternion(orientation);
+                if (Number.isFinite(yaw)) mapCanvas.setRobotPose(x, y, yaw);
+            }, {
+                queueLength: 1,
+                throttleRate: 100
+            });
+            activeSession.subscribe('/lio_health', UI.TYPES.string, (message) => {
+                let status = { state: message && message.data };
+                try {
+                    const parsed = JSON.parse(message && message.data);
+                    if (parsed && typeof parsed === 'object') status = parsed;
+                } catch (_error) {
+                    // Accept a plain state string for backward compatibility.
+                }
+                if (status.state === 'warning') {
+                    const warningCode = typeof status.code === 'string'
+                        ? status.code
+                        : 'warning';
+                    if (lioWarningCode !== warningCode) {
+                        lioWarningCode = warningCode;
+                        if (status.temporary_stop === true) {
+                            log('LIO 检测到可恢复异常，已临时停止机械狗并回退异常扫描；连续健康扫描验证通过后会自动恢复运动。');
+                        }
+                        if (warningCode === 'odometry_sample_quarantined') {
+                            if (status.vertical_only === true) {
+                                const duration = Number(status.quarantine_duration);
+                                const requiredDuration = Number(status.required_duration);
+                                const progress = Number.isFinite(duration)
+                                    && Number.isFinite(requiredDuration)
+                                    ? `（垂向异常持续 ${duration.toFixed(1)}/${requiredDuration.toFixed(1)} 秒）`
+                                    : '';
+                                log(`LIO 已软隔离一个四足步态垂向波动采样${progress}${lioFaultDiagnostics(status)}：`
+                                    + '该帧不会进入地图，建图继续；下一帧正常时自动恢复。'
+                                    + '纯垂向波动不会单独急停或禁止保存；'
+                                    + '只有持续超过安全时间窗并同时出现独立的平面或航向异常才会触发保护。');
+                            } else {
+                                const current = Number(status.consecutive_samples);
+                                const required = Number(status.required_samples);
+                                const progress = Number.isFinite(current)
+                                    && Number.isFinite(required)
+                                    ? `（${current}/${required}）`
+                                    : '';
+                                log(`LIO 已软隔离一个可疑里程计采样${progress}${lioFaultDiagnostics(status)}：`
+                                    + '该帧不会进入地图，建图继续；下一帧恢复正常则自动恢复输出。'
+                                    + '只有连续的平面、航向或滤波器异常才会急停。');
+                            }
+                        } else {
+                            log(`LIO 高度趋势预警${lioFaultDiagnostics(status)}：`
+                                + '当前仅提示，不会急停，也不会禁止保存。'
+                                + '该数值不是楼层高差；请观察地图是否出现明显分层或倾斜。');
+                        }
+                    }
+                    return;
+                }
+                if (status.state === 'healthy' && lioWarningCode) {
+                    const recoveredCode = lioWarningCode;
+                    lioWarningCode = '';
+                    log(recoveredCode === 'odometry_sample_quarantined'
+                        ? 'LIO 单帧异常已恢复，里程计、TF 和注册点云已继续输出。'
+                        : 'LIO 高度/速度模型偏差已恢复到正常范围。');
+                }
+                if (status.state === 'healthy' && lioFaultLatched) {
+                    lioFaultLatched = false;
+                    document.getElementById('btn-save-map').disabled = false;
+                    setMode(mappingStarted ? '建图中' : '已停止');
+                    log('LIO 已随建图模式重启并恢复输出，可以重新开始建图。');
+                    return;
+                }
+                if (status.state !== 'fault' || lioFaultLatched) return;
+                lioWarningCode = '';
+                lioFaultLatched = true;
+                mappingDirty = false;
+                if (teleop) teleop.setEnabled(false);
+                setRemoteUi(false);
+                setMode('LIO 故障急停');
+                document.getElementById('btn-save-map').disabled = true;
+                log(`检测到 LIO 里程计发散${lioFaultDiagnostics(status)}：`
+                    + '已急停并停止接收损坏的地图数据。'
+                    + '本次地图禁止保存，请停止后重新开始建图。');
+            });
+            if (!teleop) {
+                teleop = new UI.KeyboardTeleop({
+                    session: activeSession,
+                    log,
+                    onReset: publishOriginPose,
+                    onEmergencyStop: () => log('已发送零速度急停指令。'),
+                    onSpeed: (speed) => {
+                        document.getElementById('speed-slider').value = speed;
+                        document.getElementById('speed-label').textContent = speed.toFixed(2);
+                    }
+                });
+            } else {
+                teleop.session = activeSession;
+            }
+            await setMappingMode('start');
+        }
+    });
+
+    document.getElementById('remote-toggle').addEventListener('click', () => {
+        if (!teleop) { log('ROS2 正在连接，请稍候。'); return; }
+        const enabled = !teleop.enabled;
+        teleop.setEnabled(enabled);
+        setRemoteUi(enabled);
+        log(enabled ? '遥控模式已开启。' : '遥控模式已关闭，已发送零速度。');
+    });
+    document.getElementById('speed-slider').addEventListener('input', (event) => {
+        if (!teleop) return;
+        teleop.setSpeed(event.target.value);
+    });
+    document.getElementById('btn-start-mapping').addEventListener('click', () => setMappingMode('start'));
+    document.getElementById('btn-stop-mapping').addEventListener('click', () => setMappingMode('stop'));
+    document.getElementById('btn-save-map').addEventListener('click', () => saveMap());
+
+    document.querySelectorAll('[data-leave-mapping]').forEach((link) => {
+        link.addEventListener('click', (event) => {
+            event.preventDefault();
+            if (mappingDirty) openLeaveModal(link.href);
+            else window.location.href = link.href;
+        });
+    });
+    document.getElementById('btn-leave-cancel').addEventListener('click', closeLeaveModal);
+    document.getElementById('btn-leave-discard').addEventListener('click', goPendingUrl);
+    document.getElementById('btn-leave-save').addEventListener('click', async () => {
+        const name = document.getElementById('leave-map-name').value.trim();
+        if (!validMapName(name)) {
+            log('保存并切换前，请输入合法地图名称。');
+            document.getElementById('leave-map-name').focus();
+            return;
+        }
+        const success = await saveMap(name);
+        if (success) goPendingUrl();
+    });
+    window.addEventListener('beforeunload', (event) => {
+        if (mappingDirty) {
+            event.preventDefault();
+            event.returnValue = '';
+        }
+        if (teleop) teleop.stopAndZero();
+    });
+
+    log('建图页面已加载（大地图分片、位置与四足垂向时间窗修正版 2026-07-27），正在连接 ROS2。');
+    session.connect();
+})();
+</script>
+</body>
+</html>

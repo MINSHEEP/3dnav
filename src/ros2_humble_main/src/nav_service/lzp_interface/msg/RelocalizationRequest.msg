@@ -1,0 +1,3 @@
+geometry_msgs/PoseWithCovarianceStamped rough_pose
+string map_name
+string request_id

@@ -1,0 +1,15 @@
+string mode
+string state
+bool active
+bool paused
+int64 route_id
+string route_name
+string map_name
+int32 point_index
+int32 point_count
+int32 current_loop
+int32 loop_count
+bool continuous
+float64 dwell_remaining
+lzp_interface/RoutePoint current_point
+string message

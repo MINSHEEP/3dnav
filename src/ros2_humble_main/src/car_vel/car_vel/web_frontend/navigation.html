@@ -1,0 +1,2973 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>导航 · 四足机器人导航</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260730-map-stretch-fix">
+    <script src="rosbridge_client.js?v=20260727-fragments"></script>
+    <script src="robot_ui_common.js?v=20260730-goal-arrival-fix"></script>
+</head>
+<body>
+<div class="app-shell navigation-app">
+    <header class="topbar">
+        <div class="brand">四足机器人导航</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a class="active" href="navigation.html" aria-current="page">导航</a>
+            <a href="remote_control.html">遥控</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main class="workspace">
+        <section id="map-wrapper" class="map-wrapper" aria-label="导航地图">
+            <canvas id="map-canvas"></canvas>
+            <div id="map-overlay" class="map-overlay blocked">请先在右侧选择并加载一张已保存地图，然后设置初始点或导航目标。</div>
+            <div class="zoom-controls" aria-label="地图缩放">
+                <button id="btn-zoom-in" type="button" title="放大">＋</button>
+                <button id="btn-zoom-out" type="button" title="缩小">－</button>
+                <button id="btn-reset-view" type="button" title="复位视图">⌂</button>
+            </div>
+        </section>
+
+        <aside class="panel navigation-panel">
+            <h1>导航</h1>
+
+            <section class="section">
+                <div class="section-title">导航状态</div>
+                <div class="status-grid">
+                    <div class="status-card"><span class="label">模式</span><span id="mode-display" class="value">启动中</span></div>
+                    <div class="status-card"><span class="label">地图</span><span id="loaded-map-display" class="value">未加载</span></div>
+                    <div class="status-card"><span class="label">导航模式</span><span id="navigation-mode-display" class="value">单点导航</span></div>
+                </div>
+                <div class="row navigation-mode-switch" role="group" aria-label="选择导航模式">
+                    <button id="btn-single-navigation" class="choice-active flex" type="button">单点导航</button>
+                    <button id="btn-multi-navigation" class="flex" type="button">多点导航</button>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">选择并加载地图</div>
+                <div class="row">
+                    <select id="map-selector" aria-label="已保存地图"><option value="">正在读取地图列表…</option></select>
+                </div>
+                <div class="row">
+                    <button id="btn-refresh-maps" class="flex" type="button">刷新列表</button>
+                    <button id="btn-load-map" class="primary flex" type="button">加载此地图</button>
+                </div>
+                <p class="hint">只有“加载此地图”成功后，才能设置初始点和导航目标。</p>
+            </section>
+
+            <section id="navigation-interaction-section" class="section">
+                <div class="section-title">地图交互</div>
+                <div class="row">
+                    <button id="btn-initial-mode" class="choice-active flex" type="button" disabled>设置初始点</button>
+                    <button id="btn-goal-mode" class="flex" type="button" disabled>设置目标点</button>
+                </div>
+                <p class="hint">左键按住后拖拽：起点确定位置，拖拽方向确定朝向。右键拖拽平移地图，滚轮缩放。</p>
+            </section>
+
+            <section id="multi-navigation-panel" class="section route-section" aria-labelledby="route-title" hidden>
+                <div id="route-title" class="section-title">多目标路径</div>
+                <div class="row">
+                    <select id="route-selector" aria-label="当前地图的已保存路径">
+                        <option value="">请先加载地图</option>
+                    </select>
+                    <button id="btn-refresh-routes" type="button" title="刷新路径" disabled>刷新</button>
+                </div>
+                <div class="row">
+                    <button id="btn-new-route" class="flex" type="button" disabled>新建</button>
+                    <button id="btn-edit-route" class="flex" type="button" disabled>编辑</button>
+                    <button id="btn-delete-route" class="danger flex" type="button" disabled>删除</button>
+                </div>
+                <div class="row">
+                    <input id="route-name" type="text" maxlength="128" placeholder="路径名称（当前地图内唯一）" disabled>
+                    <button id="btn-route-point-mode" type="button" disabled hidden>地图添加点</button>
+                </div>
+                <div id="route-point-list" class="route-point-list">
+                    <div class="route-empty">尚未选择或新建路径</div>
+                </div>
+                <div class="row">
+                    <button id="btn-save-route" class="primary flex" type="button" disabled>保存到当前地图</button>
+                </div>
+                <div class="route-run-settings">
+                    <label for="route-loop-count">循环次数</label>
+                    <input id="route-loop-count" type="number" min="1" max="999999" step="1" value="1">
+                    <label class="route-checkbox">
+                        <input id="route-continuous" type="checkbox">
+                        持续循环
+                    </label>
+                </div>
+                <div class="row route-controls">
+                    <button id="btn-start-route" class="success flex" type="button" disabled>开始</button>
+                    <button id="btn-pause-route" class="warning flex" type="button" disabled>暂停</button>
+                    <button id="btn-resume-route" class="flex" type="button" disabled>继续</button>
+                </div>
+                <div class="row route-controls">
+                    <button id="btn-skip-route" class="flex" type="button" disabled>跳过当前点</button>
+                    <button id="btn-stop-route" class="danger flex" type="button" disabled>停止路径</button>
+                </div>
+                <div id="route-progress" class="route-progress">未执行路径</div>
+                <p class="hint">路径必须命名并保存后才能执行。拖动点位卡片可调整顺序；点击“重设”后，在地图上重新拖拽该点的位置和朝向。</p>
+            </section>
+
+            <section class="section">
+                <div class="section-title">运行日志</div>
+                <div id="log-area" class="log-area" aria-live="polite"></div>
+            </section>
+
+            <details id="relocalization-details" class="section collapsible-section" aria-labelledby="relocalization-title">
+                <summary id="relocalization-title" class="section-title">三维初始定位精修</summary>
+                <div class="collapsible-section-content">
+                    <div class="relocalization-status-row">
+                        <span id="relocalization-stage" class="relocalization-stage">等待设置初始点</span>
+                        <span id="relocalization-progress-label" class="relocalization-progress-label">0%</span>
+                    </div>
+                    <progress id="relocalization-progress" class="relocalization-progress" max="100" value="0"></progress>
+                    <p id="relocalization-message" class="hint relocalization-message">
+                        设置粗初始点后将自动执行 NDT/GICP 精修；精修失败时由后端自动回退到粗初始点。
+                    </p>
+                    <div class="row" style="margin-top:10px">
+                        <button id="btn-cancel-relocalization" class="warning flex" type="button" disabled>取消本次精修</button>
+                    </div>
+                </div>
+            </details>
+        </aside>
+    </main>
+</div>
+
+<script>
+(() => {
+    'use strict';
+    const UI = window.RobotUi;
+    const log = UI.createLogger(document.getElementById('log-area'));
+    const connectionStatus = document.getElementById('connection-status');
+    const batteryStatus = document.getElementById('battery-status');
+    const overlay = document.getElementById('map-overlay');
+    const relocalizationStage = document.getElementById('relocalization-stage');
+    const relocalizationProgress = document.getElementById('relocalization-progress');
+    const relocalizationProgressLabel = document.getElementById('relocalization-progress-label');
+    const relocalizationMessage = document.getElementById('relocalization-message');
+    const cancelRelocalizationButton = document.getElementById('btn-cancel-relocalization');
+    const mapCanvas = new UI.MapCanvas(document.getElementById('map-canvas'), document.getElementById('map-wrapper'));
+    UI.bindZoomButtons(mapCanvas);
+
+    let session;
+    let navigationUiMode = 'single';
+    let clickMode = 'initial';
+    let navigationMapReady = false;
+    let nav2Ready = false;
+    let navigationActive = false;
+    let navigationActiveKnown = false;
+    let cancelWaiters = [];
+    let localizationReady = false;
+    let initialPoseRequest = null;
+    let initialPosePreview = null;
+    let initialPoseTimeout = null;
+    let loadedMapName = '';
+    let pendingMapName = '';
+    let pendingMapRequestAccepted = false;
+    let mapLoadTimeout = null;
+    let latestOdometryStamp = null;
+    let latestAmclStamp = null;
+    let latestAmclReceivedAtMs = 0;
+    let latestOdometryMotion = null;
+    let initialPoseSampleWindow = null;
+    let poseJumpWindow = null;
+    let trackingRecoveryWindow = null;
+    let lastTrackingPoseSample = null;
+    let highCovarianceStableWindow = null;
+    let covarianceStabilityOverride = false;
+    let amclStaleSinceMs = null;
+    let noMotionUpdateTimers = [];
+    let noMotionUpdateFailureLogged = false;
+    let lastStabilityNoMotionBurstAtMs = 0;
+    let lastStaleRecoveryBurstAtMs = 0;
+    let lastIdleStaleLogAtMs = 0;
+    let localizationWatchdogTimer = null;
+    let localizationHealth = 'DEGRADED';
+    let localizationHealthReason = '等待初始定位';
+    let localizationGeneration = 0;
+    let relocalizationActive = false;
+    let relocalizationCancelRequested = false;
+    let relocalizationRequestStampKey = '';
+    let relocalizationRequestMapName = '';
+    let relocalizationRequestId = '';
+    let relocalizationLastLogKey = '';
+    let relocalizationLastInvalidStatusLogAtMs = 0;
+    let relocalizationWatchdogTimeout = null;
+    let relocalizationCancelWatchdogTimeout = null;
+    let latestAmclPose = null;
+    let lioFaultLatched = false;
+    let lioWarningCode = '';
+    let lastLioHealthPayload = '';
+    let automaticRecoveryRequestId = '';
+    let automaticRecoveryLastLogKey = '';
+    let savedRoutes = [];
+    let routeDraft = null;
+    let routeDraftDirty = false;
+    let routeEditing = false;
+    let routeReplaceIndex = null;
+    let routeDragIndex = null;
+    let routeListMapName = '';
+    let routeRefreshPending = false;
+    let routeServiceBusy = false;
+    let routeExecutionStatus = {
+        mode: 'idle',
+        state: 'idle',
+        active: false,
+        paused: false,
+        route_id: 0,
+        route_name: '',
+        map_name: '',
+        point_index: -1,
+        point_count: 0,
+        current_loop: 0,
+        loop_count: 1,
+            continuous: false,
+            dwell_remaining: 0,
+            current_point: null,
+            message: ''
+    };
+
+    const LOCALIZATION_HEALTH = Object.freeze({
+        GOOD: 'GOOD',
+        DEGRADED: 'DEGRADED',
+        LOST: 'LOST'
+    });
+    const INITIAL_CONFIRMATION_HOLD_SECONDS = 1.5;
+    const INITIAL_CONFIRMATION_MIN_SAMPLES = 5;
+    const INITIAL_SAMPLE_MAX_GAP_SECONDS = 0.75;
+    const INITIAL_POSITION_STD_LIMIT = 0.50;
+    const INITIAL_YAW_STD_LIMIT = 25 * Math.PI / 180;
+    const INITIAL_POSITION_ERROR_LIMIT = 0.50;
+    const INITIAL_YAW_ERROR_LIMIT = 30 * Math.PI / 180;
+    const INITIAL_POSITION_SPREAD_LIMIT = 0.15;
+    const INITIAL_YAW_SPREAD_LIMIT = 15 * Math.PI / 180;
+    const TRACKING_POSITION_STD_LIMIT = 0.50;
+    const TRACKING_YAW_STD_LIMIT = 25 * Math.PI / 180;
+    const TRACKING_RECOVERY_POSITION_STD_LIMIT = 0.40;
+    const TRACKING_RECOVERY_YAW_STD_LIMIT = 20 * Math.PI / 180;
+    const TRACKING_SAMPLE_MAX_GAP_SECONDS = 0.75;
+    const TRACKING_RECOVERY_HOLD_SECONDS = 1.5;
+    const TRACKING_RECOVERY_MIN_SAMPLES = 5;
+    const POSE_JUMP_POSITION_STEP_LIMIT = 0.30;
+    const POSE_JUMP_YAW_STEP_LIMIT = 35 * Math.PI / 180;
+    const POSE_JUMP_POSITION_RATE_LIMIT = 1.5;
+    const POSE_JUMP_YAW_RATE_LIMIT = 2.5;
+    const TURNING_POSE_JUMP_YAW_STEP_LIMIT = 55 * Math.PI / 180;
+    const TURNING_POSE_JUMP_YAW_RATE_LIMIT = 4.0;
+    const POSE_JUMP_CONFIRMATION_MIN_SAMPLES = 3;
+    const POSE_JUMP_CONFIRMATION_HOLD_SECONDS = 0.25;
+    const HIGH_COVARIANCE_STABLE_POSITION_SPREAD = 0.10;
+    const HIGH_COVARIANCE_STABLE_YAW_SPREAD = 10 * Math.PI / 180;
+    const HIGH_COVARIANCE_STABLE_HOLD_SECONDS = 2.0;
+    const HIGH_COVARIANCE_STABLE_MIN_SAMPLES = 8;
+    // AMCL is motion-triggered rather than a fixed-rate heartbeat.  Two
+    // seconds was shorter than normal low-speed/near-goal update gaps and
+    // caused repeated false DEGRADED/GOOD transitions in the run log.
+    const AMCL_STALE_AFTER_MS = 5000;
+    const ODOM_MOTION_FRESH_MS = 1000;
+    const LINEAR_MOVING_THRESHOLD = 0.03;
+    const ANGULAR_MOVING_THRESHOLD = 0.08;
+    const TURNING_IN_PLACE_LINEAR_LIMIT = 0.06;
+    const TURNING_IN_PLACE_ANGULAR_THRESHOLD = 0.12;
+    const NO_MOTION_UPDATE_SERVICE_TYPE = 'std_srvs/srv/Empty';
+    const INITIAL_NO_MOTION_UPDATE_COUNT = 6;
+    const INITIAL_NO_MOTION_UPDATE_INTERVAL_MS = 350;
+    const STABILITY_NO_MOTION_UPDATE_COUNT = 8;
+    const STABILITY_NO_MOTION_UPDATE_COOLDOWN_MS = 10000;
+    const STALE_RECOVERY_NO_MOTION_UPDATE_COUNT = 8;
+    const STALE_RECOVERY_NO_MOTION_UPDATE_INTERVAL_MS = 350;
+    const STALE_RECOVERY_NO_MOTION_UPDATE_COOLDOWN_MS = 10000;
+    const IDLE_STALE_LOG_COOLDOWN_MS = 30000;
+    const RELOCALIZATION_REQUEST_TOPIC = '/relocalization/request';
+    const RELOCALIZATION_CANCEL_TOPIC = '/relocalization/cancel';
+    const RELOCALIZATION_STATUS_TOPIC = '/relocalization/status';
+    // The coordinator owns the real stage deadlines.  This browser watchdog
+    // is only a final transport/process-failure guard: 5 s Action startup +
+    // 10 s registration + 10 s refined AMCL + 10 s rough AMCL, plus margin.
+    const RELOCALIZATION_WATCHDOG_MS = 45000;
+    const RELOCALIZATION_CANCEL_WATCHDOG_MS = 16000;
+
+    const RELOCALIZATION_STAGE_TEXT = Object.freeze({
+        idle: '等待设置初始点',
+        queued: '精修请求已提交',
+        stop_robot: '正在停止机器人',
+        cancel_previous: '正在取消上一次精修',
+        wait_action_server: '正在等待精修服务',
+        send_goal: '正在提交精修任务',
+        validating_goal: '正在验证初始点和地图',
+        loading_map: '正在加载定位 PCD',
+        collecting_cloud: '正在采集当前点云',
+        preprocessing: '正在过滤和降采样点云',
+        coarse_ndt: '正在进行 NDT 粗配准',
+        fine_gicp: '正在进行 GICP 精配准',
+        validating: '正在验证精修结果',
+        validation_passed: '精修验证通过',
+        publishing_refined: '正在应用精修位姿',
+        amcl_refined: '正在验证精修后的 AMCL',
+        amcl_confirmation: '正在等待 AMCL 稳定确认',
+        publishing_rough: '正在回退到粗初始点',
+        amcl_rough: '正在验证回退后的 AMCL',
+        fallback_to_rough: '精修失败，正在回退粗初始点',
+        amcl_retry_rough: '正在使用粗初始点重试 AMCL',
+        map_validation_failed: '三维定位地图校验失败',
+        amcl_confirmation_timeout: 'AMCL 初始定位确认超时',
+        canceling: '正在取消三维精修',
+        cancel_timeout: '配准工作线程正在后台退出',
+        complete: '初始定位已完成',
+        succeeded: '初始定位已完成',
+        failed: '初始定位失败',
+        canceled: '本次精修已取消'
+    });
+
+    const goalStatusText = Object.freeze({
+        ready: '目标桥接节点已就绪',
+        nav2_ready: 'Nav2 已完成启动，可以加载地图和发送目标',
+        nav2_start_timeout: 'Nav2 启动超时，请检查 controller_server 的参数与日志',
+        goal_queued: '导航目标已进入队列',
+        waiting_for_nav2: '正在等待 Nav2 启动',
+        waiting_for_lio_recovery: 'LIO 自动恢复中，当前目标已保留',
+        sending_goal: '正在向 Nav2 发送目标',
+        navigating: 'Nav2 已接受目标，正在导航',
+        canceling_goal: '正在取消当前导航目标',
+        cancel_failed: '导航目标取消失败，禁止切图或切换导航模式',
+        replacing_goal: '正在取消旧目标并切换到新目标',
+        goal_succeeded: '已到达导航目标',
+        goal_aborted: '导航失败，Nav2 已中止目标',
+        goal_canceled: '导航目标已取消',
+        goal_rejected: 'Nav2 拒绝了导航目标',
+        goal_rejected_route_active: '多目标路径正在执行，已拒绝新的单目标导航请求',
+        send_failed: '导航目标发送失败',
+        goal_failed: '导航目标执行失败'
+    });
+
+    function setMode(text) { document.getElementById('mode-display').textContent = text; }
+    function selectedMap() { return document.getElementById('map-selector').value; }
+
+    function routeIsActive() {
+        return routeExecutionStatus.mode === 'route'
+            && Boolean(routeExecutionStatus.active);
+    }
+
+    function navigationModeSwitchLocked() {
+        return routeIsActive() || navigationActive;
+    }
+
+    function setNavigationUiMode(mode, announce = true, force = false) {
+        const normalized = mode === 'multi' ? 'multi' : 'single';
+        if (!force && normalized !== navigationUiMode && navigationModeSwitchLocked()) {
+            log('当前导航正在执行，请先停止当前导航后再切换单点/多点导航模式。');
+            return false;
+        }
+        navigationUiMode = normalized;
+        clickMode = 'initial';
+        routeReplaceIndex = null;
+
+        const single = normalized === 'single';
+        document.getElementById('navigation-mode-display').textContent =
+            single ? '单点导航' : '多点导航';
+        document.getElementById('btn-single-navigation').classList.toggle(
+            'choice-active', single);
+        document.getElementById('btn-multi-navigation').classList.toggle(
+            'choice-active', !single);
+        document.getElementById('multi-navigation-panel').hidden = single;
+        document.getElementById('btn-goal-mode').textContent =
+            single ? '设置目标点' : '添加路径点';
+        updateMapReadyUi();
+        if (announce) {
+            log(single
+                ? '已切换到单点导航模式。'
+                : '已切换到多点导航模式；初始点与单点导航共用。');
+        }
+        return true;
+    }
+
+    function routePointFromMessage(point, index) {
+        return {
+            id: Number(point && point.id) || 0,
+            sequence: index,
+            name: String(point && point.name ? point.name : `目标点 ${index + 1}`),
+            x: Number(point && point.x),
+            y: Number(point && point.y),
+            yaw: Number(point && point.yaw),
+            dwell_seconds: Math.max(0, Number(point && point.dwell_seconds) || 0)
+        };
+    }
+
+    function routeFromMessage(route) {
+        return {
+            id: Number(route && route.id) || 0,
+            map_name: String(route && route.map_name ? route.map_name : loadedMapName),
+            name: String(route && route.name ? route.name : ''),
+            points: (route && route.points ? route.points : [])
+                .map((point, index) => routePointFromMessage(point, index))
+        };
+    }
+
+    function markRouteDirty() {
+        if (!routeDraft || !routeEditing) return;
+        routeDraftDirty = true;
+        updateRouteUi(false);
+    }
+
+    function activeRouteMatchesDraft() {
+        return routeIsActive()
+            && routeDraft
+            && Number(routeDraft.id) === Number(routeExecutionStatus.route_id);
+    }
+
+    function routeStateText(state) {
+        return {
+            starting: '正在启动',
+            waiting_nav2: '等待 Nav2',
+            sending: '正在发送目标',
+            navigating: '导航中',
+            recovering_lio: 'LIO 自动恢复中（任务保留）',
+            waiting_lio_recovery: '等待 LIO 恢复后重试',
+            recovery_failed: '自动恢复未通过（任务保留）',
+            settling: '目标点稳定确认中',
+            dwelling: '停留计时',
+            pausing: '正在暂停',
+            paused_navigation: '已暂停（目标未完成）',
+            paused_dwell: '已暂停（停留计时冻结）',
+            skipping: '正在跳过',
+            stopping: '正在停止',
+            completed: '已完成',
+            stopped: '已停止',
+            idle: '未执行'
+        }[state] || String(state || '未知状态');
+    }
+
+    function updateRouteMapMarkers() {
+        if (!routeDraft) {
+            mapCanvas.clearRoutePoints();
+            return;
+        }
+        const activeIndex = activeRouteMatchesDraft()
+            ? Number(routeExecutionStatus.point_index) : -1;
+        mapCanvas.setRoutePoints(
+            routeDraft.points,
+            activeIndex,
+            activeRouteMatchesDraft() ? routeExecutionStatus.state : 'idle'
+        );
+    }
+
+    function renderRoutePointList() {
+        const list = document.getElementById('route-point-list');
+        list.replaceChildren();
+        if (!routeDraft || !routeDraft.points.length) {
+            const empty = document.createElement('div');
+            empty.className = 'route-empty';
+            empty.textContent = routeDraft
+                ? '尚未添加目标点，请点击“地图添加点”。'
+                : '尚未选择或新建路径';
+            list.appendChild(empty);
+            return;
+        }
+        const locked = !routeEditing || routeIsActive();
+        routeDraft.points.forEach((point, index) => {
+            const card = document.createElement('div');
+            card.className = 'route-point-card';
+            if (activeRouteMatchesDraft()
+                && index === Number(routeExecutionStatus.point_index)) {
+                card.classList.add('active');
+            }
+            card.draggable = !locked;
+            card.dataset.index = String(index);
+
+            const order = document.createElement('div');
+            order.className = 'route-point-order';
+            order.textContent = String(index + 1);
+            order.title = locked ? '查看顺序' : '拖动调整顺序';
+
+            const main = document.createElement('div');
+            main.className = 'route-point-main';
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.maxLength = 128;
+            nameInput.value = point.name;
+            nameInput.disabled = locked;
+            nameInput.setAttribute('aria-label', `目标点 ${index + 1} 名称`);
+            nameInput.addEventListener('input', () => {
+                point.name = nameInput.value;
+                markRouteDirty();
+            });
+            const coordinates = document.createElement('div');
+            coordinates.className = 'route-point-coordinates';
+            coordinates.textContent = `x ${point.x.toFixed(2)}  y ${point.y.toFixed(2)}  yaw ${(point.yaw * 180 / Math.PI).toFixed(0)}°`;
+            main.append(nameInput, coordinates);
+
+            const dwell = document.createElement('label');
+            dwell.className = 'route-dwell';
+            dwell.appendChild(document.createTextNode('停留秒数'));
+            const dwellInput = document.createElement('input');
+            dwellInput.type = 'number';
+            dwellInput.min = '0';
+            dwellInput.max = '86400';
+            dwellInput.step = '0.5';
+            dwellInput.value = String(point.dwell_seconds);
+            dwellInput.disabled = locked;
+            dwellInput.addEventListener('change', () => {
+                const value = Number(dwellInput.value);
+                point.dwell_seconds = Number.isFinite(value)
+                    ? Math.max(0, Math.min(86400, value)) : 0;
+                dwellInput.value = String(point.dwell_seconds);
+                markRouteDirty();
+            });
+            dwell.appendChild(dwellInput);
+
+            const actions = document.createElement('div');
+            actions.className = 'route-point-actions';
+            const resetButton = document.createElement('button');
+            resetButton.type = 'button';
+            resetButton.textContent = '重设';
+            resetButton.disabled = locked;
+            resetButton.addEventListener('click', () => {
+                routeReplaceIndex = index;
+                setClickMode('route');
+                log(`请在地图上拖拽，重新设置目标点 ${index + 1} 的位置和朝向。`);
+            });
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'danger';
+            removeButton.textContent = '删除';
+            removeButton.disabled = locked;
+            removeButton.addEventListener('click', () => {
+                routeDraft.points.splice(index, 1);
+                routeDraft.points.forEach((item, itemIndex) => {
+                    item.sequence = itemIndex;
+                });
+                routeReplaceIndex = null;
+                markRouteDirty();
+                updateRouteUi(true);
+            });
+            actions.append(resetButton, removeButton);
+            card.append(order, main, dwell, actions);
+
+            card.addEventListener('dragstart', () => {
+                if (locked) return;
+                routeDragIndex = index;
+                card.classList.add('dragging');
+            });
+            card.addEventListener('dragend', () => {
+                routeDragIndex = null;
+                card.classList.remove('dragging');
+            });
+            card.addEventListener('dragover', (event) => {
+                if (!locked) event.preventDefault();
+            });
+            card.addEventListener('drop', (event) => {
+                event.preventDefault();
+                const from = routeDragIndex;
+                const to = index;
+                routeDragIndex = null;
+                if (!Number.isInteger(from) || from === to) return;
+                const [moved] = routeDraft.points.splice(from, 1);
+                routeDraft.points.splice(to, 0, moved);
+                routeDraft.points.forEach((item, itemIndex) => {
+                    item.sequence = itemIndex;
+                });
+                markRouteDirty();
+                updateRouteUi(true);
+            });
+            list.appendChild(card);
+        });
+    }
+
+    function updateRouteUi(renderPoints = true) {
+        const active = routeIsActive();
+        const hasDraft = Boolean(routeDraft);
+        const locked = active || routeServiceBusy;
+        const routeName = document.getElementById('route-name');
+        routeName.disabled = !hasDraft || !routeEditing || locked;
+        if (hasDraft && document.activeElement !== routeName) {
+            routeName.value = routeDraft.name;
+        } else if (!hasDraft) {
+            routeName.value = '';
+        }
+        document.getElementById('route-selector').disabled =
+            !navigationMapReady || locked;
+        document.getElementById('btn-refresh-routes').disabled =
+            !navigationMapReady || locked;
+        document.getElementById('btn-new-route').disabled =
+            !navigationMapReady || locked;
+        document.getElementById('btn-edit-route').disabled =
+            !hasDraft || routeEditing || locked;
+        document.getElementById('btn-delete-route').disabled =
+            !hasDraft || !routeDraft.id || locked;
+        document.getElementById('btn-route-point-mode').disabled =
+            !hasDraft || !routeEditing || locked;
+        document.getElementById('btn-route-point-mode').classList.toggle(
+            'choice-active', clickMode === 'route' && routeEditing);
+        document.getElementById('btn-save-route').disabled =
+            !hasDraft || !routeEditing || locked
+            || !routeDraft.name.trim() || !routeDraft.points.length;
+
+        const canStart = hasDraft
+            && routeDraft.id > 0
+            && !routeDraftDirty
+            && !active
+            && routeExecutionStatus.mode === 'idle'
+            && !routeServiceBusy
+            && navigationMapReady
+            && loadedMapName === routeDraft.map_name
+            && !goalReadinessIssue();
+        document.getElementById('btn-start-route').disabled = !canStart;
+        document.getElementById('btn-pause-route').disabled =
+            !active || routeExecutionStatus.paused || routeServiceBusy;
+        document.getElementById('btn-resume-route').disabled =
+            !active || !routeExecutionStatus.paused || routeServiceBusy;
+        document.getElementById('btn-skip-route').disabled =
+            !active || routeServiceBusy;
+        document.getElementById('btn-stop-route').disabled =
+            !active || routeServiceBusy;
+        document.getElementById('route-loop-count').disabled =
+            active || routeServiceBusy
+            || document.getElementById('route-continuous').checked;
+        document.getElementById('route-continuous').disabled =
+            active || routeServiceBusy;
+
+        const progress = document.getElementById('route-progress');
+        if (active) {
+            const loop = routeExecutionStatus.continuous
+                ? `第 ${routeExecutionStatus.current_loop} 轮（持续循环）`
+                : `第 ${routeExecutionStatus.current_loop}/${routeExecutionStatus.loop_count} 轮`;
+            const point = routeExecutionStatus.point_index >= 0
+                ? `目标 ${routeExecutionStatus.point_index + 1}/${routeExecutionStatus.point_count}`
+                    + (routeExecutionStatus.current_point
+                        && routeExecutionStatus.current_point.name
+                        ? `“${routeExecutionStatus.current_point.name}”` : '')
+                : '等待目标';
+            const dwell = routeExecutionStatus.dwell_remaining > 0
+                ? `，剩余 ${Number(routeExecutionStatus.dwell_remaining).toFixed(1)} 秒`
+                : '';
+            progress.textContent = `${routeExecutionStatus.route_name}｜${loop}｜${point}｜${routeStateText(routeExecutionStatus.state)}${dwell}`;
+        } else if (routeExecutionStatus.state === 'completed') {
+            progress.textContent = '上一条路径已执行完成';
+        } else {
+            progress.textContent = '未执行路径';
+        }
+        if (renderPoints) renderRoutePointList();
+        updateRouteMapMarkers();
+    }
+
+    function setRouteDraft(route, editing = false) {
+        routeDraft = route ? routeFromMessage(route) : null;
+        routeEditing = Boolean(editing);
+        routeDraftDirty = Boolean(editing && (!routeDraft || routeDraft.id === 0));
+        routeReplaceIndex = null;
+        const selector = document.getElementById('route-selector');
+        selector.value = routeDraft && routeDraft.id ? String(routeDraft.id) : '';
+        updateRouteUi(true);
+        updateMapReadyUi();
+    }
+
+    async function refreshRoutes(preferredRouteId = 0) {
+        if (!session || !session.connected || !navigationMapReady || !loadedMapName
+            || routeRefreshPending) return;
+        routeRefreshPending = true;
+        try {
+            const result = await session.call('/list_routes', UI.TYPES.listRoutes, {
+                map_name: loadedMapName
+            });
+            if (!result.success) throw new Error(result.message || '读取路径列表失败');
+            savedRoutes = (result.routes || []).map(routeFromMessage);
+            routeListMapName = loadedMapName;
+            const selector = document.getElementById('route-selector');
+            selector.replaceChildren();
+            const empty = document.createElement('option');
+            empty.value = '';
+            empty.textContent = savedRoutes.length
+                ? '请选择已保存路径' : '当前地图还没有路径';
+            selector.appendChild(empty);
+            savedRoutes.forEach((route) => {
+                const option = document.createElement('option');
+                option.value = String(route.id);
+                option.textContent = `${route.name}（${route.points.length} 点）`;
+                selector.appendChild(option);
+            });
+            const wantedId = Number(
+                preferredRouteId
+                || (routeIsActive() ? routeExecutionStatus.route_id : 0)
+                || (routeDraft ? routeDraft.id : 0)
+            );
+            const wanted = savedRoutes.find((route) => route.id === wantedId);
+            if (wanted) setRouteDraft(wanted, false);
+            else if (!routeEditing) setRouteDraft(null, false);
+            log(`当前地图“${loadedMapName}”已读取 ${savedRoutes.length} 条多目标路径。`);
+        } catch (error) {
+            log(`读取多目标路径失败：${error.message || error}`);
+        } finally {
+            routeRefreshPending = false;
+            updateRouteUi(true);
+        }
+    }
+
+    function startNewRoute() {
+        if (!navigationMapReady || routeIsActive()) return;
+        if (routeDraftDirty && !window.confirm('当前未保存的路径修改将丢失，是否继续新建？')) return;
+        setRouteDraft({
+            id: 0,
+            map_name: loadedMapName,
+            name: '',
+            points: []
+        }, true);
+        document.getElementById('route-name').focus();
+        setClickMode('route');
+        log('已新建空路径，请命名并在地图上按顺序添加目标点。');
+    }
+
+    function editSelectedRoute() {
+        if (!routeDraft || routeIsActive()) return;
+        routeEditing = true;
+        routeDraftDirty = false;
+        updateRouteUi(true);
+        updateMapReadyUi();
+        setClickMode('route');
+        log(`正在编辑路径“${routeDraft.name}”。修改后请重新保存。`);
+    }
+
+    async function saveRouteDraft() {
+        if (!routeDraft || !routeEditing || routeIsActive() || routeServiceBusy) return;
+        routeDraft.name = document.getElementById('route-name').value.trim();
+        if (!routeDraft.name) {
+            log('路径名称不能为空。');
+            return;
+        }
+        if (!routeDraft.points.length) {
+            log('路径至少需要一个目标点。');
+            return;
+        }
+        routeServiceBusy = true;
+        updateRouteUi(false);
+        try {
+            const result = await session.call('/save_route', UI.TYPES.saveRoute, {
+                route: {
+                    id: Number(routeDraft.id) || 0,
+                    map_name: loadedMapName,
+                    name: routeDraft.name,
+                    points: routeDraft.points.map((point, index) => ({
+                        id: Number(point.id) || 0,
+                        sequence: index,
+                        name: point.name.trim() || `目标点 ${index + 1}`,
+                        x: Number(point.x),
+                        y: Number(point.y),
+                        yaw: Number(point.yaw),
+                        dwell_seconds: Number(point.dwell_seconds) || 0
+                    }))
+                }
+            });
+            if (!result.success) throw new Error(result.message || '保存路径失败');
+            routeDraft.id = Number(result.route_id);
+            routeDraft.map_name = loadedMapName;
+            routeDraftDirty = false;
+            routeEditing = false;
+            log(`路径“${routeDraft.name}”已保存到当前地图。`);
+            await refreshRoutes(routeDraft.id);
+        } catch (error) {
+            log(`保存路径失败：${error.message || error}`);
+        } finally {
+            routeServiceBusy = false;
+            updateRouteUi(true);
+        }
+    }
+
+    async function deleteSelectedRoute() {
+        if (!routeDraft || !routeDraft.id || routeIsActive() || routeServiceBusy) return;
+        if (!window.confirm(`确定删除当前地图中的路径“${routeDraft.name}”吗？`)) return;
+        routeServiceBusy = true;
+        updateRouteUi(false);
+        try {
+            const result = await session.call('/delete_route', UI.TYPES.deleteRoute, {
+                route_id: Number(routeDraft.id)
+            });
+            if (!result.success) throw new Error(result.message || '删除路径失败');
+            log(`路径“${routeDraft.name}”已删除。`);
+            setRouteDraft(null, false);
+            await refreshRoutes();
+        } catch (error) {
+            log(`删除路径失败：${error.message || error}`);
+        } finally {
+            routeServiceBusy = false;
+            updateRouteUi(true);
+        }
+    }
+
+    async function startRouteNavigation() {
+        if (navigationUiMode !== 'multi') {
+            log('请先切换到“多点导航”模式。');
+            return;
+        }
+        if (!routeDraft || !routeDraft.id || routeDraftDirty || routeIsActive()
+            || routeServiceBusy) return;
+        if (routeExecutionStatus.mode !== 'idle') {
+            log('当前单目标导航尚未结束，多目标路径与单目标导航不能同时执行。');
+            return;
+        }
+        const readinessIssue = goalReadinessIssue();
+        if (readinessIssue) {
+            log(`暂不能开始多目标路径：${readinessIssue}。`);
+            return;
+        }
+        const continuous = document.getElementById('route-continuous').checked;
+        const rawLoops = Number(document.getElementById('route-loop-count').value);
+        const loopCount = Math.max(1, Math.trunc(Number.isFinite(rawLoops) ? rawLoops : 1));
+        document.getElementById('route-loop-count').value = String(loopCount);
+        document.getElementById('log-area').replaceChildren();
+        routeServiceBusy = true;
+        updateRouteUi(false);
+        try {
+            clearEmergencyStop();
+            beginMotionLocalizationWatch();
+            const result = await session.call('/start_route', UI.TYPES.startRoute, {
+                route_id: Number(routeDraft.id),
+                loop_count: loopCount,
+                continuous
+            });
+            if (!result.success) throw new Error(result.message || '启动路径失败');
+            log(`已提交路径“${routeDraft.name}”执行任务。`);
+        } catch (error) {
+            log(`启动多目标路径失败：${error.message || error}`);
+        } finally {
+            routeServiceBusy = false;
+            updateRouteUi(true);
+        }
+    }
+
+    async function controlRoute(command) {
+        if (!routeIsActive() || routeServiceBusy) return;
+        routeServiceBusy = true;
+        updateRouteUi(false);
+        try {
+            const result = await session.call('/control_route', UI.TYPES.controlRoute, { command });
+            if (!result.success) throw new Error(result.message || `路径控制 ${command} 失败`);
+        } catch (error) {
+            log(`路径控制失败：${error.message || error}`);
+        } finally {
+            routeServiceBusy = false;
+            updateRouteUi(false);
+        }
+    }
+
+    function handleRouteExecutionStatus(message) {
+        if (!message) return;
+        const previousKey = [
+            routeExecutionStatus.mode,
+            routeExecutionStatus.state,
+            routeExecutionStatus.route_id,
+            routeExecutionStatus.point_index
+        ].join('|');
+        routeExecutionStatus = {
+            ...routeExecutionStatus,
+            ...message,
+            route_id: Number(message.route_id) || 0,
+            point_index: Number(message.point_index),
+            point_count: Number(message.point_count) || 0,
+            current_loop: Number(message.current_loop) || 0,
+            loop_count: Number(message.loop_count) || 1,
+            dwell_remaining: Number(message.dwell_remaining) || 0,
+            active: Boolean(message.active),
+            paused: Boolean(message.paused),
+            continuous: Boolean(message.continuous)
+        };
+        const currentKey = [
+            routeExecutionStatus.mode,
+            routeExecutionStatus.state,
+            routeExecutionStatus.route_id,
+            routeExecutionStatus.point_index
+        ].join('|');
+        if (routeIsActive() && routeExecutionStatus.map_name) {
+            if (navigationUiMode !== 'multi') {
+                setNavigationUiMode('multi', false, true);
+            }
+            setMode(routeExecutionStatus.paused ? '路径已暂停' : '路径导航中');
+            if (!loadedMapName) {
+                loadedMapName = String(routeExecutionStatus.map_name);
+                navigationMapReady = true;
+                document.getElementById('loaded-map-display').textContent = loadedMapName;
+                const mapSelector = document.getElementById('map-selector');
+                if ([...mapSelector.options].some((option) => option.value === loadedMapName)) {
+                    mapSelector.value = loadedMapName;
+                }
+                updateMapReadyUi();
+            }
+            if ((routeListMapName !== loadedMapName
+                || !routeDraft
+                || Number(routeDraft.id) !== routeExecutionStatus.route_id)
+                && !routeRefreshPending) {
+                refreshRoutes(routeExecutionStatus.route_id);
+            }
+        } else if (routeExecutionStatus.mode === 'idle'
+            && String(previousKey).startsWith('route|')) {
+            refreshModeFromLocalization();
+        }
+        updateRouteUi(previousKey !== currentKey);
+    }
+
+    function rosStampKey(stamp) {
+        if (!stamp) return '';
+        if (typeof stamp === 'string' || typeof stamp === 'number') return String(stamp);
+        const sec = Number(stamp.sec);
+        const nanosec = Number(stamp.nanosec);
+        if (!Number.isFinite(sec) || !Number.isFinite(nanosec)) return '';
+        return `${Math.trunc(sec)}:${String(Math.trunc(nanosec)).padStart(9, '0')}`;
+    }
+
+    function normalizedProgress(rawProgress) {
+        const numeric = Number(rawProgress);
+        if (!Number.isFinite(numeric)) return 0;
+        const percentage = numeric <= 1 ? numeric * 100 : numeric;
+        return Math.max(0, Math.min(100, percentage));
+    }
+
+    function setRelocalizationUi(stage, progress, message, tone = '') {
+        const percentage = normalizedProgress(progress);
+        relocalizationStage.textContent = RELOCALIZATION_STAGE_TEXT[stage]
+            || String(stage || '三维精修处理中');
+        relocalizationProgress.value = percentage;
+        relocalizationProgressLabel.textContent = `${Math.round(percentage)}%`;
+        if (message !== undefined && message !== null) {
+            relocalizationMessage.textContent = String(message);
+        }
+        relocalizationMessage.classList.remove('warning', 'error', 'success');
+        if (tone) relocalizationMessage.classList.add(tone);
+        cancelRelocalizationButton.disabled = !relocalizationActive
+            || relocalizationCancelRequested;
+    }
+
+    function clearRelocalizationWatchdog() {
+        if (relocalizationWatchdogTimeout !== null) {
+            window.clearTimeout(relocalizationWatchdogTimeout);
+            relocalizationWatchdogTimeout = null;
+        }
+    }
+
+    function clearRelocalizationCancelWatchdog() {
+        if (relocalizationCancelWatchdogTimeout !== null) {
+            window.clearTimeout(relocalizationCancelWatchdogTimeout);
+            relocalizationCancelWatchdogTimeout = null;
+        }
+    }
+
+    function armRelocalizationCancelWatchdog() {
+        clearRelocalizationCancelWatchdog();
+        relocalizationCancelWatchdogTimeout = window.setTimeout(() => {
+            relocalizationCancelWatchdogTimeout = null;
+            if (!relocalizationActive || !relocalizationCancelRequested) return;
+            relocalizationActive = false;
+            relocalizationCancelRequested = false;
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+            localizationHealthReason = '重定位后端未确认取消';
+            clickMode = 'initial';
+            setMode('重定位后端异常');
+            setRelocalizationUi(
+                'failed',
+                relocalizationProgress.value,
+                '16 秒内未收到取消确认。relocalization_coordinator 可能未运行或 '
+                    + 'ICP 工作线程仍被阻塞；请查看终端并重启导航模式后再试。',
+                'error'
+            );
+            log('三维精修取消超过 16 秒仍未确认；已解除页面等待，但继续禁止导航目标。');
+            updateMapReadyUi();
+        }, RELOCALIZATION_CANCEL_WATCHDOG_MS);
+    }
+
+    function armRelocalizationWatchdog(generation, mapName, stampKey, requestId) {
+        clearRelocalizationWatchdog();
+        relocalizationWatchdogTimeout = window.setTimeout(() => {
+            relocalizationWatchdogTimeout = null;
+            if (!relocalizationActive
+                || generation !== localizationGeneration
+                || mapName !== relocalizationRequestMapName
+                || stampKey !== relocalizationRequestStampKey
+                || requestId !== relocalizationRequestId) return;
+
+            if (session && session.connected) {
+                session.publish(
+                    RELOCALIZATION_CANCEL_TOPIC,
+                    UI.TYPES.empty,
+                    {}
+                );
+            }
+            relocalizationActive = true;
+            relocalizationCancelRequested = true;
+            armRelocalizationCancelWatchdog();
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+            localizationHealthReason = '三维初始定位总流程超时';
+            clickMode = 'initial';
+            setMode('初始定位超时');
+            setRelocalizationUi(
+                'failed',
+                100,
+                '45 秒内未收到三维精修与 AMCL 回退流程的最终结果，'
+                    + '已请求后端取消并禁止发送导航目标。请检查终端中的 '
+                    + 'relocalization_coordinator 和 icp_registration 日志。',
+                'error'
+            );
+            log('三维初始定位总流程超过 45 秒，已取消并禁止导航目标。');
+            updateMapReadyUi();
+        }, RELOCALIZATION_WATCHDOG_MS);
+    }
+
+    function clearRelocalizationState(
+        message = '设置粗初始点后将自动执行 NDT/GICP 精修；精修失败时由后端自动回退到粗初始点。'
+    ) {
+        clearRelocalizationWatchdog();
+        clearRelocalizationCancelWatchdog();
+        relocalizationActive = false;
+        relocalizationCancelRequested = false;
+        relocalizationRequestStampKey = '';
+        relocalizationRequestMapName = '';
+        relocalizationRequestId = '';
+        relocalizationLastLogKey = '';
+        setRelocalizationUi('idle', 0, message);
+    }
+
+    function requestRelocalizationCancel(reason, logRequest = true) {
+        if (!relocalizationActive || !session || !session.connected) return false;
+        if (!relocalizationCancelRequested) {
+            relocalizationCancelRequested = true;
+            // The 45 s timer guards automatic refine/fallback completion, not
+            // a user-requested cancel.  The backend sends a separate terminal
+            // canceled status after its single PCL worker has safely exited.
+            clearRelocalizationWatchdog();
+            armRelocalizationCancelWatchdog();
+            session.publish(RELOCALIZATION_CANCEL_TOPIC, UI.TYPES.empty, {});
+            setRelocalizationUi(
+                'canceling',
+                relocalizationProgress.value,
+                reason || '已请求取消，正在等待后端停止本次三维精修。',
+                'warning'
+            );
+            if (logRequest) log(reason || '正在取消本次三维初始定位精修。');
+        }
+        return true;
+    }
+
+    function angleDifference(a, b) {
+        return Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+    }
+
+    function backdateRosStamp(stamp, offsetNanoseconds = 200000000) {
+        if (!stamp) return null;
+        let sec = Number(stamp.sec);
+        let nanosec = Number(stamp.nanosec) - offsetNanoseconds;
+        if (!Number.isFinite(sec) || !Number.isFinite(nanosec)) return null;
+        while (nanosec < 0) {
+            sec -= 1;
+            nanosec += 1000000000;
+        }
+        return { sec, nanosec };
+    }
+
+    function createRelocalizationRequestId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    function amclStandardDeviations(message) {
+        const covariance = message && message.pose && message.pose.covariance;
+        if (!covariance || covariance.length < 36) return null;
+        const varianceX = Number(covariance[0]);
+        const varianceY = Number(covariance[7]);
+        const varianceYaw = Number(covariance[35]);
+        if (![varianceX, varianceY, varianceYaw].every(Number.isFinite)
+            || varianceX < 0 || varianceY < 0 || varianceYaw < 0) {
+            return null;
+        }
+        return {
+            position: Math.max(Math.sqrt(varianceX), Math.sqrt(varianceY)),
+            yaw: Math.sqrt(varianceYaw)
+        };
+    }
+
+    function clearInitialPoseConfirmation() {
+        initialPoseSampleWindow = null;
+    }
+
+    function clearNoMotionUpdateRequests() {
+        noMotionUpdateTimers.forEach((timer) => window.clearTimeout(timer));
+        noMotionUpdateTimers = [];
+    }
+
+    async function requestNoMotionUpdate(generation, expectedSession, expectedMapName, requireInitialRequest) {
+        if (generation !== localizationGeneration
+            || session !== expectedSession
+            || !expectedSession
+            || !expectedSession.connected
+            || loadedMapName !== expectedMapName
+            || !navigationMapReady
+            || (requireInitialRequest
+                && (!initialPoseRequest || initialPoseRequest.generation !== generation))) {
+            return false;
+        }
+        try {
+            await expectedSession.call('/request_nomotion_update', NO_MOTION_UPDATE_SERVICE_TYPE, {});
+            return true;
+        } catch (error) {
+            if (!noMotionUpdateFailureLogged && generation === localizationGeneration) {
+                noMotionUpdateFailureLogged = true;
+                log(`调用 AMCL 静止更新服务失败：${error.message || error}。`
+                    + '后续仍会等待真实的新时间戳样本，不会用旧消息凑数。');
+            }
+            return false;
+        }
+    }
+
+    function scheduleInitialNoMotionUpdates(generation, expectedSession, expectedMapName) {
+        clearNoMotionUpdateRequests();
+        noMotionUpdateFailureLogged = false;
+        lastStabilityNoMotionBurstAtMs = 0;
+        for (let index = 1; index <= INITIAL_NO_MOTION_UPDATE_COUNT; index += 1) {
+            const timer = window.setTimeout(() => {
+                noMotionUpdateTimers = noMotionUpdateTimers.filter((item) => item !== timer);
+                requestNoMotionUpdate(generation, expectedSession, expectedMapName, true);
+            }, index * INITIAL_NO_MOTION_UPDATE_INTERVAL_MS);
+            noMotionUpdateTimers.push(timer);
+        }
+    }
+
+    function scheduleStabilityNoMotionUpdates(generation, expectedSession, expectedMapName) {
+        // A stationary AMCL instance normally publishes only after motion.
+        // Request a bounded burst so the high-covariance stability override is
+        // proved by distinct scan timestamps rather than waiting indefinitely.
+        const nowMs = Date.now();
+        if (noMotionUpdateTimers.length > 0
+            || nowMs - lastStabilityNoMotionBurstAtMs
+                < STABILITY_NO_MOTION_UPDATE_COOLDOWN_MS) return;
+        lastStabilityNoMotionBurstAtMs = nowMs;
+        noMotionUpdateFailureLogged = false;
+        for (let index = 1; index <= STABILITY_NO_MOTION_UPDATE_COUNT; index += 1) {
+            const timer = window.setTimeout(() => {
+                noMotionUpdateTimers = noMotionUpdateTimers.filter((item) => item !== timer);
+                requestNoMotionUpdate(generation, expectedSession, expectedMapName, false);
+            }, index * INITIAL_NO_MOTION_UPDATE_INTERVAL_MS);
+            noMotionUpdateTimers.push(timer);
+        }
+    }
+
+    function scheduleStaleRecoveryNoMotionUpdates(
+        generation,
+        expectedSession,
+        expectedMapName
+    ) {
+        // /amcl_pose is update-driven, not a heartbeat.  When its timestamp is
+        // old, force a bounded sequence of real scan updates before changing
+        // the localization state.  Eight samples at 350 ms also satisfy both
+        // the normal and high-covariance recovery windows.
+        const nowMs = Date.now();
+        if (noMotionUpdateTimers.length > 0
+            || nowMs - lastStaleRecoveryBurstAtMs
+                < STALE_RECOVERY_NO_MOTION_UPDATE_COOLDOWN_MS) return false;
+        lastStaleRecoveryBurstAtMs = nowMs;
+        noMotionUpdateFailureLogged = false;
+        for (let index = 1; index <= STALE_RECOVERY_NO_MOTION_UPDATE_COUNT; index += 1) {
+            const timer = window.setTimeout(() => {
+                noMotionUpdateTimers = noMotionUpdateTimers.filter((item) => item !== timer);
+                requestNoMotionUpdate(generation, expectedSession, expectedMapName, false);
+            }, index * STALE_RECOVERY_NO_MOTION_UPDATE_INTERVAL_MS);
+            noMotionUpdateTimers.push(timer);
+        }
+        return true;
+    }
+
+    function clearTrackingEvidence() {
+        poseJumpWindow = null;
+        trackingRecoveryWindow = null;
+        lastTrackingPoseSample = null;
+        highCovarianceStableWindow = null;
+        covarianceStabilityOverride = false;
+        amclStaleSinceMs = null;
+        lastStaleRecoveryBurstAtMs = 0;
+        lastIdleStaleLogAtMs = 0;
+    }
+
+    function uncertaintyDetail(uncertainty) {
+        return uncertainty
+            && Number.isFinite(uncertainty.position)
+            && Number.isFinite(uncertainty.yaw)
+            ? `位置标准差约 ${Math.round(uncertainty.position * 100)} cm，朝向标准差约 ${Math.round(uncertainty.yaw * 180 / Math.PI)}°`
+            : '协方差数据无效';
+    }
+
+    function latestMotionState(nowMs = Date.now()) {
+        if (!latestOdometryMotion || nowMs - latestOdometryMotion.receivedAtMs > ODOM_MOTION_FRESH_MS) {
+            return { fresh: false, moving: false, turningInPlace: false };
+        }
+        return {
+            fresh: true,
+            moving: latestOdometryMotion.linearSpeed >= LINEAR_MOVING_THRESHOLD
+                || latestOdometryMotion.angularSpeed >= ANGULAR_MOVING_THRESHOLD,
+            turningInPlace: latestOdometryMotion.linearSpeed <= TURNING_IN_PLACE_LINEAR_LIMIT
+                && latestOdometryMotion.angularSpeed >= TURNING_IN_PLACE_ANGULAR_THRESHOLD
+        };
+    }
+
+    function localizationSafetyMotionActive(nowMs = Date.now()) {
+        const motion = latestMotionState(nowMs);
+        // Nav2 can spend several seconds planning before the dog physically
+        // moves. Start loss evidence only after odometry confirms motion; if
+        // odometry itself becomes stale, retain the safer moving assumption.
+        if (navigationActive) return motion.moving || !motion.fresh;
+        return false;
+    }
+
+    function amclDataFresh(nowMs = Date.now()) {
+        return latestAmclReceivedAtMs > 0
+            && nowMs - latestAmclReceivedAtMs <= AMCL_STALE_AFTER_MS;
+    }
+
+    function idleStaleLocalizationAllowed(nowMs = Date.now()) {
+        if (latestAmclReceivedAtMs <= 0 || amclDataFresh(nowMs)) return false;
+        // AMCL is update-driven and may stop publishing while the robot is
+        // idle.  LIO twist can also retain small residual values, so it must
+        // not revoke a backend-confirmed GOOD pose before the first goal is
+        // sent.  Motion safety is armed immediately before publishing a goal.
+        return !navigationActive;
+    }
+
+    function localizationHealthyForControl(nowMs = Date.now()) {
+        return !lioFaultLatched
+            && localizationReady
+            && localizationHealth === LOCALIZATION_HEALTH.GOOD
+            && (amclDataFresh(nowMs) || idleStaleLocalizationAllowed(nowMs));
+    }
+
+    function goalReadinessIssue(nowMs = Date.now()) {
+        if (routeIsActive()) {
+            return '多目标路径正在执行，请先停止路径导航';
+        }
+        if (lioFaultLatched) {
+            return 'LIO 正在自动重置和重定位，恢复完成前禁止发送新目标';
+        }
+        if (!nav2Ready) return 'Nav2 NavigateToPose 服务尚未就绪';
+        if (!localizationReady) return '初始定位尚未通过确认';
+        if (localizationHealth !== LOCALIZATION_HEALTH.GOOD) {
+            return `定位状态为 ${localizationHealthReason || localizationHealth}`;
+        }
+        if (!amclDataFresh(nowMs) && !idleStaleLocalizationAllowed(nowMs)) {
+            return 'AMCL 位姿已陈旧且机器人正处于导航运动状态';
+        }
+        return '';
+    }
+
+    function lioFaultDiagnostics(status) {
+        const details = [];
+        const reason = typeof status.reason === 'string' ? status.reason.trim() : '';
+        const reasonLabels = {
+            estimator_linear_speed: '估计器线速度超限',
+            pose_linear_speed: '位姿平移速度超限',
+            estimator_vertical_speed: '估计器垂直速度超限',
+            pose_vertical_speed: '高度变化速度超限',
+            vertical_consistency: '高度变化与内部垂直速度模型持续不一致',
+            estimator_angular_speed: '估计器角速度超限',
+            pose_angular_speed: '位姿角速度超限',
+            position_step: '单帧位置跳变超限',
+            vertical_step: '单帧高度跳变超限',
+            yaw_step: '单帧航向跳变超限',
+            persistent_vertical_with_planar_corroboration:
+                '垂向异常持续超过安全时间窗且伴随平面或航向异常',
+            scan_matching_quality: '点云匹配约束比例不足',
+            non_monotonic_timestamp: '时间戳未递增',
+            imu_update_failures: 'IMU 更新连续失败',
+            filter_numerical_state: '滤波器数值状态异常',
+            non_finite_state: '状态包含非有限数值'
+        };
+        if (reason) details.push(`原因：${reasonLabels[reason] || reason}`);
+
+        const metrics = [
+            ['pose_linear_speed', '位姿线速度', 'm/s'],
+            ['estimator_linear_speed', '估计器线速度', 'm/s'],
+            ['position_z', '估计高度', 'm'],
+            ['pose_vertical_speed', '高度变化速度', 'm/s'],
+            ['estimator_vertical_speed', '估计器垂直速度', 'm/s'],
+            ['vertical_consistency_error', '高度/速度模型累计偏差', 'm'],
+            ['pose_angular_speed', '位姿角速度', 'rad/s'],
+            ['estimator_angular_speed', '估计器角速度', 'rad/s']
+        ].map(([field, label, unit]) => {
+            const raw = status[field];
+            const value = Number(raw);
+            if (raw === undefined || raw === null || raw === '' || !Number.isFinite(value)) return '';
+            return `${label} ${value.toFixed(3)} ${unit}`;
+        }).filter(Boolean);
+        if (metrics.length) details.push(metrics.join('，'));
+        const attempted = Number(status.point_update_attempts);
+        const accepted = Number(status.point_update_accepted);
+        const ratio = Number(status.point_update_acceptance_ratio);
+        if (Number.isFinite(attempted) && Number.isFinite(accepted)) {
+            const ratioText = Number.isFinite(ratio)
+                ? `，有效比例 ${(ratio * 100).toFixed(1)}%`
+                : '';
+            details.push(`点云约束 ${accepted}/${attempted}${ratioText}`);
+        }
+        return details.length ? `（${details.join('；')}）` : '';
+    }
+
+    function handleLioHealth(message) {
+        const raw = message && typeof message.data === 'string'
+            ? message.data
+            : '';
+        if (!raw || raw === lastLioHealthPayload) return;
+        lastLioHealthPayload = raw;
+
+        let status = { state: raw };
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') status = parsed;
+        } catch (_error) {
+            // Accept a plain state string for backward compatibility.
+        }
+
+        if (status.state === 'warning') {
+            const warningCode = typeof status.code === 'string'
+                ? status.code
+                : 'warning';
+            if (lioWarningCode !== warningCode) {
+                lioWarningCode = warningCode;
+                if (status.temporary_stop === true) {
+                    log('LIO 检测到可恢复异常，已临时停止机械狗并回退异常扫描；连续健康扫描验证通过后会自动继续导航。');
+                }
+                if (warningCode === 'odometry_sample_quarantined') {
+                    if (status.vertical_only === true) {
+                        const duration = Number(status.quarantine_duration);
+                        const requiredDuration = Number(status.required_duration);
+                        const progress = Number.isFinite(duration)
+                            && Number.isFinite(requiredDuration)
+                            ? `（垂向异常持续 ${duration.toFixed(1)}/${requiredDuration.toFixed(1)} 秒）`
+                            : '';
+                        log(`LIO 已软隔离一个四足步态垂向波动采样${progress}${lioFaultDiagnostics(status)}：`
+                            + '该帧不会用于导航或地图更新，下一帧正常时自动恢复。'
+                            + '纯垂向波动无论连续多少帧都不会单独取消导航或急停；'
+                            + '只有持续超过安全时间窗并同时出现独立的平面或航向异常才会触发保护。');
+                    } else if (status.recovery_only === true) {
+                        const duration = Number(status.quarantine_duration);
+                        const requiredDuration = Number(status.required_duration);
+                        const progress = Number.isFinite(duration)
+                            && Number.isFinite(requiredDuration)
+                            ? `（${duration.toFixed(1)}/${requiredDuration.toFixed(1)} 秒）`
+                            : '';
+                        log(`LIO 已回退一个点云匹配质量不足的扫描${progress}${lioFaultDiagnostics(status)}：`
+                            + '当前导航任务和目标点保持不变；连续健康扫描验证通过后自动继续。'
+                            + '点云匹配质量不足本身不会再锁存为永久故障。');
+                    } else {
+                        const current = Number(status.consecutive_samples);
+                        const required = Number(status.required_samples);
+                        const progress = Number.isFinite(current)
+                            && Number.isFinite(required)
+                            ? `（${current}/${required}）`
+                            : '';
+                        log(`LIO 已软隔离一个可疑里程计采样${progress}${lioFaultDiagnostics(status)}：`
+                            + '该帧不会用于导航或地图更新，下一帧正常时自动恢复。'
+                            + '只有连续的平面、航向或滤波器异常才会急停。');
+                    }
+                } else {
+                    log(`LIO 高度趋势预警${lioFaultDiagnostics(status)}：`
+                        + '当前仅提示，正在执行的导航不会被取消。'
+                        + '该数值不是楼层高差；若定位或地图显示明显异常，请主动停止。');
+                }
+            }
+            return;
+        }
+
+        if (status.state === 'recovering') {
+            if (lioWarningCode !== 'lio_auto_recovery') {
+                lioWarningCode = 'lio_auto_recovery';
+                log('LIO 正在验证连续健康扫描；路径任务未取消，验证完成后自动继续当前目标点。');
+            }
+            return;
+        }
+
+        if (status.state === 'resetting') {
+            if (lioWarningCode !== 'lio_estimator_reset') {
+                lioWarningCode = 'lio_estimator_reset';
+                log('LIO 连续异常已超过安全时间窗，正在当前进程内重置估计器；'
+                    + '雷达和 IMU 输入保持运行，路径及当前目标点不会丢失。');
+            }
+            lioFaultLatched = true;
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.LOST;
+            localizationHealthReason = 'LIO 正在进程内重置';
+            setMode('LIO 自动重置中');
+            setRelocalizationUi(
+                'starting',
+                10,
+                '正在重新初始化 LIO，随后会自动执行三维重定位并重试当前目标点。',
+                'warning'
+            );
+            updateMapReadyUi();
+            return;
+        }
+
+        if (status.state === 'healthy' && lioWarningCode) {
+            const recoveredCode = lioWarningCode;
+            lioWarningCode = '';
+            log(
+                recoveredCode === 'odometry_sample_quarantined'
+                    ? 'LIO 异常扫描已恢复，里程计、TF 和注册点云已继续输出。'
+                    : recoveredCode === 'lio_auto_recovery'
+                        ? 'LIO 连续健康扫描验证通过，已自动继续当前导航任务。'
+                        : recoveredCode === 'lio_estimator_reset'
+                            ? 'LIO 进程内重置已产生连续健康点云，正在进入自动三维重定位。'
+                        : 'LIO 高度/速度模型偏差已恢复到正常范围。'
+            );
+        }
+
+        if (status.state === 'fault') {
+            const diagnostics = lioFaultDiagnostics(status);
+            const firstFault = !lioFaultLatched;
+            lioWarningCode = '';
+            lioFaultLatched = true;
+            localizationGeneration += 1;
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.LOST;
+            localizationHealthReason = 'LIO 里程计发散保护已锁存';
+            clearInitialPoseConfirmation();
+            clearNoMotionUpdateRequests();
+            clearTrackingEvidence();
+            clearRelocalizationWatchdog();
+            relocalizationActive = false;
+            initialPoseRequest = null;
+            setMode('LIO 故障急停');
+            setRelocalizationUi(
+                'failed',
+                0,
+                `检测到 LIO 输出故障${diagnostics}，已急停并隔离损坏的里程计、TF 和点云。`
+                    + '当前路径与目标点仍由后台保留；系统恢复健康输出后会自动重试当前点。'
+                    + '若长时间不能恢复，请手动停止路径并检查雷达、IMU 与机械安装。',
+                'error'
+            );
+            updateMapReadyUi();
+            if (firstFault) {
+                log(`LIO 里程计发散保护已触发${diagnostics}：机械狗已安全停机，`
+                    + '但当前路径和目标点没有被取消；健康输出恢复后后台会重试当前点。');
+            }
+            return;
+        }
+
+        if (status.state === 'healthy' && lioFaultLatched) {
+            localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+            localizationHealthReason = 'LIO 已恢复，正在等待自动三维重定位';
+            log('LIO 已恢复健康点云，正在自动执行三维重定位和 AMCL 连续确认；'
+                + '通过后才会恢复当前目标点。');
+            updateMapReadyUi();
+        }
+    }
+
+    function handleAutomaticRecoveryRelocalizationStatus(status) {
+        const requestId = String(status.request_id || '');
+        if (!requestId.startsWith('auto_lio_')) return false;
+        if (status.map_name && loadedMapName
+            && String(status.map_name) !== loadedMapName) return true;
+
+        const state = String(status.state || '');
+        const stage = String(status.stage || state || 'starting');
+        const terminal = Boolean(status.terminal);
+        const success = Boolean(status.success);
+        const statusMessage = String(
+            status.message
+            || RELOCALIZATION_STAGE_TEXT[stage]
+            || '正在自动恢复定位'
+        );
+
+        if (
+            automaticRecoveryRequestId
+            && automaticRecoveryRequestId !== requestId
+            && terminal
+        ) return true;
+        automaticRecoveryRequestId = terminal ? '' : requestId;
+
+        const logKey = `${requestId}|${state}|${stage}|${terminal}|${success}`;
+        if (logKey !== automaticRecoveryLastLogKey) {
+            automaticRecoveryLastLogKey = logKey;
+            log(`LIO 自动恢复：${statusMessage}`);
+        }
+
+        if (!terminal) {
+            lioFaultLatched = true;
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+            localizationHealthReason = '自动三维重定位进行中';
+            setMode('自动重定位中');
+            setRelocalizationUi(
+                stage,
+                status.progress,
+                statusMessage,
+                state === 'fallback' ? 'warning' : ''
+            );
+            updateMapReadyUi();
+            return true;
+        }
+
+        if (success) {
+            const pose = status.pose && typeof status.pose === 'object'
+                ? {
+                    x: Number(status.pose.x),
+                    y: Number(status.pose.y),
+                    yaw: Number(status.pose.yaw)
+                }
+                : null;
+            if (pose && Number.isFinite(pose.x)
+                && Number.isFinite(pose.y) && Number.isFinite(pose.yaw)) {
+                latestAmclPose = { ...pose, stamp: latestAmclStamp };
+                latestAmclReceivedAtMs = Date.now();
+                mapCanvas.setRobotPose(pose.x, pose.y, pose.yaw);
+            }
+            lioFaultLatched = false;
+            lioWarningCode = '';
+            localizationReady = true;
+            localizationHealth = LOCALIZATION_HEALTH.GOOD;
+            localizationHealthReason = '';
+            clearTrackingEvidence();
+            setRelocalizationUi(
+                'succeeded',
+                100,
+                'LIO、三维重定位和 AMCL 连续验证均已恢复，后台正在重试当前目标点。',
+                'success'
+            );
+            setMode(navigationActive ? '导航执行中' : '导航就绪');
+        } else {
+            lioFaultLatched = true;
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.LOST;
+            localizationHealthReason = '自动三维重定位未通过';
+            setMode('自动恢复未通过');
+            setRelocalizationUi(
+                'failed',
+                100,
+                `${statusMessage} 后台会按限定次数重试；若最终仍失败，`
+                    + '任务会保留并保持安全停车。',
+                'error'
+            );
+        }
+        updateMapReadyUi();
+        return true;
+    }
+
+    function beginMotionLocalizationWatch() {
+        // Never carry idle time into the motion-loss timer.  A stationary AMCL
+        // may legitimately stop publishing until a fresh scan update is forced
+        // or the robot starts to move.
+        amclStaleSinceMs = null;
+        lastIdleStaleLogAtMs = 0;
+        requestNoMotionUpdate(localizationGeneration, session, loadedMapName, false);
+    }
+
+    function refreshModeFromLocalization() {
+        if (localizationReady && localizationHealth === LOCALIZATION_HEALTH.LOST) {
+            setMode('定位失效');
+        } else if (localizationReady && localizationHealth === LOCALIZATION_HEALTH.DEGRADED) {
+            setMode('定位退化');
+        } else if (nav2Ready) {
+            setMode(navigationActive ? '导航执行中' : '导航就绪');
+        }
+    }
+
+    function markLocalizationDegraded(reason, message) {
+        if (!localizationReady || localizationHealth === LOCALIZATION_HEALTH.LOST) return;
+        const changed = localizationHealth !== LOCALIZATION_HEALTH.DEGRADED
+            || localizationHealthReason !== reason;
+        localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+        localizationHealthReason = reason;
+        if (changed && message) log(message);
+        refreshModeFromLocalization();
+        updateMapReadyUi();
+    }
+
+    function markLocalizationGood(message) {
+        const changed = localizationHealth !== LOCALIZATION_HEALTH.GOOD;
+        localizationHealth = LOCALIZATION_HEALTH.GOOD;
+        localizationHealthReason = '';
+        clearNoMotionUpdateRequests();
+        clearTrackingEvidence();
+        if (changed && message) log(message);
+        refreshModeFromLocalization();
+        updateMapReadyUi();
+    }
+
+    function confirmInitialPose(generation, confirmedPose) {
+        if (!initialPoseRequest
+            || initialPoseRequest.generation !== generation
+            || localizationGeneration !== generation
+            || !confirmedPose) return;
+        localizationReady = true;
+        initialPoseRequest = null;
+        initialPosePreview = null;
+        if (initialPoseTimeout) window.clearTimeout(initialPoseTimeout);
+        initialPoseTimeout = null;
+        clearInitialPoseConfirmation();
+        clearNoMotionUpdateRequests();
+        mapCanvas.setRobotPose(confirmedPose.x, confirmedPose.y, confirmedPose.yaw);
+        // Initial pose is a one-shot operation. In single-point mode switch to
+        // the goal tool; in multi-point mode only switch to point editing when
+        // a route draft is actively being edited.
+        clickMode = navigationUiMode === 'single'
+            ? 'goal'
+            : (routeDraft && routeEditing ? 'route' : 'initial');
+        const nextToolText = clickMode === 'goal'
+            ? '“设置目标点”'
+            : (clickMode === 'route' ? '“添加路径点”' : '“设置初始点”');
+        markLocalizationGood(
+            `AMCL 初始定位已由 ${confirmedPose.sampleCount} 个不同时间戳样本连续确认 `
+            + `${confirmedPose.duration.toFixed(1)} 秒，当前工具为${nextToolText}。`
+        );
+    }
+
+    function latchLocalizationLoss(evidence) {
+        if (!localizationReady
+            || localizationHealth === LOCALIZATION_HEALTH.LOST
+            || !localizationSafetyMotionActive()) return;
+        localizationHealth = LOCALIZATION_HEALTH.LOST;
+        localizationHealthReason = 'AMCL 位姿连续跳变';
+        clearInitialPoseConfirmation();
+        cancelNavigation(true, false, true);
+        setMode('定位失效');
+        updateMapReadyUi();
+        const positionStep = evidence && Number.isFinite(evidence.positionStep)
+            ? `${Math.round(evidence.positionStep * 100)} cm`
+            : '未知';
+        const yawStep = evidence && Number.isFinite(evidence.yawStep)
+            ? `${Math.round(evidence.yawStep * 180 / Math.PI)}°`
+            : '未知';
+        log(`AMCL 在短时间内连续出现不合理位姿步变（最后一次位置 ${positionStep}、朝向 ${yawStep}），`
+            + '且机器人正处于导航运动状态，已取消导航并急停。');
+    }
+
+    function extendEvidenceWindow(current, amclStamp, receivedAtMs) {
+        if (!current
+            || amclStamp <= current.lastStamp + 1e-6
+            || amclStamp - current.lastStamp > TRACKING_SAMPLE_MAX_GAP_SECONDS) {
+            return {
+                firstStamp: amclStamp,
+                lastStamp: amclStamp,
+                firstReceivedAtMs: receivedAtMs,
+                lastReceivedAtMs: receivedAtMs,
+                count: 1
+            };
+        }
+        current.lastStamp = amclStamp;
+        current.lastReceivedAtMs = receivedAtMs;
+        current.count += 1;
+        return current;
+    }
+
+    function monitorLocalizationSample(uncertainty, poseSample, receivedAtMs) {
+        if (!localizationReady || !poseSample || !Number.isFinite(poseSample.stamp)) return false;
+        amclStaleSinceMs = null;
+        const motion = latestMotionState(receivedAtMs);
+        let jumpEvidence = null;
+        if (lastTrackingPoseSample) {
+            const deltaTime = poseSample.stamp - lastTrackingPoseSample.stamp;
+            if (deltaTime >= 0.02 && deltaTime <= TRACKING_SAMPLE_MAX_GAP_SECONDS) {
+                const positionStep = Math.hypot(
+                    poseSample.x - lastTrackingPoseSample.x,
+                    poseSample.y - lastTrackingPoseSample.y
+                );
+                const yawStep = angleDifference(poseSample.yaw, lastTrackingPoseSample.yaw);
+                const yawStepLimit = motion.turningInPlace
+                    ? TURNING_POSE_JUMP_YAW_STEP_LIMIT
+                    : POSE_JUMP_YAW_STEP_LIMIT;
+                const yawRateLimit = motion.turningInPlace
+                    ? TURNING_POSE_JUMP_YAW_RATE_LIMIT
+                    : POSE_JUMP_YAW_RATE_LIMIT;
+                const unreasonablePositionStep = positionStep >= POSE_JUMP_POSITION_STEP_LIMIT
+                    && positionStep / deltaTime >= POSE_JUMP_POSITION_RATE_LIMIT;
+                const unreasonableYawStep = yawStep >= yawStepLimit
+                    && yawStep / deltaTime >= yawRateLimit;
+                if (unreasonablePositionStep || unreasonableYawStep) {
+                    jumpEvidence = { positionStep, yawStep, deltaTime };
+                }
+            }
+        }
+        lastTrackingPoseSample = poseSample;
+
+        if (jumpEvidence) {
+            highCovarianceStableWindow = null;
+            covarianceStabilityOverride = false;
+            trackingRecoveryWindow = null;
+            poseJumpWindow = extendEvidenceWindow(poseJumpWindow, poseSample.stamp, receivedAtMs);
+            poseJumpWindow.lastEvidence = jumpEvidence;
+            markLocalizationDegraded(
+                'AMCL 位姿步变',
+                `检测到 AMCL 短时间位姿步变（位置 ${Math.round(jumpEvidence.positionStep * 100)} cm、`
+                + `朝向 ${Math.round(jumpEvidence.yawStep * 180 / Math.PI)}°），已暂停发送新目标并继续复核。`
+            );
+            const jumpDuration = poseJumpWindow.lastStamp - poseJumpWindow.firstStamp;
+            if (localizationSafetyMotionActive(receivedAtMs)
+                && poseJumpWindow.count >= POSE_JUMP_CONFIRMATION_MIN_SAMPLES
+                && jumpDuration >= POSE_JUMP_CONFIRMATION_HOLD_SECONDS) {
+                latchLocalizationLoss(poseJumpWindow.lastEvidence);
+            }
+            return false;
+        }
+        // A normal new pose breaks the consecutive-jump chain.  Old or
+        // duplicate timestamps never reach this function.
+        poseJumpWindow = null;
+
+        // A hard LOST state may recover only after the dog is observably
+        // stationary and odometry telemetry is current.  This prevents a few
+        // in-motion AMCL samples from clearing an emergency stop before the
+        // platform has actually settled.
+        if (localizationHealth === LOCALIZATION_HEALTH.LOST
+            && (!motion.fresh || motion.moving)) {
+            trackingRecoveryWindow = null;
+            highCovarianceStableWindow = null;
+            covarianceStabilityOverride = false;
+            return false;
+        }
+
+        const exceedsTrackingLimit = !uncertainty
+            || uncertainty.position > TRACKING_POSITION_STD_LIMIT
+            || uncertainty.yaw > TRACKING_YAW_STD_LIMIT;
+        if (exceedsTrackingLimit) {
+            trackingRecoveryWindow = null;
+            if (!uncertainty) {
+                highCovarianceStableWindow = null;
+                covarianceStabilityOverride = false;
+                markLocalizationDegraded(
+                    'AMCL 协方差无效',
+                    'AMCL 协方差数据无效，已暂停发送新目标；该预警本身不会触发急停。'
+                );
+                return true;
+            }
+
+            if (!localizationSafetyMotionActive(receivedAtMs)) {
+                const continuous = highCovarianceStableWindow
+                    && poseSample.stamp > highCovarianceStableWindow.lastStamp + 1e-6
+                    && poseSample.stamp - highCovarianceStableWindow.lastStamp
+                        <= TRACKING_SAMPLE_MAX_GAP_SECONDS
+                    && Math.hypot(
+                        poseSample.x - highCovarianceStableWindow.anchorX,
+                        poseSample.y - highCovarianceStableWindow.anchorY
+                    ) <= HIGH_COVARIANCE_STABLE_POSITION_SPREAD
+                    && angleDifference(poseSample.yaw, highCovarianceStableWindow.anchorYaw)
+                        <= HIGH_COVARIANCE_STABLE_YAW_SPREAD;
+                if (!continuous) {
+                    highCovarianceStableWindow = {
+                        firstStamp: poseSample.stamp,
+                        lastStamp: poseSample.stamp,
+                        count: 1,
+                        anchorX: poseSample.x,
+                        anchorY: poseSample.y,
+                        anchorYaw: poseSample.yaw
+                    };
+                    covarianceStabilityOverride = false;
+                    scheduleStabilityNoMotionUpdates(
+                        localizationGeneration,
+                        session,
+                        loadedMapName
+                    );
+                } else {
+                    highCovarianceStableWindow.lastStamp = poseSample.stamp;
+                    highCovarianceStableWindow.count += 1;
+                }
+                const stableDuration = highCovarianceStableWindow.lastStamp
+                    - highCovarianceStableWindow.firstStamp;
+                if (covarianceStabilityOverride) return true;
+                markLocalizationDegraded(
+                    'AMCL 协方差偏大（静止复核）',
+                    `AMCL 协方差偏大（${uncertaintyDetail(uncertainty)}），但机器人位姿没有明显跳变；`
+                    + '正在用连续静止位姿复核，该预警不会触发急停。'
+                );
+                if (highCovarianceStableWindow.count >= HIGH_COVARIANCE_STABLE_MIN_SAMPLES
+                    && stableDuration >= HIGH_COVARIANCE_STABLE_HOLD_SECONDS) {
+                    const acceptedWindow = highCovarianceStableWindow;
+                    const acceptedCount = acceptedWindow.count;
+                    markLocalizationGood(
+                        `尽管 AMCL 协方差仍偏大，但 ${acceptedCount} 个新时间戳位姿已连续稳定 `
+                        + `${stableDuration.toFixed(1)} 秒；允许重新设置目标，且不会仅凭协方差急停。`
+                    );
+                    lastTrackingPoseSample = poseSample;
+                    highCovarianceStableWindow = acceptedWindow;
+                    covarianceStabilityOverride = true;
+                }
+                return true;
+            }
+
+            highCovarianceStableWindow = null;
+            covarianceStabilityOverride = false;
+            const warningReason = motion.turningInPlace
+                ? 'AMCL 协方差偏大（原地旋转预警）'
+                : 'AMCL 协方差偏大（运动预警）';
+            const warningSuffix = motion.turningInPlace
+                ? '原地旋转期间只做预警，绝不会仅凭协方差取消导航或急停。'
+                : '该预警只会暂停新目标，绝不会单独触发 LOST 或急停。';
+            markLocalizationDegraded(
+                warningReason,
+                `AMCL 协方差偏大（${uncertaintyDetail(uncertainty)}）；${warningSuffix}`
+            );
+            return true;
+        }
+
+        highCovarianceStableWindow = null;
+        covarianceStabilityOverride = false;
+        if (localizationHealth === LOCALIZATION_HEALTH.GOOD) {
+            trackingRecoveryWindow = null;
+            return true;
+        }
+        const meetsRecoveryLimit = uncertainty.position <= TRACKING_RECOVERY_POSITION_STD_LIMIT
+            && uncertainty.yaw <= TRACKING_RECOVERY_YAW_STD_LIMIT;
+        if (!meetsRecoveryLimit) {
+            trackingRecoveryWindow = null;
+            return true;
+        }
+        trackingRecoveryWindow = extendEvidenceWindow(
+            trackingRecoveryWindow,
+            poseSample.stamp,
+            receivedAtMs
+        );
+        const recoveryDuration = trackingRecoveryWindow.lastStamp - trackingRecoveryWindow.firstStamp;
+        if (trackingRecoveryWindow.count >= TRACKING_RECOVERY_MIN_SAMPLES
+            && recoveryDuration >= TRACKING_RECOVERY_HOLD_SECONDS) {
+            const recoveredCount = trackingRecoveryWindow.count;
+            markLocalizationGood(
+                `AMCL 已由 ${recoveredCount} 个连续新样本确认恢复，定位状态重新变为正常。`
+            );
+            lastTrackingPoseSample = poseSample;
+        } else if (localizationHealth === LOCALIZATION_HEALTH.DEGRADED
+            && localizationHealthReason !== '定位恢复复核中') {
+            localizationHealthReason = '定位恢复复核中';
+            updateMapReadyUi();
+        }
+        return true;
+    }
+
+    function monitorAmclFreshness() {
+        if (!localizationReady || !navigationMapReady || !session || !session.connected) {
+            amclStaleSinceMs = null;
+            return;
+        }
+        const nowMs = Date.now();
+        if (amclDataFresh(nowMs)) {
+            amclStaleSinceMs = null;
+            return;
+        }
+        // Staleness has its own wall-clock evidence.  It never extends the
+        // covariance bad-sample window because no new AMCL sample arrived.
+        poseJumpWindow = null;
+        trackingRecoveryWindow = null;
+        highCovarianceStableWindow = null;
+        covarianceStabilityOverride = false;
+        if (!localizationSafetyMotionActive(nowMs)) {
+            amclStaleSinceMs = null;
+            const recoveryRequired = localizationHealth !== LOCALIZATION_HEALTH.GOOD
+                || navigationActive;
+            if (recoveryRequired) {
+                scheduleStaleRecoveryNoMotionUpdates(
+                    localizationGeneration,
+                    session,
+                    loadedMapName
+                );
+            }
+            if (nowMs - lastIdleStaleLogAtMs >= IDLE_STALE_LOG_COOLDOWN_MS) {
+                lastIdleStaleLogAtMs = nowMs;
+                if (localizationHealth === LOCALIZATION_HEALTH.LOST) {
+                    log('定位已失效且机器人当前静止，正在连续请求 AMCL 新样本复核；'
+                        + '恢复前不能发送新目标，也不会反复触发急停。');
+                } else if (localizationHealth === LOCALIZATION_HEALTH.DEGRADED) {
+                    log('AMCL 定位正在连续复核；现有导航不会仅因位姿消息暂时沉默而被急停，'
+                        + '恢复前暂不接受新目标。');
+                } else if (navigationActive) {
+                    log('机器人当前没有明显里程计运动，AMCL 暂无新位姿可能是正常现象；'
+                        + '正在请求连续更新，现有任务不会仅因此被急停。');
+                } else {
+                    log('机器人静止时 AMCL 暂无新位姿可能是正常现象；'
+                        + '已保留上一次正常定位，可以设置目标。');
+                }
+            }
+            // Keep the last GOOD result while odometry proves that the robot is
+            // still stationary.  Motion starts a new stale-data evidence window.
+            updateMapReadyUi();
+            return;
+        }
+        if (amclStaleSinceMs === null) {
+            // Start at the moment stale data is first observed during motion.
+            // Do not backdate this to a valid but old stationary AMCL sample.
+            amclStaleSinceMs = nowMs;
+        }
+        scheduleStaleRecoveryNoMotionUpdates(
+            localizationGeneration,
+            session,
+            loadedMapName
+        );
+        markLocalizationDegraded(
+            'AMCL 数据陈旧',
+            `超过 ${(AMCL_STALE_AFTER_MS / 1000).toFixed(1)} 秒未收到带新时间戳的 AMCL 位姿，`
+            + '已启动有界的连续更新复核并暂停发送新目标；'
+            + '现有导航不会仅凭该消息沉默而取消或急停。'
+        );
+    }
+
+    function resetLocalizationState() {
+        localizationGeneration += 1;
+        localizationReady = false;
+        localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+        localizationHealthReason = '等待初始定位';
+        clearInitialPoseConfirmation();
+        clearNoMotionUpdateRequests();
+        noMotionUpdateFailureLogged = false;
+        clearTrackingEvidence();
+        initialPoseRequest = null;
+        initialPosePreview = null;
+        if (initialPoseTimeout) {
+            window.clearTimeout(initialPoseTimeout);
+            initialPoseTimeout = null;
+        }
+        latestAmclPose = null;
+        clearRelocalizationState();
+        mapCanvas.clearRobotPose();
+        mapCanvas.clearGoalPose();
+    }
+
+    function resolveCancelWaiters(success) {
+        const waiters = cancelWaiters;
+        cancelWaiters = [];
+        waiters.forEach(({ resolve, timer }) => {
+            window.clearTimeout(timer);
+            resolve(success);
+        });
+    }
+
+    function cancelNavigation(
+        clearMarker = true,
+        waitForConfirmation = false,
+        latchEmergency = false
+    ) {
+        if (!session || !session.connected) return Promise.resolve(false);
+        let completion = Promise.resolve(true);
+        if (waitForConfirmation && (!navigationActiveKnown || navigationActive)) {
+            completion = new Promise((resolve) => {
+                const waiter = { resolve, timer: null };
+                waiter.timer = window.setTimeout(() => {
+                    cancelWaiters = cancelWaiters.filter((item) => item !== waiter);
+                    resolve(false);
+                }, 3000);
+                cancelWaiters.push(waiter);
+            });
+        }
+        session.publish('/cancel_navigation', UI.TYPES.empty, {});
+        if (latchEmergency) {
+            session.publish('/emergency_stop', UI.TYPES.empty, {});
+        }
+        // Stop the hardware output immediately while the action cancel is
+        // propagating through Nav2.  Ordinary cancellation does not latch the
+        // hardware; only a user emergency stop or confirmed LOST state does.
+        session.publish('/cmd_vel', UI.TYPES.twist, {
+            linear: { x: 0, y: 0, z: 0 },
+            angular: { x: 0, y: 0, z: 0 }
+        });
+        if (clearMarker) mapCanvas.clearGoalPose();
+        return completion;
+    }
+
+    function clearEmergencyStop() {
+        if (session && session.connected) {
+            session.publish('/clear_emergency_stop', UI.TYPES.empty, {});
+        }
+    }
+
+    function clearPendingMapLoad() {
+        pendingMapName = '';
+        pendingMapRequestAccepted = false;
+        if (mapLoadTimeout) {
+            window.clearTimeout(mapLoadTimeout);
+            mapLoadTimeout = null;
+        }
+    }
+
+    function confirmMapLoaded(message) {
+        if (!pendingMapName
+            || !pendingMapRequestAccepted
+            || !message
+            || message.map_name !== pendingMapName) return;
+        if (!message.success) {
+            const mapName = pendingMapName;
+            clearPendingMapLoad();
+            navigationMapReady = false;
+            resetLocalizationState();
+            document.getElementById('loaded-map-display').textContent = '加载失败';
+            document.getElementById('btn-load-map').disabled = false;
+            setRelocalizationUi(
+                '地图不可导航',
+                0,
+                message.message || '地图服务器返回失败',
+                'error'
+            );
+            updateMapReadyUi();
+            log(`地图“${mapName}”加载失败：${message.message || '地图服务器返回失败'}`);
+            return;
+        }
+        const mapName = pendingMapName;
+        clearPendingMapLoad();
+        loadedMapName = mapName;
+        navigationMapReady = true;
+        routeListMapName = '';
+        setRouteDraft(null, false);
+        // A newly loaded map always returns to single-point navigation and
+        // starts with an explicit initial-pose step.
+        setNavigationUiMode('single', false, true);
+        resetLocalizationState();
+        document.getElementById('loaded-map-display').textContent = mapName;
+        document.getElementById('btn-load-map').disabled = false;
+        setRelocalizationUi(
+            'idle',
+            0,
+            '同名 PCD 与新版定位元数据已通过校验；请在地图上设置粗初始点。'
+        );
+        updateMapReadyUi();
+        refreshRoutes();
+        log(`地图“${mapName}”的二维地图、定位 PCD 与新版元数据均已通过校验并完成加载；`
+            + '请先设置粗初始点。');
+    }
+
+    function handleRelocalizationStatus(message) {
+        let status;
+        try {
+            status = JSON.parse(message && message.data ? message.data : '');
+        } catch (error) {
+            const nowMs = Date.now();
+            if (nowMs - relocalizationLastInvalidStatusLogAtMs >= 10000) {
+                relocalizationLastInvalidStatusLogAtMs = nowMs;
+                log('收到无法解析的三维精修状态，已忽略；请检查重定位协调节点日志。');
+            }
+            return;
+        }
+        if (!status || typeof status !== 'object') return;
+        if (handleAutomaticRecoveryRelocalizationStatus(status)) return;
+        if (!relocalizationActive) return;
+        if (!status.map_name || status.map_name !== relocalizationRequestMapName) return;
+        if (!status.request_id || status.request_id !== relocalizationRequestId) return;
+        const statusStampKey = rosStampKey(status.request_stamp);
+        if (!statusStampKey
+            || !relocalizationRequestStampKey
+            || statusStampKey !== relocalizationRequestStampKey) return;
+
+        const stage = String(status.stage || status.state || 'queued');
+        const state = String(status.state || '');
+        const terminal = Boolean(status.terminal);
+        const success = Boolean(status.success);
+        const sourcePose = String(status.source_pose || '');
+        const reportedPose = status.pose && typeof status.pose === 'object'
+            ? {
+                x: Number(status.pose.x),
+                y: Number(status.pose.y),
+                yaw: Number(status.pose.yaw)
+            }
+            : null;
+        const reportedPoseValid = reportedPose
+            && Number.isFinite(reportedPose.x)
+            && Number.isFinite(reportedPose.y)
+            && Number.isFinite(reportedPose.yaw);
+        const statusMessage = String(
+            status.message
+            || RELOCALIZATION_STAGE_TEXT[stage]
+            || '三维初始定位处理中'
+        );
+        const errorState = ['error', 'failed', 'rejected'].includes(state)
+            || (terminal && !success && state !== 'canceled');
+        const warningState = state === 'warning'
+            || state === 'fallback'
+            || sourcePose === 'rough'
+            || stage === 'publishing_rough'
+            || stage === 'amcl_rough'
+            || state === 'canceled';
+        const tone = errorState ? 'error' : (warningState ? 'warning' : '');
+
+        const logKey = `${state}|${stage}|${terminal}|${success}|${sourcePose}`;
+        if (logKey !== relocalizationLastLogKey) {
+            relocalizationLastLogKey = logKey;
+            log(`三维初始定位：${statusMessage}`);
+        }
+
+        if (!terminal) {
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+            localizationHealthReason = RELOCALIZATION_STAGE_TEXT[stage] || statusMessage;
+            setMode('初始定位中');
+            setRelocalizationUi(stage, status.progress, statusMessage, tone);
+            updateMapReadyUi();
+            return;
+        }
+
+        clearRelocalizationWatchdog();
+        clearRelocalizationCancelWatchdog();
+        relocalizationActive = false;
+        relocalizationCancelRequested = false;
+        cancelRelocalizationButton.disabled = true;
+        clearInitialPoseConfirmation();
+        clearNoMotionUpdateRequests();
+        initialPoseRequest = null;
+        if (initialPoseTimeout) {
+            window.clearTimeout(initialPoseTimeout);
+            initialPoseTimeout = null;
+        }
+
+        if (success) {
+            localizationReady = true;
+            localizationHealth = LOCALIZATION_HEALTH.GOOD;
+            localizationHealthReason = '';
+            clearTrackingEvidence();
+            clickMode = navigationUiMode === 'single'
+                ? 'goal'
+                : (routeDraft && routeEditing ? 'route' : 'initial');
+            // The terminal backend status contains the exact AMCL sample that
+            // passed confirmation.  Use it when rosbridge delivers the status
+            // before the separate /amcl_pose subscription, so the robot marker
+            // can never disappear merely because two topics arrived out of
+            // order.
+            if (reportedPoseValid) {
+                latestAmclPose = {
+                    ...reportedPose,
+                    stamp: latestAmclStamp
+                };
+                latestAmclReceivedAtMs = Date.now();
+            }
+            if (latestAmclPose) {
+                mapCanvas.setRobotPose(
+                    latestAmclPose.x,
+                    latestAmclPose.y,
+                    latestAmclPose.yaw
+                );
+            }
+            initialPosePreview = null;
+            setRelocalizationUi(
+                'succeeded',
+                100,
+                statusMessage,
+                sourcePose === 'rough' ? 'warning' : 'success'
+            );
+            setMode(nav2Ready ? '导航就绪' : '等待 Nav2');
+            if (sourcePose === 'rough') {
+                log('NDT/GICP 精修未被采用，但原始粗初始点已通过 AMCL 稳定验证；'
+                    + '导航已开放，请留意定位质量。');
+            }
+        } else {
+            localizationReady = false;
+            localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+            localizationHealthReason = state === 'canceled'
+                ? '三维精修已取消'
+                : '初始定位失败';
+            clickMode = 'initial';
+            setRelocalizationUi(
+                state === 'canceled' ? 'canceled' : 'failed',
+                status.progress,
+                statusMessage,
+                state === 'canceled' ? 'warning' : 'error'
+            );
+            setMode(state === 'canceled' ? '等待初始点' : '初始定位失败');
+        }
+        updateMapReadyUi();
+    }
+
+    function updateMapReadyUi() {
+        const initialButton = document.getElementById('btn-initial-mode');
+        const goalButton = document.getElementById('btn-goal-mode');
+        const routePointButton = document.getElementById('btn-route-point-mode');
+        const loadMapButton = document.getElementById('btn-load-map');
+        const routeActive = routeIsActive();
+        const multiMode = navigationUiMode === 'multi';
+        // map_server is started after the delayed perception pipeline.  Do
+        // not let an early click consume the backend activation timeout while
+        // Nav2 is still loading its lifecycle nodes.
+        loadMapButton.disabled =
+            !session || !session.connected || !nav2Ready
+            || Boolean(pendingMapName) || routeActive || navigationActive;
+        initialButton.disabled =
+            !navigationMapReady || relocalizationActive || lioFaultLatched
+            || routeActive || navigationActive;
+        // Tool selection is always allowed after map load.  Readiness is
+        // checked again at the only place that can publish /web_goal_pose.
+        goalButton.disabled =
+            !navigationMapReady || relocalizationActive || lioFaultLatched
+            || routeActive || (multiMode && (!routeDraft || !routeEditing));
+        // Never silently change a selected goal tool into the initial-pose
+        // tool.  Otherwise a transient AMCL warning makes the next map drag
+        // publish /initialpose, clears the robot marker, and looks like a
+        // localization failure.
+        initialButton.classList.toggle('choice-active', clickMode === 'initial');
+        goalButton.classList.toggle(
+            'choice-active',
+            multiMode ? clickMode === 'route' && routeEditing : clickMode === 'goal'
+        );
+        routePointButton.classList.toggle(
+            'choice-active', clickMode === 'route' && routeEditing);
+        if (navigationMapReady) {
+            if (routeActive) {
+                overlay.textContent = `多目标路径“${routeExecutionStatus.route_name}”正在执行：`
+                    + `${routeStateText(routeExecutionStatus.state)}。停止路径前不能切换地图、设置初始点或发送单目标。`;
+            } else if (navigationActive) {
+                overlay.textContent = '单点导航正在执行；停止当前导航前不能切换导航模式或重新设置初始点。'
+                    + '地图中仍可拖拽新的目标位置来替换当前目标。';
+            } else if (lioFaultLatched) {
+                overlay.textContent = 'LIO 正在执行安全恢复，机械狗已停止输出运动命令，'
+                    + '但当前导航任务与目标点仍被保留；恢复后会自动重试当前点。';
+            } else if (relocalizationActive) {
+                overlay.textContent = `${relocalizationStage.textContent}（${relocalizationProgressLabel.textContent}）。`
+                    + '精修、回退与 AMCL 验证完成前禁止发送目标；如需重设初始点，请先取消本次精修。';
+            } else if (initialPoseRequest) {
+                const sampleCount = initialPoseSampleWindow ? initialPoseSampleWindow.count : 0;
+                overlay.textContent = `初始点已发送，正在等待至少 5 个不同时间戳样本连续稳定 1.5 秒`
+                    + `（当前连续样本 ${sampleCount} 个）。`;
+            } else if (!localizationReady && initialPosePreview) {
+                overlay.textContent = initialPosePreview.published
+                    ? '图中的机器人是粗初始点预览；三维精修或 AMCL 验证未通过，'
+                        + '请查看下方错误并重新设置初始点。'
+                    : '图中的机器人仅为刚设置的粗初始点预览，精修请求尚未被后端确认；请查看下方日志。';
+            } else if (!nav2Ready) {
+                overlay.textContent = '地图已加载；可以设置初始点，目标点需等待 Nav2 完成启动。';
+            } else if (!localizationReady) {
+                overlay.textContent = '请先左键拖拽设置初始点；AMCL 确认定位后才能设置目标点。';
+            } else if (localizationHealth === LOCALIZATION_HEALTH.LOST) {
+                overlay.textContent = '定位已在机器人运动期间硬丢失，导航已急停；可等待连续稳定样本恢复，或重新设置初始点。';
+            } else if (localizationHealth === LOCALIZATION_HEALTH.DEGRADED) {
+                overlay.textContent = `定位退化（${localizationHealthReason || '正在复核'}），已禁止发送新目标；`
+                    + (clickMode === 'goal' || clickMode === 'route'
+                        ? '当前仍保留目标点工具，不会改发初始点；请等待恢复或手动选择“设置初始点”。'
+                        : '机器人静止且无导航任务时不会触发急停。');
+            } else if (idleStaleLocalizationAllowed()) {
+                overlay.textContent = '机器人静止时 AMCL 暂无新位姿，已保留上一次正常定位；'
+                    + '现在可以设置目标，开始运动后会重新计时监控 AMCL。';
+            } else if (!amclDataFresh()) {
+                overlay.textContent = '机器人正在运动但 AMCL 暂无新位姿，已暂停发送新目标并等待新数据。';
+            } else {
+                const poseLabel = clickMode === 'initial'
+                    ? '初始点'
+                    : (clickMode === 'route' ? '路径目标点' : '导航目标');
+                overlay.textContent = `左键拖拽设置“${poseLabel}”的位置和朝向。右键拖拽平移，滚轮缩放。`;
+            }
+            overlay.classList.remove('blocked');
+            mapCanvas.setPoseInteraction(
+                !relocalizationActive && !lioFaultLatched && !routeActive,
+                handleMapPose
+            );
+        } else {
+            overlay.textContent = '请先在右侧选择并加载一张已保存地图，然后设置初始点或导航目标。';
+            overlay.classList.add('blocked');
+            mapCanvas.setPoseInteraction(false, null);
+        }
+        updateRouteUi(false);
+    }
+
+    function setClickMode(mode) {
+        if (!navigationMapReady) { log('请先选择并成功加载地图。'); return; }
+        if (navigationActive) {
+            log('单点导航正在执行；请先停止当前导航，再切换地图交互工具。');
+            return;
+        }
+        if (routeIsActive()) {
+            log('多目标路径正在执行；请先点击“停止路径”，再设置初始点、单目标或编辑路径。');
+            return;
+        }
+        if (lioFaultLatched) {
+            log('LIO 正在自动恢复；请等待进程内重置、三维重定位和 AMCL 验证完成。');
+            return;
+        }
+        if (relocalizationActive) {
+            log('三维初始定位正在进行；请等待完成，或先点击“取消本次精修”。');
+            return;
+        }
+        if (mode === 'goal' && navigationUiMode !== 'single') mode = 'route';
+        if (mode === 'route' && navigationUiMode !== 'multi') {
+            log('请先切换到“多点导航”模式。');
+            return;
+        }
+        if (mode === 'route' && (!routeDraft || !routeEditing)) {
+            log('请先新建路径，或选择已有路径后点击“编辑”。');
+            return;
+        }
+        clickMode = mode;
+        document.getElementById('btn-initial-mode').classList.toggle('choice-active', mode === 'initial');
+        document.getElementById('btn-goal-mode').classList.toggle(
+            'choice-active',
+            mode === (navigationUiMode === 'multi' ? 'route' : 'goal')
+        );
+        document.getElementById('btn-route-point-mode').classList.toggle(
+            'choice-active', mode === 'route');
+        updateMapReadyUi();
+        if (mode === 'initial') {
+            log('已切换为：设置初始点。下一次地图拖拽会自动启动 NDT/GICP 精修。');
+        } else if (mode === 'route') {
+            if (routeReplaceIndex === null) {
+                log('已切换为：在地图上按顺序添加路径目标点。');
+            }
+        } else if (goalReadinessIssue()) {
+            log(`已选择“设置导航目标”，但暂不能发送：${goalReadinessIssue()}。`
+                + '地图拖拽只会被忽略，绝不会改发初始位姿。');
+        } else {
+            log('已切换为：设置导航目标。');
+        }
+    }
+
+    async function publishInitialPose(x, y, yaw) {
+        if (lioFaultLatched) {
+            log('LIO 自动恢复尚未完成，暂不能设置新的初始点。'
+                + '若最终显示恢复失败，请停止任务并检查雷达、IMU 和机械安装。');
+            return false;
+        }
+        if (relocalizationActive) {
+            log('已有一项三维初始定位正在执行；请先等待完成或取消。');
+            return false;
+        }
+        if (!latestOdometryStamp) {
+            log('尚未收到里程计时间戳，请等待雷达与 LIO 启动后重试。');
+            return false;
+        }
+        const requestGeneration = ++localizationGeneration;
+        const requestMapName = loadedMapName;
+        const requestSession = session;
+        localizationReady = false;
+        localizationHealth = LOCALIZATION_HEALTH.DEGRADED;
+        localizationHealthReason = '等待初始定位';
+        clearRelocalizationWatchdog();
+        clearInitialPoseConfirmation();
+        clearNoMotionUpdateRequests();
+        clearTrackingEvidence();
+        initialPoseRequest = null;
+        latestAmclPose = null;
+        if (initialPoseTimeout) {
+            window.clearTimeout(initialPoseTimeout);
+            initialPoseTimeout = null;
+        }
+        // Draw immediately after the drag.  Until cancellation succeeds and
+        // the coordinator request is published this remains an explicitly
+        // uncommitted preview, so the UI never goes blank while waiting.
+        initialPosePreview = { x, y, yaw, published: false };
+        mapCanvas.setRobotPose(x, y, yaw);
+        mapCanvas.clearGoalPose();
+        relocalizationActive = true;
+        // Cancellation is not meaningful until the request is published.
+        // This also disables duplicate map drags while Nav2 is stopping.
+        relocalizationCancelRequested = true;
+        setRelocalizationUi(
+            'queued',
+            0,
+            '正在停止旧导航任务，确认停止后将提交三维精修请求。'
+        );
+        updateMapReadyUi();
+        if (!await cancelNavigation(true, true)) {
+            if (requestGeneration !== localizationGeneration) return false;
+            relocalizationActive = false;
+            relocalizationCancelRequested = false;
+            localizationHealthReason = '旧导航未停止';
+            setRelocalizationUi(
+                'failed',
+                0,
+                '未能确认旧导航目标已经停止，未启动三维精修。',
+                'error'
+            );
+            log('未能确认旧导航目标已经停止，未启动三维精修；图标仅保留为本次粗初始点预览。');
+            updateMapReadyUi();
+            return false;
+        }
+        if (requestGeneration !== localizationGeneration
+            || session !== requestSession
+            || !session.connected
+            || loadedMapName !== requestMapName
+            || !navigationMapReady) {
+            return false;
+        }
+        const tfSafeInitialPoseStamp = backdateRosStamp(latestOdometryStamp);
+        if (!tfSafeInitialPoseStamp) {
+            relocalizationActive = false;
+            relocalizationCancelRequested = false;
+            setRelocalizationUi('failed', 0, '里程计时间戳无效，未启动三维精修。', 'error');
+            log('里程计时间戳无效，未启动三维精修。');
+            updateMapReadyUi();
+            return false;
+        }
+        const requestMessage = UI.initialPoseMessage(x, y, yaw, tfSafeInitialPoseStamp);
+        relocalizationCancelRequested = false;
+        relocalizationRequestMapName = requestMapName;
+        relocalizationRequestStampKey = rosStampKey(requestMessage.header.stamp);
+        relocalizationRequestId = createRelocalizationRequestId();
+        relocalizationLastLogKey = '';
+        // This remains a visual preview only.  The browser never publishes
+        // /initialpose: the coordinator applies either the validated refined
+        // result or the original rough pose and owns both AMCL attempts.
+        initialPosePreview = { x, y, yaw, published: true };
+        setMode('初始定位中');
+        setRelocalizationUi(
+            'queued',
+            0,
+            '粗初始点已提交；三维精修最多运行约 10 秒，随后由后端验证 AMCL。',
+            ''
+        );
+        updateMapReadyUi();
+        const published = session.publish(
+            RELOCALIZATION_REQUEST_TOPIC,
+            UI.TYPES.relocalizationRequest,
+            {
+                rough_pose: requestMessage,
+                map_name: requestMapName,
+                request_id: relocalizationRequestId
+            }
+        );
+        if (published) {
+            armRelocalizationWatchdog(
+                requestGeneration,
+                requestMapName,
+                relocalizationRequestStampKey,
+                relocalizationRequestId
+            );
+            return true;
+        }
+
+        clearRelocalizationWatchdog();
+        relocalizationActive = false;
+        localizationHealthReason = '精修请求发送失败';
+        setRelocalizationUi(
+            'failed',
+            0,
+            '无法向重定位协调节点发送粗初始点，请检查 ROS 连接和后端节点。',
+            'error'
+        );
+        updateMapReadyUi();
+        return false;
+    }
+
+    async function handleMapPose(x, y, yaw) {
+        if (!navigationMapReady || !session || !session.connected) {
+            log('地图尚未加载完成，已忽略本次地图操作。');
+            return;
+        }
+        if (clickMode === 'initial') {
+            if (!await publishInitialPose(x, y, yaw)) return;
+            log(`已提交粗初始位姿：(${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${(yaw * 180 / Math.PI).toFixed(0)}°。`
+                + '图标当前为粗初始点预览，正在等待 NDT/GICP 精修和 AMCL 确认。');
+        } else if (clickMode === 'route') {
+            if (!routeDraft || !routeEditing || routeIsActive()) {
+                log('当前没有可编辑的路径，已忽略本次地图操作。');
+                return;
+            }
+            const replacing = Number.isInteger(routeReplaceIndex)
+                && routeReplaceIndex >= 0
+                && routeReplaceIndex < routeDraft.points.length;
+            if (replacing) {
+                const point = routeDraft.points[routeReplaceIndex];
+                point.x = x;
+                point.y = y;
+                point.yaw = yaw;
+                log(`已重设目标点 ${routeReplaceIndex + 1}：(${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${(yaw * 180 / Math.PI).toFixed(0)}°。`);
+                routeReplaceIndex = null;
+            } else {
+                const index = routeDraft.points.length;
+                routeDraft.points.push({
+                    id: 0,
+                    sequence: index,
+                    name: `目标点 ${index + 1}`,
+                    x,
+                    y,
+                    yaw,
+                    dwell_seconds: 0
+                });
+                log(`已添加目标点 ${index + 1}：(${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${(yaw * 180 / Math.PI).toFixed(0)}°。`);
+            }
+            markRouteDirty();
+            updateRouteUi(true);
+        } else {
+            const goalGeneration = localizationGeneration;
+            const readinessIssue = goalReadinessIssue();
+            if (readinessIssue) {
+                log(`暂不能发送导航目标：${readinessIssue}；已忽略本次目标，`
+                    + '不会改发初始位姿。');
+                updateMapReadyUi();
+                return;
+            }
+            if (goalGeneration !== localizationGeneration
+                || !localizationHealthyForControl()) {
+                log('定位状态已变化，本次目标未发送。');
+                updateMapReadyUi();
+                return;
+            }
+            clearEmergencyStop();
+            beginMotionLocalizationWatch();
+            navigationActive = true;
+            navigationActiveKnown = true;
+            session.publish('/web_goal_pose', UI.TYPES.poseStamped, UI.goalPoseMessage(x, y, yaw));
+            mapCanvas.setGoalPose(x, y, yaw);
+            log(`已设置导航目标：(${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${(yaw * 180 / Math.PI).toFixed(0)}°。`);
+            updateMapReadyUi();
+        }
+    }
+
+    async function resetInitialPose() {
+        if (!navigationMapReady) { log('请先加载地图后再复位初始位姿。'); return; }
+        if (!await publishInitialPose(0, 0, 0)) return;
+        log('已提交原点作为粗初始位姿，正在自动执行三维精修。');
+    }
+
+    async function setNavigationMode() {
+        if (!session || !session.connected) return false;
+        setMode('启动中');
+        try {
+            const result = await session.call('/control_launch', UI.TYPES.controlLaunch, {
+                action: 'start', package_name: 'car_vel', launch_type: 'car_vel'
+            });
+            if (!result.success) throw new Error(result.message || '启动管理器未返回成功');
+            setMode('等待 Nav2');
+            log(`导航模式已启动：${result.message || '成功'}`);
+            return true;
+        } catch (error) {
+            setMode('启动失败');
+            log(`导航模式启动失败：${error.message || error}`);
+            return false;
+        }
+    }
+
+    async function refreshMaps(preferred) {
+        if (!session || !session.connected) return;
+        try {
+            const result = await session.call('/get_map_list', UI.TYPES.mapList, {});
+            if (!result.success) throw new Error(result.message || '读取地图列表失败');
+            const select = document.getElementById('map-selector');
+            const wanted = preferred || loadedMapName || select.value;
+            select.innerHTML = '<option value="">请选择已保存地图</option>';
+            (result.map_names || []).forEach((name) => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                select.appendChild(option);
+            });
+            if (wanted && [...select.options].some((option) => option.value === wanted)) select.value = wanted;
+            log(`已读取 ${result.map_names ? result.map_names.length : 0} 张已保存地图。`);
+        } catch (error) {
+            log(`读取地图列表失败：${error.message || error}`);
+        }
+    }
+
+    async function loadSelectedMap() {
+        const mapName = selectedMap();
+        if (routeIsActive()) {
+            log('多目标路径正在执行，必须先停止路径导航后才能切换地图。');
+            document.getElementById('map-selector').value = loadedMapName;
+            return;
+        }
+        if (!nav2Ready) {
+            log('Nav2 尚未完成启动，请等待“导航就绪”后再加载地图。');
+            updateMapReadyUi();
+            return;
+        }
+        clearPendingMapLoad();
+        if (!mapName) { log('请先选择一张已保存地图。'); return; }
+        if (relocalizationActive) {
+            requestRelocalizationCancel('切换地图前正在取消本次三维精修。');
+            log('请等待取消完成后，再次点击“加载此地图”。');
+            return;
+        }
+        const cancellationConfirmed = await cancelNavigation(true, true);
+        if (!cancellationConfirmed) {
+            log('未能确认旧导航目标已经停止，为安全起见已取消切换地图。');
+            return;
+        }
+        resetLocalizationState();
+        pendingMapName = mapName;
+        pendingMapRequestAccepted = false;
+        navigationMapReady = false;
+        updateMapReadyUi();
+        document.getElementById('btn-load-map').disabled = true;
+        document.getElementById('loaded-map-display').textContent = '校验中';
+        setRelocalizationUi(
+            '正在校验地图',
+            0,
+            '正在检查同名 PCD、新版定位元数据、地图几何信息与文件完整性。'
+        );
+        try {
+            const result = await session.call('/switch_map', UI.TYPES.switchMap, { map_name: mapName });
+            if (!result.success) throw new Error(result.message || '地图加载服务返回失败');
+            // /switch_map now returns only after map_server's final LoadMap
+            // result. The state topic may have arrived just before this
+            // service response, so wait for its next periodic confirmation.
+            if (!pendingMapName && loadedMapName === mapName && navigationMapReady) return;
+            pendingMapRequestAccepted = true;
+            navigationMapReady = false;
+            document.getElementById('loaded-map-display').textContent = '等待确认';
+            updateMapReadyUi();
+            mapLoadTimeout = window.setTimeout(() => {
+                if (pendingMapName !== mapName) return;
+                clearPendingMapLoad();
+                navigationMapReady = false;
+                document.getElementById('loaded-map-display').textContent = '加载超时';
+                document.getElementById('btn-load-map').disabled = false;
+                setRelocalizationUi(
+                    '地图加载超时',
+                    0,
+                    `地图“${mapName}”在 30 秒内没有返回加载完成确认。`,
+                    'error'
+                );
+                updateMapReadyUi();
+                log(`地图“${mapName}”在 30 秒内没有返回加载完成确认。`);
+            }, 30000);
+            log(`map_server 已确认加载地图“${mapName}”；正在同步当前地图状态。`);
+        } catch (error) {
+            clearPendingMapLoad();
+            loadedMapName = '';
+            navigationMapReady = false;
+            document.getElementById('loaded-map-display').textContent = '加载失败';
+            document.getElementById('btn-load-map').disabled = false;
+            setRelocalizationUi(
+                '地图不可导航',
+                0,
+                error.message || error,
+                'error'
+            );
+            updateMapReadyUi();
+            log(`加载地图失败：${error.message || error}`);
+        }
+    }
+
+    session = new UI.RosSession({
+        log,
+        onState: (connected, text) => {
+            UI.setConnectionStatus(connectionStatus, connected, text);
+            if (!connected) {
+                UI.setBatteryDisconnected(batteryStatus);
+                nav2Ready = false;
+                navigationActiveKnown = false;
+                resolveCancelWaiters(false);
+                resetLocalizationState();
+                updateMapReadyUi();
+            }
+        },
+        onReady: async (activeSession) => {
+            UI.subscribeDogStatus(activeSession, batteryStatus);
+            nav2Ready = false;
+            navigationActiveKnown = false;
+            latestOdometryStamp = null;
+            latestAmclStamp = null;
+            latestAmclReceivedAtMs = 0;
+            latestOdometryMotion = null;
+            resetLocalizationState();
+            updateMapReadyUi();
+            activeSession.subscribe('/map', UI.TYPES.occupancyGrid, (message) => {
+                if (message && message.info && message.data) mapCanvas.setMap(message.info, message.data);
+            });
+            activeSession.subscribe('/Odometry', UI.TYPES.odometry, (message) => {
+                const stamp = message && message.header && message.header.stamp;
+                if (!stamp) return;
+                latestOdometryStamp = {
+                    sec: Number(stamp.sec),
+                    nanosec: Number(stamp.nanosec)
+                };
+                const twist = message && message.twist && message.twist.twist;
+                const linear = twist && twist.linear;
+                const angular = twist && twist.angular;
+                const linearX = Number(linear && linear.x);
+                const linearY = Number(linear && linear.y);
+                const angularZ = Number(angular && angular.z);
+                latestOdometryMotion = {
+                    receivedAtMs: Date.now(),
+                    linearSpeed: Math.hypot(
+                        Number.isFinite(linearX) ? linearX : 0,
+                        Number.isFinite(linearY) ? linearY : 0
+                    ),
+                    angularSpeed: Math.abs(Number.isFinite(angularZ) ? angularZ : 0)
+                };
+            });
+            activeSession.subscribe(
+                '/lio_health',
+                UI.TYPES.string,
+                handleLioHealth
+            );
+            activeSession.subscribe('/current_map_info', UI.TYPES.currentMap, (message) => {
+                confirmMapLoaded(message);
+            });
+            activeSession.subscribe(
+                RELOCALIZATION_STATUS_TOPIC,
+                UI.TYPES.string,
+                handleRelocalizationStatus
+            );
+            activeSession.subscribe('/amcl_pose', UI.TYPES.poseWithCovariance, (message) => {
+                const pose = message && message.pose && message.pose.pose;
+                if (!pose || !navigationMapReady) return;
+                const yaw = UI.yawFromQuaternion(pose.orientation);
+                const uncertainty = amclStandardDeviations(message);
+                const stamp = message && message.header && message.header.stamp;
+                const amclStamp = stamp
+                    ? Number(stamp.sec) + Number(stamp.nanosec) * 1e-9
+                    : NaN;
+                // Duplicate or out-of-order messages are intentionally ignored:
+                // neither initial confirmation nor health timers may advance
+                // unless AMCL supplies a strictly newer ROS timestamp.
+                if (!Number.isFinite(amclStamp)
+                    || (latestAmclStamp !== null && amclStamp <= latestAmclStamp + 1e-6)) return;
+                const receivedAtMs = Date.now();
+                latestAmclStamp = amclStamp;
+                latestAmclReceivedAtMs = receivedAtMs;
+                amclStaleSinceMs = null;
+                latestAmclPose = {
+                    x: pose.position.x,
+                    y: pose.position.y,
+                    yaw,
+                    stamp: amclStamp
+                };
+                if (initialPoseRequest) {
+                    if (initialPoseRequest.generation !== localizationGeneration) return;
+                    if (initialPoseRequest.amclStampAtRequest !== null
+                        && amclStamp <= initialPoseRequest.amclStampAtRequest + 1e-6) return;
+                    // Laser/AMCL stamps can trail odometry by several tens of
+                    // milliseconds.  Reject genuinely old samples while
+                    // allowing that normal sensor pipeline delay.
+                    if (amclStamp + 0.5 < initialPoseRequest.requestStamp) return;
+                    const distance = Math.hypot(
+                        pose.position.x - initialPoseRequest.x,
+                        pose.position.y - initialPoseRequest.y
+                    );
+                    const yawError = angleDifference(yaw, initialPoseRequest.yaw);
+                    if (initialPoseSampleWindow
+                        && amclStamp - initialPoseSampleWindow.lastStamp > INITIAL_SAMPLE_MAX_GAP_SECONDS) {
+                        clearInitialPoseConfirmation();
+                    }
+                    const positionConsistent = !initialPoseSampleWindow
+                        || Math.hypot(
+                            pose.position.x - initialPoseSampleWindow.anchorX,
+                            pose.position.y - initialPoseSampleWindow.anchorY
+                        ) <= INITIAL_POSITION_SPREAD_LIMIT;
+                    const yawConsistent = !initialPoseSampleWindow
+                        || angleDifference(yaw, initialPoseSampleWindow.anchorYaw) <= INITIAL_YAW_SPREAD_LIMIT;
+                    const stable = uncertainty
+                        && uncertainty.position <= INITIAL_POSITION_STD_LIMIT
+                        && uncertainty.yaw <= INITIAL_YAW_STD_LIMIT
+                        && distance <= INITIAL_POSITION_ERROR_LIMIT
+                        && yawError <= INITIAL_YAW_ERROR_LIMIT
+                        && positionConsistent
+                        && yawConsistent;
+                    if (!stable) {
+                        clearInitialPoseConfirmation();
+                        updateMapReadyUi();
+                        return;
+                    }
+                    if (!initialPoseSampleWindow) {
+                        initialPoseSampleWindow = {
+                            firstStamp: amclStamp,
+                            lastStamp: amclStamp,
+                            count: 1,
+                            anchorX: pose.position.x,
+                            anchorY: pose.position.y,
+                            anchorYaw: yaw,
+                            candidate: { x: pose.position.x, y: pose.position.y, yaw }
+                        };
+                    } else {
+                        initialPoseSampleWindow.lastStamp = amclStamp;
+                        initialPoseSampleWindow.count += 1;
+                        initialPoseSampleWindow.candidate = { x: pose.position.x, y: pose.position.y, yaw };
+                    }
+                    const confirmationDuration = initialPoseSampleWindow.lastStamp
+                        - initialPoseSampleWindow.firstStamp;
+                    if (initialPoseSampleWindow.count >= INITIAL_CONFIRMATION_MIN_SAMPLES
+                        && confirmationDuration >= INITIAL_CONFIRMATION_HOLD_SECONDS) {
+                        const confirmedPose = {
+                            ...initialPoseSampleWindow.candidate,
+                            sampleCount: initialPoseSampleWindow.count,
+                            duration: confirmationDuration
+                        };
+                        confirmInitialPose(initialPoseRequest.generation, confirmedPose);
+                    } else {
+                        updateMapReadyUi();
+                    }
+                }
+                if (routeIsActive() && !localizationReady) {
+                    // A refreshed browser intentionally does not recreate the
+                    // localization safety state, but the persistent backend
+                    // route is still running.  Keep its live AMCL marker
+                    // visible without enabling any new navigation controls.
+                    mapCanvas.setRobotPose(pose.position.x, pose.position.y, yaw);
+                } else if (localizationReady) {
+                    const displayPose = monitorLocalizationSample(
+                        uncertainty,
+                        {
+                            x: pose.position.x,
+                            y: pose.position.y,
+                            yaw,
+                            stamp: amclStamp
+                        },
+                        receivedAtMs
+                    );
+                    if (displayPose && localizationHealth !== LOCALIZATION_HEALTH.LOST) {
+                        mapCanvas.setRobotPose(pose.position.x, pose.position.y, yaw);
+                    }
+                }
+            });
+            activeSession.subscribe('/goal_pose_status', UI.TYPES.string, (message) => {
+                const status = message && message.data;
+                if (!status || status === 'ready') return;
+                log(goalStatusText[status] || `导航状态：${status}`);
+                if (status === 'nav2_ready') {
+                    nav2Ready = true;
+                    refreshModeFromLocalization();
+                    updateMapReadyUi();
+                } else if (status === 'waiting_for_nav2') {
+                    nav2Ready = false;
+                    setMode('等待 Nav2');
+                    updateMapReadyUi();
+                } else if (status === 'nav2_start_timeout') {
+                    nav2Ready = false;
+                    setMode('启动失败');
+                    updateMapReadyUi();
+                } else if (status === 'goal_succeeded' || status === 'goal_canceled') {
+                    setMode('导航就绪');
+                } else if (status === 'navigating') {
+                    setMode('导航执行中');
+                } else if (status === 'goal_aborted' || status === 'goal_rejected' || status === 'goal_failed') {
+                    setMode('导航异常');
+                }
+                // A late action result must never override the higher-priority
+                // localization safety state.
+                if (localizationReady && localizationHealth !== LOCALIZATION_HEALTH.GOOD) {
+                    refreshModeFromLocalization();
+                }
+                if (['goal_queued', 'sending_goal', 'navigating', 'replacing_goal', 'canceling_goal'].includes(status)) {
+                    navigationActive = true;
+                    navigationActiveKnown = true;
+                }
+                if (status === 'cancel_failed') resolveCancelWaiters(false);
+                if (['goal_succeeded', 'goal_canceled', 'goal_aborted', 'goal_rejected', 'goal_failed', 'send_failed'].includes(status)) {
+                    navigationActive = false;
+                    navigationActiveKnown = true;
+                    resolveCancelWaiters(true);
+                }
+                if (status === 'goal_succeeded') mapCanvas.clearGoalPose();
+                updateMapReadyUi();
+            });
+            activeSession.subscribe('/nav2_ready', UI.TYPES.bool, (message) => {
+                const ready = Boolean(message && message.data);
+                if (ready === nav2Ready) return;
+                nav2Ready = ready;
+                if (ready) refreshModeFromLocalization();
+                else setMode('等待 Nav2');
+                updateMapReadyUi();
+            });
+            activeSession.subscribe('/navigation_active', UI.TYPES.bool, (message) => {
+                navigationActive = Boolean(message && message.data);
+                navigationActiveKnown = true;
+                if (!navigationActive) resolveCancelWaiters(true);
+                if (localizationReady && localizationHealth !== LOCALIZATION_HEALTH.GOOD) {
+                    refreshModeFromLocalization();
+                }
+                updateMapReadyUi();
+            });
+            activeSession.subscribe(
+                '/route_execution_status',
+                UI.TYPES.routeExecutionStatus,
+                handleRouteExecutionStatus
+            );
+            activeSession.subscribe('/route_navigation_log', UI.TYPES.string, (message) => {
+                if (!message || !message.data) return;
+                if (message.data === '__ROUTE_LOG_CLEAR__') {
+                    document.getElementById('log-area').replaceChildren();
+                    return;
+                }
+                log(message.data);
+            });
+            activeSession.call(
+                '/get_route_execution_state',
+                UI.TYPES.getRouteExecutionState,
+                {}
+            ).then((result) => {
+                if (result && result.status) handleRouteExecutionStatus(result.status);
+            }).catch((error) => {
+                log(`读取路径执行状态失败：${error.message || error}`);
+            });
+            await Promise.all([setNavigationMode(), refreshMaps(loadedMapName)]);
+        }
+    });
+
+    document.getElementById('btn-refresh-maps').addEventListener('click', () => refreshMaps());
+    document.getElementById('btn-load-map').addEventListener('click', loadSelectedMap);
+    document.getElementById('map-selector').addEventListener('change', () => {
+        if (routeIsActive()) {
+            document.getElementById('map-selector').value = loadedMapName;
+            log('多目标路径正在执行，必须先停止路径导航后才能切换地图。');
+            return;
+        }
+        if (selectedMap() !== loadedMapName) {
+            requestRelocalizationCancel('地图选择已改变，正在取消本次三维精修。', false);
+            cancelNavigation();
+            clearPendingMapLoad();
+            navigationMapReady = false;
+            resetLocalizationState();
+            routeListMapName = '';
+            savedRoutes = [];
+            setRouteDraft(null, false);
+            document.getElementById('btn-load-map').disabled = false;
+            updateMapReadyUi();
+        }
+    });
+    document.getElementById('btn-initial-mode').addEventListener('click', () => setClickMode('initial'));
+    document.getElementById('btn-goal-mode').addEventListener('click', () => {
+        routeReplaceIndex = null;
+        setClickMode(navigationUiMode === 'multi' ? 'route' : 'goal');
+    });
+    document.getElementById('btn-single-navigation').addEventListener(
+        'click',
+        () => setNavigationUiMode('single')
+    );
+    document.getElementById('btn-multi-navigation').addEventListener(
+        'click',
+        () => setNavigationUiMode('multi')
+    );
+    document.getElementById('btn-refresh-routes').addEventListener('click', () => refreshRoutes());
+    document.getElementById('btn-new-route').addEventListener('click', startNewRoute);
+    document.getElementById('btn-edit-route').addEventListener('click', editSelectedRoute);
+    document.getElementById('btn-delete-route').addEventListener('click', deleteSelectedRoute);
+    document.getElementById('btn-save-route').addEventListener('click', saveRouteDraft);
+    document.getElementById('btn-route-point-mode').addEventListener('click', () => {
+        routeReplaceIndex = null;
+        setClickMode('route');
+    });
+    document.getElementById('route-selector').addEventListener('change', (event) => {
+        const routeId = Number(event.target.value);
+        if (routeDraftDirty
+            && !window.confirm('当前未保存的路径修改将丢失，是否切换？')) {
+            event.target.value = routeDraft && routeDraft.id ? String(routeDraft.id) : '';
+            return;
+        }
+        const selectedRoute = savedRoutes.find((route) => route.id === routeId);
+        setRouteDraft(selectedRoute || null, false);
+    });
+    document.getElementById('route-name').addEventListener('input', (event) => {
+        if (!routeDraft || !routeEditing) return;
+        routeDraft.name = event.target.value;
+        markRouteDirty();
+    });
+    document.getElementById('route-continuous').addEventListener('change', updateRouteUi);
+    document.getElementById('btn-start-route').addEventListener('click', startRouteNavigation);
+    document.getElementById('btn-pause-route').addEventListener('click', () => controlRoute('pause'));
+    document.getElementById('btn-resume-route').addEventListener('click', () => controlRoute('resume'));
+    document.getElementById('btn-skip-route').addEventListener('click', () => controlRoute('skip'));
+    document.getElementById('btn-stop-route').addEventListener('click', () => controlRoute('stop'));
+    cancelRelocalizationButton.addEventListener('click', () => {
+        requestRelocalizationCancel('用户已请求取消本次三维初始定位精修。');
+        updateMapReadyUi();
+    });
+    window.addEventListener('beforeunload', () => {
+        if (localizationWatchdogTimer) window.clearInterval(localizationWatchdogTimer);
+        clearRelocalizationWatchdog();
+        clearNoMotionUpdateRequests();
+        requestRelocalizationCancel('页面即将关闭，正在取消三维精修。', false);
+        // Route execution is owned by the persistent backend and intentionally
+        // survives browser refresh/close. Temporary single-goal navigation
+        // remains a page-scoped safety control.
+        if (routeExecutionStatus.mode === 'single') {
+            cancelNavigation(false, false, true);
+        }
+    });
+
+    localizationWatchdogTimer = window.setInterval(monitorAmclFreshness, 250);
+    updateMapReadyUi();
+    log('导航页面已加载（单点/多点模式版 2026-07-30），正在连接 ROS2。');
+    session.connect();
+})();
+</script>
+</body>
+</html>
+
