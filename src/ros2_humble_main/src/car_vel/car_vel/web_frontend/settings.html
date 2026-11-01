@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>设置 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260825-system-settings">
+    <link rel="stylesheet" href="settings.css?v=20261020-mapping-filter">
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <script src="robot_ui_common.js?v=20261022-web-preview"></script>
+    <script src="robot_body_settings.js?v=20260911-zsl1"></script>
+    <script src="m701_settings.js?v=20260916-connection"></script>
+    <script src="lidar_settings.js?v=20260916-network"></script>
+    <script src="mapping_filter_settings.js?v=20261020-switch"></script>
+    <script src="camera_source_settings.js?v=20261015-source"></script>
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div class="brand">四足机器人巡检</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a href="navigation.html">地形导航</a>
+            <a href="campus_navigation.html">园区导航</a>
+            <a href="inspection.html">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
+            <a href="remote_control.html">遥控</a>
+            <a href="camera.html">USB相机</a>
+            <a class="active" href="settings.html" aria-current="page">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main class="settings-workspace">
+        <div class="settings-heading">
+            <div>
+                <h1>系统设置</h1>
+                <p>选择机器人本体与普通摄像头，设置建图过滤、巡检导航和安全距离，并管理小电脑电源。</p>
+            </div>
+            <div id="power-state" class="power-state" aria-live="polite">
+                <span class="label">电源控制服务</span>
+                <strong id="power-state-value">正在等待状态…</strong>
+            </div>
+        </div>
+        <section class="navigation-mode-section" aria-labelledby="robot-body-title">
+            <h2 id="robot-body-title">机器人本体</h2>
+            <p id="robot-body-state" role="status">正在读取当前本体…</p>
+            <form id="robot-body-form" onsubmit="return false">
+                <div class="body-fields">
+                    <label>选择本体<select id="robot-body-select">
+                        <option value="xingji">星玑</option>
+                        <option value="gangben_zsl1">钢镚 ZSL-1 点足</option>
+                    </select></label>
+                    <label>机器人 IP<input id="robot-body-ip" type="text" required autocomplete="off"></label>
+                    <label><span id="robot-body-port-label">控制端口</span>
+                        <input id="robot-body-port" type="number" min="1024" max="65535" step="1" required></label>
+                </div>
+                <div id="robot-body-sdk-options" hidden>
+                    <div class="body-fields">
+                        <label>小电脑连接钢镚的网卡 IP<input id="robot-body-local-ip" type="text" autocomplete="off" placeholder="按实际网卡填写，如 192.168.168.15"></label>
+                        <label>前后最高速度（m/s）<input id="robot-body-max-vx" type="number" min="0.1" max="0.8" step="0.05"></label>
+                        <label>横移最高速度（m/s）<input id="robot-body-max-vy" type="number" min="0.1" max="0.3" step="0.05"></label>
+                        <label>最高转向速度（rad/s）<input id="robot-body-max-yaw" type="number" min="0.1" max="1" step="0.05"></label>
+                    </div>
+                    <p>机器人端需事先把 SDK 回传地址设置为上述小电脑 IP；网页不会修改机器人网络。钢镚占用 SDK 时手柄不能正常接管。</p>
+                </div>
+                <label><input id="robot-body-navigation-verified" type="checkbox">
+                    已核对并校准本体导航参数：机器人碰撞轮廓、雷达安装位置及速度。确认现有导航配置适用于所选本体。</label>
+                <p>未确认时可使用基础遥控，但不能启动导航。更换尺寸或雷达安装位置后，须先修改对应导航配置再确认；此勾选不会自动修改几何参数。</p>
+                <button id="robot-body-apply" type="button" disabled>应用本体 / 重新连接</button>
+            </form>
+            <p id="robot-body-note" class="hint">切换不自动站立、不恢复任务。</p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="web-preview-title">
+            <h2 id="web-preview-title">网页传输预览</h2>
+            <p>仅调整当前浏览器接收的数据，不改变本地识别、测温、原始地图、导航或停车保护。</p>
+            <label>网络档位 <select id="web-preview-profile">
+                <option value="remote">5G远程：普通视频最大640×360 / 5FPS / JPEG55；全局点云15cm、最多2万点、3秒更新</option>
+                <option value="lan">局域网高清：视频最大1280×720 / 15FPS / JPEG82；点云5cm、最多12万点</option>
+            </select></label>
+            <button id="web-preview-save" type="button">保存预览档位</button>
+            <p id="web-preview-result" role="status">配置保存在当前浏览器；保存后请重新进入业务页面。热图不放大，默认5G只开一路视频，可在页面右上角切换。</p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="ordinary-camera-title">
+            <h2 id="ordinary-camera-title">普通摄像头来源</h2>
+            <p>统一用于遥控、相机页面、巡检普通画面和视觉识别；热成像与气体检测保持独立。</p>
+            <p id="ordinary-camera-state" role="status" aria-live="polite">正在读取普通摄像头配置…</p>
+            <form id="ordinary-camera-form" onsubmit="return false">
+                <div class="body-fields">
+                    <label>画面来源<select id="ordinary-camera-source">
+                        <option value="usb">USB 摄像头</option>
+                        <option value="body">狗本体摄像头</option>
+                    </select></label>
+                </div>
+                <div id="ordinary-camera-usb-fields">
+                    <div class="body-fields">
+                        <label>已发现的普通 USB 摄像头<select id="ordinary-camera-device"><option value="">正在枚举…</option></select></label>
+                        <label>USB 设备路径<input id="ordinary-camera-path" type="text" autocomplete="off" placeholder="推荐 /dev/v4l/by-id/…-video-index0"></label>
+                    </div>
+                    <details><summary>USB 采集参数</summary>
+                        <div class="body-fields">
+                            <label>宽度<input id="ordinary-camera-width" type="number" min="160" max="3840" step="1"></label>
+                            <label>高度<input id="ordinary-camera-height" type="number" min="120" max="2160" step="1"></label>
+                            <label>帧率<input id="ordinary-camera-fps" type="number" min="1" max="60" step="1"></label>
+                        </div>
+                    </details>
+                    <p class="hint">优先使用稳定设备路径。不会自动改选其他设备；海康热成像和元数据接口不作为普通摄像头候选。</p>
+                </div>
+                <div id="ordinary-camera-body-fields" class="body-fields" hidden>
+                    <label>本体图传地址<input id="ordinary-camera-url" type="url" autocomplete="off" placeholder="http://127.0.0.1:8081/camera"></label>
+                    <p class="hint">默认复用原本体 HTTP 图传代理，原上游为 http://192.168.96.2:8080。这里只申请画面，不启用遥控、站立或运动；支持 JPEG/MJPEG，不使用海康云台 SDK。其他本体需填写实际已运行的 HTTP 图传地址。</p>
+                </div>
+                <button id="ordinary-camera-refresh" type="button">刷新配置和 USB 设备</button>
+                <button id="ordinary-camera-save" type="button" disabled>保存并切换</button>
+            </form>
+            <p>请先结束巡检并停止识别。仅保存所选来源的参数；首帧确认后保存，切换失败恢复原来源。设置保存在小电脑，重启后沿用，不随浏览器改变。</p>
+            <p id="ordinary-camera-result" role="status" aria-live="polite"></p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="lidar-title">
+            <h2 id="lidar-title">雷达网络（MID360s）</h2>
+            <p>建图和导航共用此配置，不随机器人本体切换。</p>
+            <p id="lidar-state" role="status" aria-live="polite">等待雷达配置服务…</p>
+            <form id="lidar-form" onsubmit="return false">
+                <div class="body-fields">
+                    <label>雷达 IP<input id="lidar-ip" type="text" required autocomplete="off" placeholder="192.168.1.130"></label>
+                    <label>小电脑连接雷达的本机 IP<input id="lidar-host-ip" type="text" required autocomplete="off" placeholder="192.168.1.50"></label>
+                </div>
+                <button id="lidar-refresh" type="button" disabled>刷新已保存配置</button>
+                <button id="lidar-save" type="button" disabled>保存（下次启动雷达生效）</button>
+            </form>
+            <p>这里只修改驱动连接地址，不修改雷达硬件 IP 或系统网卡。请填写雷达实际地址，并先在系统中配置对应网卡；网络掩码和路由须匹配实际网络。保存不会中断当前任务。安全停止任务后，重新启动建图或导航的雷达进程才会应用。</p>
+            <p id="lidar-result" role="status" aria-live="polite"></p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="m701-title">
+            <h2 id="m701-title">气体传感器连接（M701）</h2>
+            <p>钢镚与星玑共用，不随本体切换。支持系统及厂商驱动提供的 USB 串口；此处不会安装或切换驱动。</p>
+            <p id="m701-connection-state" role="status" aria-live="polite">等待传感器连接服务…</p>
+            <form id="m701-connection-form" onsubmit="return false">
+                <div class="body-fields">
+                    <label>连接方式<select id="m701-mode">
+                        <option value="auto">自动重连已绑定设备</option>
+                        <option value="manual">固定串口路径（仍校验设备身份）</option>
+                    </select></label>
+                    <label>已发现 USB 串口<select id="m701-device"><option value="">请选择并确认设备</option></select></label>
+                    <label>固定路径<input id="m701-port" type="text" placeholder="选择设备后自动填入，可使用其稳定链接"></label>
+                    <label>波特率<select id="m701-baudrate">
+                        <option>2400</option><option>4800</option><option selected>9600</option>
+                        <option>19200</option><option>38400</option><option>57600</option><option>115200</option>
+                    </select></label>
+                    <label>设备地址（推荐 1–7）<input id="m701-address" type="number" min="0" max="7" step="1" value="1" required></label>
+                </div>
+                <p id="m701-device-detail" class="hint">只枚举串口，不会向所有串口发送探测指令。</p>
+                <p class="hint">旧串口路径失效时，可推荐唯一候选设备，但不会自动连接；请核对接线、勾选确认，测试通过后保存。页面会区分未发现 USB 串口与已识别 WCH USB 但未生成串口。</p>
+                <label><input id="m701-confirm" type="checkbox">已确认所选串口连接 M701 气体传感器，不是底盘或其他设备。</label>
+                <p>无唯一序列号时按 USB 插口绑定，换插口或换转换器后需重新选择。身份不唯一时不自动猜测。参数须与传感器一致（8N1）。</p>
+                <button id="m701-refresh" type="button" disabled>刷新设备</button>
+                <button id="m701-test" type="button" disabled>测试连接（不保存）</button>
+                <button id="m701-save" type="button" disabled>保存并重新连接</button>
+            </form>
+            <p id="m701-result" role="status" aria-live="polite"></p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="mapping-filter-title">
+            <div class="navigation-mode-heading">
+                <div>
+                    <h2 id="mapping-filter-title">建图全局地图动态障碍过滤</h2>
+                    <p>同时控制全局三维点云与建图投影的动态时序过滤；不改变导航实时避障。</p>
+                </div>
+                <div id="mapping-filter-state" class="power-state" role="status" aria-live="polite">
+                    <span class="label">过滤配置与生效状态</span>
+                    <strong id="mapping-filter-state-value">正在等待状态…</strong>
+                </div>
+            </div>
+            <div class="mapping-filter-controls">
+                <label class="mapping-filter-toggle" for="mapping-filter-enabled">
+                    <input id="mapping-filter-enabled" type="checkbox" role="switch" disabled
+                        aria-describedby="mapping-filter-detail mapping-filter-warning">
+                    <span>下次建图启用动态障碍过滤</span>
+                </label>
+                <button id="mapping-filter-save" type="button" disabled>保存设置</button>
+                <button id="mapping-filter-refresh" type="button" disabled>刷新状态</button>
+            </div>
+            <p id="mapping-filter-detail" class="hint">等待后台确认过滤配置。</p>
+            <p id="mapping-filter-warning" class="inflation-radius-warning">开启时使用保留地面点的过滤模式；关闭后动态物体可能残留在保存地图中。保存从下次启动建图生效，不会中断当前建图，也不会删除已有地图。</p>
+            <p id="mapping-filter-result" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="navigation-mode-section" aria-labelledby="navigation-mode-title">
+            <div class="navigation-mode-heading">
+                <div>
+                    <h2 id="navigation-mode-title">巡检导航模式</h2>
+                    <p>两种模式都使用当前地图加载流程和三维精确定位；这里只改变全局规划与地形安全策略。</p>
+                </div>
+                <div id="navigation-mode-state" class="power-state" aria-live="polite">
+                    <span class="label">当前模式</span>
+                    <strong id="navigation-mode-state-value">正在等待状态…</strong>
+                </div>
+            </div>
+            <div class="navigation-mode-grid">
+                <button id="btn-nav-mode-2d" class="navigation-mode-card" type="button" disabled aria-pressed="false">
+                    <span class="mode-tag">2D</span>
+                    <strong>2D地图导航</strong>
+                    <span>直接使用二维地图进行 Nav2 规划，暂停地形融合、地形预检和自动地形步态。</span>
+                    <small>仍保留急停、速度所有权、实时激光避障、静态障碍和膨胀安全距离。</small>
+                </button>
+                <button id="btn-nav-mode-3d" class="navigation-mode-card" type="button" disabled aria-pressed="false">
+                    <span class="mode-tag">3D</span>
+                    <strong>3D地形增强导航</strong>
+                    <span>继续使用当前地形融合地图、地形目标预检、自动步态与地形限速。</span>
+                    <small>当前实现是带高度/地形信息的 2.5D Nav2，并非可在空中任意规划的体素导航。</small>
+                </button>
+            </div>
+            <p id="navigation-mode-lock-note" class="navigation-mode-note">正在连接导航模式服务…</p>
+        </section>
+
+        <section class="navigation-mode-section inflation-radius-section" aria-labelledby="inflation-radius-title">
+            <div class="navigation-mode-heading">
+                <div>
+                    <h2 id="inflation-radius-title">障碍膨胀半径</h2>
+                    <p>控制机器人规划路径与障碍物之间的安全缓冲距离，同时应用到全局和局部代价地图。</p>
+                </div>
+                <div id="inflation-radius-state" class="power-state" aria-live="polite">
+                    <span class="label">应用状态</span>
+                    <strong id="inflation-radius-state-value">正在等待状态…</strong>
+                </div>
+            </div>
+            <div class="inflation-radius-controls">
+                <label class="inflation-radius-slider" for="inflation-radius-range">
+                    <span>安全距离</span>
+                    <input id="inflation-radius-range" type="range" min="0.30" max="1.50" step="0.05" value="0.55" disabled>
+                </label>
+                <label class="inflation-radius-number" for="inflation-radius-input">
+                    <span>半径</span>
+                    <span class="number-with-unit">
+                        <input id="inflation-radius-input" type="number" min="0.30" max="1.50" step="0.01" value="0.55" inputmode="decimal" disabled>
+                        <span>米</span>
+                    </span>
+                </label>
+                <button id="btn-save-inflation-radius" type="button" disabled>保存并应用</button>
+            </div>
+            <div class="inflation-radius-scale" aria-hidden="true">
+                <span>0.30 米</span><span>当前推荐值为 0.55 米</span><span>1.50 米</span>
+            </div>
+            <p id="inflation-radius-lock-note" class="navigation-mode-note">
+                正在连接代价地图设置服务…
+            </p>
+            <p class="inflation-radius-warning">
+                半径越大越保守，但可能无法通过狭窄通道；调整前请停止导航和巡检任务。
+            </p>
+        </section>
+
+        <section class="navigation-mode-section inflation-radius-section" aria-labelledby="co2-threshold-title">
+            <div class="navigation-mode-heading">
+                <div>
+                    <h2 id="co2-threshold-title">巡检环境语音告警</h2>
+                    <p>巡检期间发现高温会播报“环境温度异常”；二氧化碳连续超限会播报“二氧化碳浓度异常”。</p>
+                </div>
+                <div id="environment-alert-state" class="power-state" aria-live="polite">
+                    <span class="label">告警状态</span>
+                    <strong id="environment-alert-state-value">正在等待状态…</strong>
+                </div>
+            </div>
+            <div class="inflation-radius-controls">
+                <label class="inflation-radius-slider" for="co2-threshold-range">
+                    <span>二氧化碳告警阈值</span>
+                    <input id="co2-threshold-range" type="range" min="400" max="10000" step="50" value="1000" disabled>
+                </label>
+                <label class="inflation-radius-number" for="co2-threshold-input">
+                    <span>阈值</span>
+                    <span class="number-with-unit">
+                        <input id="co2-threshold-input" type="number" min="400" max="10000" step="50" value="1000" inputmode="numeric" disabled>
+                        <span>ppm</span>
+                    </span>
+                </label>
+                <button id="btn-save-co2-threshold" type="button" disabled>保存阈值</button>
+            </div>
+            <div class="inflation-radius-scale" aria-hidden="true">
+                <span>400 ppm</span><span>默认 1000 ppm</span><span>10000 ppm</span>
+            </div>
+            <p id="environment-alert-note" class="navigation-mode-note">
+                正在连接巡检环境告警服务…
+            </p>
+            <p class="inflation-radius-warning">
+                设置会保存在小电脑中，并立即用于正在运行及之后启动的巡检任务；传感器离线、预热或数据过期时不会误报。
+            </p>
+        </section>
+
+        <section class="power-grid" aria-label="电源操作">
+            <article class="power-card">
+                <div class="power-icon" aria-hidden="true">↻</div>
+                <h2>重启小电脑</h2>
+                <p>关闭当前系统服务并重新启动。适合更新程序、驱动或配置后使用。</p>
+                <ul>
+                    <li>当前巡检、导航、建图和识别会立即结束</li>
+                    <li>网页与 ROS2 会暂时断开，启动完成后可重新连接</li>
+                </ul>
+                <button id="btn-reboot" class="warning" type="button" disabled>重启小电脑</button>
+            </article>
+
+            <article class="power-card danger-card">
+                <div class="power-icon" aria-hidden="true">⏻</div>
+                <h2>关闭小电脑</h2>
+                <p>安全停止系统并关闭小电脑。关机后需要通过实体电源重新开机。</p>
+                <ul>
+                    <li>当前所有机器人程序和网页服务都会停止</li>
+                    <li>请先停止机器人运动，并确认重要地图和任务已经保存</li>
+                </ul>
+                <button id="btn-poweroff" class="danger" type="button" disabled>关闭小电脑</button>
+            </article>
+        </section>
+
+        <div class="settings-notice">
+            执行前请让机器人保持静止，并停止正在运行的巡检、导航或建图任务。系统收到请求后会短暂延迟，给页面留出显示结果的时间。
+        </div>
+
+        <section class="section settings-log">
+            <div class="section-title">操作记录</div>
+            <div id="log" class="log" aria-live="polite"></div>
+        </section>
+    </main>
+</div>
+
+<div id="confirm-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title">确认电源操作</h2>
+        <p id="confirm-description"></p>
+        <div class="confirm-field">
+            <label id="confirm-label" for="confirm-input">输入“重启”或“关机”以确认此操作</label>
+            <input id="confirm-input" type="text" autocomplete="off" spellcheck="false">
+            <div id="confirm-error" class="confirm-error" aria-live="polite"></div>
+        </div>
+        <div class="modal-actions">
+            <button id="btn-cancel" type="button">取消</button>
+            <button id="btn-confirm" class="danger" type="button" disabled>确认执行</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    const UI = window.RobotUi;
+    const ACTIONS = Object.freeze({
+        reboot: Object.freeze({
+            service: '/system/reboot', label: '重启', button: 'btn-reboot',
+            description: '重启会停止当前全部程序，网页和 ROS2 将暂时断开。',
+        }),
+        poweroff: Object.freeze({
+            service: '/system/poweroff', label: '关机', button: 'btn-poweroff',
+            description: '关机会停止当前全部程序，并且需要通过实体电源重新开机。',
+        }),
+    });
+    const connectionStatus = document.getElementById('connection-status');
+    const batteryStatus = document.getElementById('battery-status');
+    const powerState = document.getElementById('power-state');
+    const powerStateValue = document.getElementById('power-state-value');
+    const navigationModeState = document.getElementById('navigation-mode-state');
+    const navigationModeStateValue = document.getElementById('navigation-mode-state-value');
+    const navigationModeLockNote = document.getElementById('navigation-mode-lock-note');
+    const navigationModeButtons = Object.freeze({
+        map_2d: document.getElementById('btn-nav-mode-2d'),
+        terrain_3d: document.getElementById('btn-nav-mode-3d'),
+    });
+    const inflationRadiusState = document.getElementById('inflation-radius-state');
+    const inflationRadiusStateValue = document.getElementById('inflation-radius-state-value');
+    const inflationRadiusLockNote = document.getElementById('inflation-radius-lock-note');
+    const inflationRadiusRange = document.getElementById('inflation-radius-range');
+    const inflationRadiusInput = document.getElementById('inflation-radius-input');
+    const saveInflationRadiusButton = document.getElementById('btn-save-inflation-radius');
+    const environmentAlertState = document.getElementById('environment-alert-state');
+    const environmentAlertStateValue = document.getElementById('environment-alert-state-value');
+    const environmentAlertNote = document.getElementById('environment-alert-note');
+    const co2ThresholdRange = document.getElementById('co2-threshold-range');
+    const co2ThresholdInput = document.getElementById('co2-threshold-input');
+    const saveCo2ThresholdButton = document.getElementById('btn-save-co2-threshold');
+    const modal = document.getElementById('confirm-modal');
+    const title = document.getElementById('confirm-title');
+    const description = document.getElementById('confirm-description');
+    const confirmLabel = document.getElementById('confirm-label');
+    const confirmInput = document.getElementById('confirm-input');
+    const confirmError = document.getElementById('confirm-error');
+    const confirmButton = document.getElementById('btn-confirm');
+    const cancelButton = document.getElementById('btn-cancel');
+    const log = UI.createLogger(document.getElementById('log'));
+    const bodySettings = window.RobotBodySettings.create(log);
+    const m701Settings = window.M701Settings.create(log);
+    const lidarSettings = window.LidarSettings.create(log);
+    const mappingFilterSettings = window.MappingFilterSettings.create(log);
+    const cameraSourceSettings = window.CameraSourceSettings.create(log);
+    document.getElementById('web-preview-profile').value = UI.previewProfile();
+    document.getElementById('web-preview-save').addEventListener('click', () => {
+        try {
+            window.localStorage.setItem('robot.webPreview.profile', document.getElementById('web-preview-profile').value);
+            window.sessionStorage.removeItem('robot.webPreview.streams');
+            document.getElementById('web-preview-result').textContent = '已保存当前浏览器预览档位。请停止遥控操作后重新进入业务页面；不会重启后台或改动本地算法。';
+        } catch (_error) {
+            document.getElementById('web-preview-result').textContent = '浏览器不允许保存，请允许站点存储后重试。';
+        }
+    });
+    let currentAction = null;
+    let backendSeen = false;
+    let backendEnabled = false;
+    let actionLocked = false;
+    let requestActive = false;
+    let navigationModeSeen = false;
+    let navigationModeRequestActive = false;
+    let navigationModeStatus = {};
+    let inflationRadiusSeen = false;
+    let inflationRadiusRequestActive = false;
+    let inflationRadiusDirty = false;
+    let inflationRadiusStatus = {};
+    let environmentAlertSeen = false;
+    let environmentAlertRequestActive = false;
+    let environmentAlertDirty = false;
+    let environmentAlertStatus = {};
+
+    const session = new UI.RosSession({
+        onState: (connected, text) => {
+            bodySettings.connection(connected);
+            m701Settings.connection(connected);
+            lidarSettings.connection(connected);
+            mappingFilterSettings.connection(connected);
+            UI.setConnectionStatus(connectionStatus, connected, text);
+            if (!connected) {
+                backendSeen = false;
+                backendEnabled = false;
+                navigationModeSeen = false;
+                navigationModeStatus = {};
+                inflationRadiusSeen = false;
+                inflationRadiusStatus = {};
+                inflationRadiusDirty = false;
+                environmentAlertSeen = false;
+                environmentAlertStatus = {};
+                environmentAlertDirty = false;
+                UI.setBatteryDisconnected(batteryStatus);
+                renderPowerState('disconnected', 'ROS2 已断开，电源操作不可用');
+                renderNavigationModeState('disconnected', 'ROS2 已断开');
+                renderInflationRadiusState('disconnected', 'ROS2 已断开');
+                renderEnvironmentAlertState('disconnected', 'ROS2 已断开');
+            }
+            updateButtons();
+        },
+        onReady: () => {
+            bodySettings.attach(session);
+            m701Settings.attach(session);
+            lidarSettings.attach(session);
+            mappingFilterSettings.attach(session);
+            UI.subscribeDogStatus(session, batteryStatus);
+            session.subscribe(
+                '/system/power/status', UI.TYPES.string,
+                (message) => applyPowerStatus(message.data),
+                {queue_length: 1},
+            );
+            session.subscribe(
+                '/navigation/mode', UI.TYPES.string,
+                (message) => applyNavigationModeStatus(message.data),
+                {queue_length: 1},
+            );
+            session.subscribe(
+                '/navigation/inflation_radius', UI.TYPES.string,
+                (message) => applyInflationRadiusStatus(message.data),
+                {queue_length: 1},
+            );
+            session.subscribe(
+                '/inspection/environment_config', UI.TYPES.string,
+                (message) => applyEnvironmentAlertStatus(message.data),
+                {queue_length: 1},
+            );
+            window.setTimeout(() => {
+                if (!backendSeen && session.connected) {
+                    renderPowerState('failed', '未收到电源服务状态，请检查节点是否启动');
+                }
+                if (!navigationModeSeen && session.connected) {
+                    renderNavigationModeState(
+                        'failed', '未收到导航模式状态，请检查路线管理节点');
+                    navigationModeLockNote.textContent = '模式切换暂不可用。';
+                }
+                if (!inflationRadiusSeen && session.connected) {
+                    renderInflationRadiusState(
+                        'failed', '未收到膨胀半径状态，请检查路线管理节点');
+                    inflationRadiusLockNote.textContent = '安全距离设置暂不可用。';
+                }
+                if (!environmentAlertSeen && session.connected) {
+                    renderEnvironmentAlertState(
+                        'failed', '未收到环境告警状态，请检查巡检管理节点');
+                    environmentAlertNote.textContent = '二氧化碳阈值设置暂不可用。';
+                }
+            }, 4000);
+        },
+        log,
+    });
+
+    function renderPowerState(state, message) {
+        powerState.className = 'power-state';
+        if (state === 'ready') powerState.classList.add('ready');
+        if (['failed', 'unavailable', 'disabled', 'disconnected'].includes(state)) {
+            powerState.classList.add('failed');
+        }
+        powerStateValue.textContent = message;
+    }
+
+    function applyPowerStatus(raw) {
+        try {
+            const status = JSON.parse(raw);
+            backendSeen = true;
+            backendEnabled = status.enabled === true;
+            actionLocked = ['scheduled', 'executing', 'submitted'].includes(status.state)
+                || status.pending === true;
+            renderPowerState(status.state, status.message || '电源服务状态未知');
+            log(`电源服务：${status.message || status.state}`);
+            updateButtons();
+        } catch (error) {
+            backendSeen = false;
+            backendEnabled = false;
+            renderPowerState('failed', `电源状态格式错误：${error.message}`);
+            updateButtons();
+        }
+    }
+
+    function renderNavigationModeState(state, message) {
+        navigationModeState.className = 'power-state';
+        if (state === 'ready') navigationModeState.classList.add('ready');
+        if (['failed', 'disconnected'].includes(state)) {
+            navigationModeState.classList.add('failed');
+        }
+        navigationModeStateValue.textContent = message;
+    }
+
+    function renderInflationRadiusState(state, message) {
+        inflationRadiusState.className = 'power-state';
+        if (state === 'ready') inflationRadiusState.classList.add('ready');
+        if (state === 'pending') inflationRadiusState.classList.add('pending');
+        if (['failed', 'disconnected'].includes(state)) {
+            inflationRadiusState.classList.add('failed');
+        }
+        inflationRadiusStateValue.textContent = message;
+    }
+
+    function renderEnvironmentAlertState(state, message) {
+        environmentAlertState.className = 'power-state';
+        if (state === 'ready') environmentAlertState.classList.add('ready');
+        if (['failed', 'disconnected'].includes(state)) {
+            environmentAlertState.classList.add('failed');
+        }
+        environmentAlertStateValue.textContent = message;
+    }
+
+    function setInflationRadiusInputs(value) {
+        const formatted = Number(value).toFixed(2);
+        inflationRadiusRange.value = formatted;
+        inflationRadiusInput.value = formatted;
+    }
+
+    function applyInflationRadiusStatus(raw) {
+        try {
+            const status = JSON.parse(raw);
+            const radius = Number(status.radius_m ?? status.configured_radius_m);
+            const incomingVersion = Number(status.version || 0);
+            const currentVersion = Number(inflationRadiusStatus.version || 0);
+            if (inflationRadiusSeen && incomingVersion < currentVersion) return;
+            if (!Number.isFinite(radius) || radius < 0.30 || radius > 1.50) {
+                throw new Error(`半径数值无效 ${status.radius_m ?? '--'}`);
+            }
+            inflationRadiusStatus = {
+                ...status, radius_m: radius, version: incomingVersion,
+            };
+            inflationRadiusSeen = true;
+            if (!inflationRadiusDirty && !inflationRadiusRequestActive) {
+                setInflationRadiusInputs(radius);
+            }
+            renderInflationRadiusState(
+                status.applied === true ? 'ready' : 'pending',
+                status.applied === true
+                    ? `${radius.toFixed(2)} 米 · 已应用`
+                    : `${radius.toFixed(2)} 米 · 等待应用`,
+            );
+            const detail = status.error ? `；${status.error}` : '';
+            inflationRadiusLockNote.textContent = status.locked
+                ? (status.message || '导航或巡检正在运行，停止后才可调整。')
+                : `${status.message || '可调整障碍膨胀半径'}${detail}`;
+            updateInflationRadiusControls();
+        } catch (error) {
+            inflationRadiusSeen = false;
+            inflationRadiusStatus = {};
+            renderInflationRadiusState(
+                'failed', `膨胀半径状态格式错误：${error.message}`);
+            updateInflationRadiusControls();
+        }
+    }
+
+    function setCo2ThresholdInputs(value) {
+        const formatted = Number(value).toFixed(0);
+        co2ThresholdRange.value = formatted;
+        co2ThresholdInput.value = formatted;
+    }
+
+    function applyEnvironmentAlertStatus(raw) {
+        try {
+            const status = JSON.parse(raw);
+            const threshold = Number(status.co2_threshold_ppm);
+            const incomingVersion = Number(status.version || 0);
+            const currentVersion = Number(environmentAlertStatus.version || 0);
+            if (environmentAlertSeen && incomingVersion < currentVersion) return;
+            if (!Number.isFinite(threshold) || threshold < 400 || threshold > 10000) {
+                throw new Error(`二氧化碳阈值无效 ${status.co2_threshold_ppm ?? '--'}`);
+            }
+            environmentAlertStatus = {
+                ...status, co2_threshold_ppm: threshold,
+                version: incomingVersion,
+            };
+            environmentAlertSeen = true;
+            if (!environmentAlertDirty && !environmentAlertRequestActive) {
+                setCo2ThresholdInputs(threshold);
+            }
+            const active = status.active_inspection === true;
+            const alarm = status.co2_alarm_active === true;
+            renderEnvironmentAlertState(
+                'ready', alarm ? '二氧化碳超限告警中' : (
+                    active ? '巡检中 · 告警已启用' : '等待巡检任务'));
+            const current = Number(status.current_co2_ppm);
+            const currentText = status.co2_sample_valid === true
+                && Number.isFinite(current) ? `；当前 ${current.toFixed(0)} ppm` : '';
+            environmentAlertNote.textContent =
+                `${status.message || '环境异常语音告警已就绪'}${currentText}`;
+            updateEnvironmentAlertControls();
+        } catch (error) {
+            environmentAlertSeen = false;
+            environmentAlertStatus = {};
+            renderEnvironmentAlertState(
+                'failed', `环境告警状态格式错误：${error.message}`);
+            updateEnvironmentAlertControls();
+        }
+    }
+
+    function applyNavigationModeStatus(raw) {
+        try {
+            const status = JSON.parse(raw);
+            if (!['map_2d', 'terrain_3d'].includes(status.mode)) {
+                throw new Error(`未知模式 ${status.mode || '--'}`);
+            }
+            navigationModeStatus = status;
+            navigationModeSeen = true;
+            renderNavigationModeState('ready', status.label || (
+                status.mode === 'map_2d' ? '2D地图导航' : '3D地形增强导航'));
+            navigationModeLockNote.textContent = status.locked
+                ? (status.message || '导航或巡检正在运行，停止后才可切换模式。')
+                : '模式会保存到小电脑；下一次启动仍会沿用当前选择。';
+            updateNavigationModeButtons();
+        } catch (error) {
+            navigationModeSeen = false;
+            navigationModeStatus = {};
+            renderNavigationModeState('failed', `模式状态格式错误：${error.message}`);
+            updateNavigationModeButtons();
+        }
+    }
+
+    function updateNavigationModeButtons() {
+        const disabled = !session.connected || !navigationModeSeen
+            || navigationModeStatus.locked === true
+            || navigationModeRequestActive || inflationRadiusRequestActive
+            || environmentAlertRequestActive
+            || requestActive || actionLocked;
+        Object.entries(navigationModeButtons).forEach(([mode, button]) => {
+            const selected = navigationModeStatus.mode === mode;
+            button.classList.toggle('selected', selected);
+            button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+            button.disabled = disabled || selected;
+        });
+    }
+
+    function requestedInflationRadius() {
+        const value = Number(inflationRadiusInput.value);
+        return Number.isFinite(value) ? value : NaN;
+    }
+
+    function updateInflationRadiusControls() {
+        const value = requestedInflationRadius();
+        const valid = Number.isFinite(value) && value >= 0.30 && value <= 1.50;
+        const disabled = !session.connected || !inflationRadiusSeen
+            || inflationRadiusStatus.locked === true
+            || inflationRadiusRequestActive || navigationModeRequestActive
+            || environmentAlertRequestActive
+            || requestActive || actionLocked;
+        inflationRadiusRange.disabled = disabled;
+        inflationRadiusInput.disabled = disabled;
+        saveInflationRadiusButton.disabled = disabled || !valid
+            || !inflationRadiusDirty;
+    }
+
+    function requestedCo2Threshold() {
+        const value = Number(co2ThresholdInput.value);
+        return Number.isFinite(value) ? value : NaN;
+    }
+
+    function updateEnvironmentAlertControls() {
+        const value = requestedCo2Threshold();
+        const valid = Number.isFinite(value) && value >= 400 && value <= 10000;
+        const disabled = !session.connected || !environmentAlertSeen
+            || environmentAlertRequestActive || navigationModeRequestActive
+            || inflationRadiusRequestActive || requestActive || actionLocked;
+        co2ThresholdRange.disabled = disabled;
+        co2ThresholdInput.disabled = disabled;
+        saveCo2ThresholdButton.disabled = disabled || !valid
+            || !environmentAlertDirty;
+    }
+
+    async function selectNavigationMode(mode) {
+        if (!navigationModeButtons[mode] || navigationModeRequestActive) return;
+        navigationModeRequestActive = true;
+        navigationModeLockNote.textContent = '正在保存并应用导航模式…';
+        updateNavigationModeButtons();
+        try {
+            const result = await session.call(
+                '/navigation/set_mode', UI.TYPES.setNavigationMode,
+                {mode}, 8000);
+            if (!result.success) throw new Error(result.message || '服务拒绝切换');
+            navigationModeStatus = {
+                ...navigationModeStatus,
+                mode: result.mode,
+                version: Number(result.version || 0),
+                locked: false,
+            };
+            navigationModeSeen = true;
+            const label = result.mode === 'map_2d'
+                ? '2D地图导航' : '3D地形增强导航';
+            renderNavigationModeState('ready', label);
+            navigationModeLockNote.textContent = result.message || `已切换到${label}`;
+            log(result.message || `导航模式已切换到${label}`);
+        } catch (error) {
+            navigationModeLockNote.textContent = `切换失败：${error.message}`;
+            log(`导航模式切换失败：${error.message}`);
+        } finally {
+            navigationModeRequestActive = false;
+            updateNavigationModeButtons();
+        }
+    }
+
+    async function saveInflationRadius() {
+        if (inflationRadiusRequestActive || !inflationRadiusDirty) return;
+        const radius = requestedInflationRadius();
+        if (!Number.isFinite(radius) || radius < 0.30 || radius > 1.50) {
+            inflationRadiusLockNote.textContent = '请输入 0.30 至 1.50 米之间的数值。';
+            return;
+        }
+        inflationRadiusRequestActive = true;
+        inflationRadiusLockNote.textContent = '正在保存并同步两个代价地图…';
+        updateButtons();
+        try {
+            const result = await session.call(
+                '/navigation/set_inflation_radius', UI.TYPES.setInflationRadius,
+                {radius_m: radius}, 8000);
+            if (!result.success) throw new Error(result.message || '服务拒绝设置');
+            const saved = Number(result.radius_m);
+            inflationRadiusStatus = {
+                ...inflationRadiusStatus,
+                radius_m: saved,
+                version: Number(result.version || 0),
+                applied: result.applied === true,
+                pending: result.applied !== true,
+            };
+            inflationRadiusSeen = true;
+            inflationRadiusDirty = false;
+            setInflationRadiusInputs(saved);
+            renderInflationRadiusState(
+                result.applied ? 'ready' : 'pending',
+                `${saved.toFixed(2)} 米 · ${result.applied ? '已应用' : '正在应用'}`,
+            );
+            inflationRadiusLockNote.textContent = result.message;
+            log(result.message || `障碍膨胀半径已保存为 ${saved.toFixed(2)} 米`);
+        } catch (error) {
+            inflationRadiusLockNote.textContent = `保存失败：${error.message}`;
+            log(`障碍膨胀半径保存失败：${error.message}`);
+        } finally {
+            inflationRadiusRequestActive = false;
+            updateButtons();
+        }
+    }
+
+    async function saveCo2Threshold() {
+        if (environmentAlertRequestActive || !environmentAlertDirty) return;
+        const threshold = requestedCo2Threshold();
+        if (!Number.isFinite(threshold) || threshold < 400 || threshold > 10000) {
+            environmentAlertNote.textContent = '请输入 400 至 10000 ppm 之间的数值。';
+            return;
+        }
+        environmentAlertRequestActive = true;
+        environmentAlertNote.textContent = '正在保存二氧化碳告警阈值…';
+        updateButtons();
+        try {
+            const result = await session.call(
+                '/inspection/set_environment_config',
+                UI.TYPES.setInspectionEnvironmentConfig,
+                {co2_threshold_ppm: threshold}, 8000);
+            if (!result.success) throw new Error(result.message || '服务拒绝设置');
+            const saved = Number(result.co2_threshold_ppm);
+            environmentAlertStatus = {
+                ...environmentAlertStatus,
+                co2_threshold_ppm: saved,
+                version: Number(result.version || 0),
+            };
+            environmentAlertSeen = true;
+            environmentAlertDirty = false;
+            setCo2ThresholdInputs(saved);
+            renderEnvironmentAlertState(
+                'ready', environmentAlertStatus.active_inspection
+                    ? '巡检中 · 告警已启用' : '等待巡检任务');
+            environmentAlertNote.textContent = result.message;
+            log(result.message || `二氧化碳告警阈值已保存为 ${saved.toFixed(0)} ppm`);
+        } catch (error) {
+            environmentAlertNote.textContent = `保存失败：${error.message}`;
+            log(`二氧化碳告警阈值保存失败：${error.message}`);
+        } finally {
+            environmentAlertRequestActive = false;
+            updateButtons();
+        }
+    }
+
+    function updateButtons() {
+        const disabled = !session.connected || !backendSeen || !backendEnabled
+            || actionLocked || requestActive;
+        Object.values(ACTIONS).forEach((action) => {
+            document.getElementById(action.button).disabled = disabled;
+        });
+        const expected = currentAction ? ACTIONS[currentAction].label : '';
+        confirmButton.disabled = disabled || confirmInput.value.trim() !== expected;
+        updateNavigationModeButtons();
+        updateInflationRadiusControls();
+        updateEnvironmentAlertControls();
+    }
+
+    function openModal(actionName) {
+        if (!ACTIONS[actionName] || !session.connected || actionLocked) return;
+        currentAction = actionName;
+        const action = ACTIONS[actionName];
+        title.textContent = `确认${action.label}小电脑`;
+        description.textContent = action.description;
+        confirmLabel.textContent = `请输入“${action.label}”以确认此操作`;
+        confirmInput.value = '';
+        confirmError.textContent = '';
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        updateButtons();
+        window.setTimeout(() => confirmInput.focus(), 0);
+    }
+
+    function closeModal() {
+        if (requestActive) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+        currentAction = null;
+        confirmInput.value = '';
+        confirmError.textContent = '';
+        updateButtons();
+    }
+
+    async function executeAction() {
+        if (!currentAction || requestActive) return;
+        const action = ACTIONS[currentAction];
+        if (confirmInput.value.trim() !== action.label) return;
+        requestActive = true;
+        confirmError.textContent = `正在提交${action.label}请求…`;
+        updateButtons();
+        try {
+            const result = await session.call(
+                action.service, UI.TYPES.trigger, {}, 8000);
+            if (!result.success) throw new Error(result.message || '服务拒绝请求');
+            actionLocked = true;
+            renderPowerState('scheduled', result.message || `${action.label}请求已接受`);
+            log(result.message || `${action.label}请求已接受`);
+            requestActive = false;
+            modal.classList.remove('open');
+            modal.setAttribute('aria-hidden', 'true');
+            currentAction = null;
+            updateButtons();
+        } catch (error) {
+            requestActive = false;
+            confirmError.textContent = error.message;
+            log(`${action.label}失败：${error.message}`);
+            updateButtons();
+        }
+    }
+
+    document.getElementById('btn-reboot').addEventListener(
+        'click', () => openModal('reboot'));
+    document.getElementById('btn-poweroff').addEventListener(
+        'click', () => openModal('poweroff'));
+    navigationModeButtons.map_2d.addEventListener(
+        'click', () => selectNavigationMode('map_2d'));
+    navigationModeButtons.terrain_3d.addEventListener(
+        'click', () => selectNavigationMode('terrain_3d'));
+    inflationRadiusRange.addEventListener('input', () => {
+        inflationRadiusInput.value = Number(inflationRadiusRange.value).toFixed(2);
+        inflationRadiusDirty = true;
+        updateInflationRadiusControls();
+    });
+    inflationRadiusInput.addEventListener('input', () => {
+        const value = requestedInflationRadius();
+        if (Number.isFinite(value) && value >= 0.30 && value <= 1.50) {
+            inflationRadiusRange.value = String(value);
+        }
+        inflationRadiusDirty = true;
+        updateInflationRadiusControls();
+    });
+    saveInflationRadiusButton.addEventListener('click', saveInflationRadius);
+    co2ThresholdRange.addEventListener('input', () => {
+        co2ThresholdInput.value = Number(co2ThresholdRange.value).toFixed(0);
+        environmentAlertDirty = true;
+        updateEnvironmentAlertControls();
+    });
+    co2ThresholdInput.addEventListener('input', () => {
+        const value = requestedCo2Threshold();
+        if (Number.isFinite(value) && value >= 400 && value <= 10000) {
+            co2ThresholdRange.value = String(value);
+        }
+        environmentAlertDirty = true;
+        updateEnvironmentAlertControls();
+    });
+    saveCo2ThresholdButton.addEventListener('click', saveCo2Threshold);
+    confirmInput.addEventListener('input', updateButtons);
+    confirmButton.addEventListener('click', executeAction);
+    cancelButton.addEventListener('click', closeModal);
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeModal();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeModal();
+    });
+    window.addEventListener('beforeunload', () => {
+        mappingFilterSettings.stop(); cameraSourceSettings.stop(); session.stop();
+    });
+
+    log('设置页面已加载，正在连接导航、安全距离、环境告警与系统电源服务。');
+    session.connect();
+    cameraSourceSettings.start();
+}());
+</script>
+</body>
+</html>

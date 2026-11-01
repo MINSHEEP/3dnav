@@ -20,6 +20,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
@@ -47,6 +48,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp_action
   rclcpp_components
   sensor_msgs
+  std_msgs
   tf2
   tf2_ros
 )
@@ -75,6 +77,7 @@ install(
   DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
+install(FILES rigid_transform_contract.txt DESTINATION share/${PROJECT_NAME})
 
 ament_export_include_directories(include)
 ament_export_dependencies(
@@ -86,12 +89,37 @@ ament_export_dependencies(
   rclcpp_action
   rclcpp_components
   sensor_msgs
+  std_msgs
   tf2
   tf2_ros
 )
 ament_export_libraries(${PROJECT_NAME})
 
 if(BUILD_TESTING)
+  enable_testing()
+  add_executable(test_search_seeds test/test_search_seeds.cpp)
+  target_include_directories(test_search_seeds PRIVATE include)
+  add_test(NAME search_seeds COMMAND test_search_seeds)
+  add_executable(test_candidate_quality test/test_candidate_quality.cpp)
+  target_include_directories(test_candidate_quality PRIVATE include)
+  add_test(NAME candidate_quality COMMAND test_candidate_quality)
+  add_executable(test_refinement_budget test/test_refinement_budget.cpp)
+  target_include_directories(test_refinement_budget PRIVATE include)
+  add_test(NAME refinement_budget COMMAND test_refinement_budget)
+  add_executable(test_tracking_validation test/test_tracking_validation.cpp)
+  target_include_directories(test_tracking_validation PRIVATE include)
+  add_test(NAME tracking_validation COMMAND test_tracking_validation)
+  add_executable(test_pose_output test/test_pose_output.cpp)
+  target_include_directories(test_pose_output PRIVATE include)
+  add_test(NAME pose_output COMMAND test_pose_output)
+  add_executable(test_target_sampling test/test_target_sampling.cpp)
+  target_include_directories(test_target_sampling PRIVATE include)
+  add_test(NAME target_sampling COMMAND test_target_sampling)
+  add_executable(test_target_sampling_pcl test/test_target_sampling_pcl.cpp)
+  target_include_directories(test_target_sampling_pcl PRIVATE include)
+  target_include_directories(test_target_sampling_pcl SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
+  target_link_libraries(test_target_sampling_pcl ${PCL_LIBRARIES})
+  add_test(NAME target_sampling_pcl COMMAND test_target_sampling_pcl)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

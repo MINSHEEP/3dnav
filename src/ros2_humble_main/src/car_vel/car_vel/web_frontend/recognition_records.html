@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>人车识别记录 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260818-recognition-theme">
+    <link rel="stylesheet" href="recognition_records.css?v=20260818-recognition-theme">
+</head>
+<body>
+<div class="app-shell recognition-app">
+    <header class="topbar">
+        <div class="brand">四足机器人巡检</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a href="navigation.html">地形导航</a>
+            <a href="campus_navigation.html">园区导航</a>
+            <a href="inspection.html">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
+            <a class="active" href="recognition_records.html" aria-current="page">人车识别</a>
+            <a href="remote_control.html">遥控</a>
+            <a href="camera.html">USB相机</a>
+            <a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+            <span id="api-status" class="page-status">○ 正在连接识别服务…</span>
+        </div>
+    </header>
+    <main class="recognition-main">
+        <section class="recognition-hero" aria-labelledby="recognition-title">
+            <div class="recognition-heading">
+                <div>
+                    <span class="recognition-eyebrow">IDENTITY &amp; VEHICLE RECORDS</span>
+                    <h1 id="recognition-title">人脸与车牌识别</h1>
+                    <p>统一管理人员、车辆和识别事件。识别结果只用于记录与复核，不触发安全告警，也不改变巡检报告异常结论。</p>
+                </div>
+                <div class="recognition-actions">
+                    <button id="btn-refresh" class="primary" type="button">刷新全部</button>
+                    <button id="btn-cleanup" class="warning" type="button">执行保留期清理</button>
+                </div>
+            </div>
+            <div id="operation-message" class="recognition-operation" role="status" aria-live="polite">正在读取识别服务数据…</div>
+        </section>
+        <section class="recognition-metrics" aria-label="识别统计">
+            <article class="recognition-metric people"><span>登记人员</span><strong id="metric-people">0/50</strong><small>人脸特征档案</small></article>
+            <article class="recognition-metric vehicles"><span>登记车辆</span><strong id="metric-vehicles">0/50</strong><small>车牌与归属信息</small></article>
+            <article class="recognition-metric events"><span>识别事件</span><strong id="metric-events">0</strong><small>当前结构化记录</small></article>
+            <article class="recognition-metric review"><span>待复核</span><strong id="metric-review">0</strong><small>需要人工确认</small></article>
+        </section>
+        <div class="recognition-grid">
+            <div class="recognition-column">
+                <div class="recognition-column-heading"><div><span>PROFILE MANAGEMENT</span><h2>档案管理</h2></div><p>录入稳定、可追溯的人员与车辆基础信息。</p></div>
+                <section class="recognition-panel">
+                    <div class="recognition-panel-head"><div><h3>人员档案</h3><p>最多50人；每人可上传1–10张清晰正脸样本。</p></div><span class="recognition-panel-index">01</span></div>
+                    <form id="person-form" class="recognition-form">
+                        <label>人员编号<input id="person-id" required maxlength="80" placeholder="例如：P-001"></label>
+                        <label>姓名<input id="person-name" required maxlength="80" placeholder="人员姓名"></label>
+                        <label class="wide">人脸样本<input id="person-images" type="file" accept="image/*" multiple required><small>支持常见图片格式，系统最多读取前10张。</small></label>
+                        <label class="wide">备注<textarea id="person-notes" maxlength="500" placeholder="部门、岗位或其他辅助说明"></textarea></label>
+                        <button class="primary wide" type="submit">登记 / 更新人员</button>
+                    </form>
+                    <div id="people-list" class="recognition-table-wrap"><div class="recognition-empty">正在读取人员档案…</div></div>
+                </section>
+                <section class="recognition-panel">
+                    <div class="recognition-panel-head"><div><h3>车辆档案</h3><p>最多50辆；车牌号在车辆库中保持唯一。</p></div><span class="recognition-panel-index">02</span></div>
+                    <form id="vehicle-form" class="recognition-form">
+                        <label>车辆编号<input id="vehicle-id" required maxlength="80" placeholder="例如：V-001"></label>
+                        <label>车牌号<input id="plate-number" required maxlength="20" placeholder="例如：京A12345"></label>
+                        <label>车主 / 部门<input id="vehicle-owner" maxlength="80" placeholder="个人或所属部门"></label>
+                        <label>车牌颜色<select id="plate-color">
+                            <option value="blue_white">蓝底白字</option><option value="yellow_black">黄底黑字</option>
+                            <option value="white_black">白底黑字</option><option value="green_black">绿底黑字</option>
+                            <option value="unknown">未知</option>
+                        </select></label>
+                        <label class="wide">备注<textarea id="vehicle-notes" maxlength="500" placeholder="车型、用途或其他辅助说明"></textarea></label>
+                        <button class="primary wide" type="submit">登记 / 更新车辆</button>
+                    </form>
+                    <div id="vehicles-list" class="recognition-table-wrap"><div class="recognition-empty">正在读取车辆档案…</div></div>
+                </section>
+            </div>
+            <div class="recognition-column">
+                <div class="recognition-column-heading"><div><span>EVENT REVIEW</span><h2>识别与复核</h2></div><p>查询任务识别结果，并记录每一次人工修正。</p></div>
+                <section class="recognition-panel">
+                    <div class="recognition-panel-head"><div><h3>识别事件</h3><p>结构化事件保留180天；证据按状态使用不同保留周期。</p></div><span class="recognition-panel-index">03</span></div>
+                    <form id="event-filter" class="recognition-filter">
+                        <label>任务ID<input id="filter-task" placeholder="全部任务"></label>
+                        <label>识别类别<select id="filter-category"><option value="">全部类别</option><option value="face">人脸</option><option value="plate">车牌</option></select></label>
+                        <label>识别状态<select id="filter-status"><option value="">全部状态</option><option value="registered">已登记</option><option value="unregistered">未登记</option><option value="uncertain">不确定</option></select></label>
+                        <button class="primary" type="submit">查询记录</button>
+                    </form>
+                    <div id="events-list" class="recognition-table-wrap events-table"><div class="recognition-empty">正在读取识别事件…</div></div>
+                </section>
+                <section class="recognition-panel">
+                    <div class="recognition-panel-head"><div><h3>审计记录</h3><p>档案变更、事件复核和清理操作均在此留痕。</p></div><span class="recognition-panel-index">04</span></div>
+                    <div id="audit-list" class="recognition-table-wrap audit-table"><div class="recognition-empty">正在读取审计记录…</div></div>
+                </section>
+            </div>
+        </div>
+    </main>
+</div>
+<script>
+(() => {
+    'use strict';
+    const API = `http://${window.location.hostname || '127.0.0.1'}:8766/api/recognition`;
+    const requestedTask = new URLSearchParams(window.location.search).get('task_id') || '';
+    const RECOGNITION_STATUS_LABELS = Object.freeze({
+        registered: '已登记', unregistered: '未登记', uncertain: '不确定'
+    });
+    const PLATE_COLOR_LABELS = Object.freeze({
+        blue_white: '蓝底白字', yellow_black: '黄底黑字',
+        white_black: '白底黑字', green_black: '绿底黑字', unknown: '未知'
+    });
+    const AUDIT_ACTION_LABELS = Object.freeze({
+        person_upsert: '登记 / 更新人员', person_delete: '删除人员',
+        vehicle_upsert: '登记 / 更新车辆', vehicle_delete: '删除车辆',
+        event_review: '复核识别事件', cleanup: '执行保留期清理'
+    });
+    document.getElementById('filter-task').value = requestedTask;
+
+    function escapeText(value) {
+        const node = document.createElement('span');
+        node.textContent = String(value == null ? '' : value);
+        return node.innerHTML;
+    }
+    function recognitionStatusLabel(value) {
+        return RECOGNITION_STATUS_LABELS[String(value || '').toLowerCase()] || '不确定';
+    }
+    function plateColorLabel(value) {
+        return PLATE_COLOR_LABELS[String(value || '').toLowerCase()] || '未知';
+    }
+    function auditActionLabel(value) {
+        const key = String(value || '').toLowerCase();
+        return AUDIT_ACTION_LABELS[key] || String(value || '--');
+    }
+    async function request(path, payload) {
+        const response = await fetch(`${API}${path}`, {
+            method: payload === undefined ? 'GET' : 'POST', cache: 'no-store',
+            headers: payload === undefined ? {} : {'Content-Type': 'application/json'},
+            body: payload === undefined ? undefined : JSON.stringify(payload)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result.success === false) throw new Error(result.error || `HTTP ${response.status}`);
+        return result;
+    }
+    function message(text, error = false) {
+        const node = document.getElementById('operation-message');
+        node.textContent = text;
+        node.className = `recognition-operation ${error ? 'error' : 'success'}`;
+    }
+    function table(headers, rows) {
+        if (!rows.length) return '<div class="recognition-empty">暂无数据</div>';
+        return `<table class="recognition-table"><thead><tr>${headers.map((item) => `<th scope="col">${item}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+    }
+    async function filesAsBase64(files) {
+        return Promise.all([...files].slice(0, 10).map((file) => new Promise((resolve, reject) => {
+            const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
+        })));
+    }
+    async function loadStatus() {
+        const result = await request('/status');
+        const stats = result.stats || {};
+        document.getElementById('metric-people').textContent = `${stats.people || 0}/${stats.person_capacity || 50}`;
+        document.getElementById('metric-vehicles').textContent = `${stats.vehicles || 0}/${stats.vehicle_capacity || 50}`;
+        document.getElementById('metric-events').textContent = stats.events || 0;
+        document.getElementById('metric-review').textContent = stats.pending_review || 0;
+        const ready = result.models && result.models.sface && result.models.sface.available;
+        const status = document.getElementById('api-status');
+        status.textContent = ready ? '● 识别服务与SFace已就绪' : '○ 服务在线，SFace不可用';
+        status.className = `page-status ${ready ? 'connected' : 'error'}`;
+    }
+    async function loadPeople() {
+        const people = (await request('/people')).people || [];
+        document.getElementById('people-list').innerHTML = table(['编号/姓名', '样本', '操作'], people.map((item) =>
+            `<tr><td><strong>${escapeText(item.name)}</strong><br><small>${escapeText(item.person_id)}</small></td><td>${item.sample_count || 0}</td><td><button class="danger compact" type="button" data-delete-person="${escapeText(item.person_id)}" aria-label="删除人员 ${escapeText(item.name)}">删除</button></td></tr>`));
+    }
+    async function loadVehicles() {
+        const vehicles = (await request('/vehicles')).vehicles || [];
+        document.getElementById('vehicles-list').innerHTML = table(['车牌/编号', '车主/颜色', '操作'], vehicles.map((item) =>
+            `<tr><td><strong>${escapeText(item.plate_number)}</strong><br><small>${escapeText(item.vehicle_id)}</small></td><td>${escapeText(item.owner || '--')}<br><small>${escapeText(plateColorLabel(item.plate_color))}</small></td><td><button class="danger compact" type="button" data-delete-vehicle="${escapeText(item.vehicle_id)}" aria-label="删除车辆 ${escapeText(item.plate_number)}">删除</button></td></tr>`));
+    }
+    async function loadEvents() {
+        const params = new URLSearchParams({limit: '200'});
+        const task = document.getElementById('filter-task').value.trim();
+        const category = document.getElementById('filter-category').value;
+        const status = document.getElementById('filter-status').value;
+        if (task) params.set('task_id', task); if (category) params.set('category', category); if (status) params.set('status', status);
+        const events = (await request(`/events?${params}`)).events || [];
+        const reviewOptions = (item) => {
+            const selected = item.reviewed_status || item.status || 'uncertain';
+            return [['registered', '已登记'], ['unregistered', '未登记'], ['uncertain', '不确定']]
+                .map(([value, label]) => `<option value="${value}"${value === selected ? ' selected' : ''}>${label}</option>`).join('');
+        };
+        document.getElementById('events-list').innerHTML = table(['时间/任务', '对象', '结果', '复核'], events.map((item) => {
+            const state = String(item.reviewed_status || item.status || 'uncertain').toLowerCase();
+            const confidence = Math.round(Math.max(0, Math.min(1, Number(item.confidence || 0))) * 100);
+            const color = item.category === 'plate' ? ` · ${plateColorLabel(item.plate_color)}` : '';
+            return `<tr><td>${escapeText(item.occurred_at)}<br><small>${escapeText(item.task_id || '无任务ID')}</small></td><td>${item.category === 'face' ? '人脸' : '车牌'}<br><strong>${escapeText(item.display_name || '未知对象')}</strong></td><td><span class="recognition-pill ${escapeText(state)}">${escapeText(recognitionStatusLabel(state))}</span><br><small>置信度 ${confidence}%${escapeText(color)}</small></td><td><div class="recognition-review-controls"><select data-review-status="${item.id}" aria-label="选择事件复核状态">${reviewOptions(item)}</select><button class="primary compact" type="button" data-review="${item.id}">保存</button></div></td></tr>`;
+        }));
+    }
+    async function loadAudit() {
+        const audit = (await request('/audit?limit=100')).audit || [];
+        document.getElementById('audit-list').innerHTML = table(['时间', '操作', '对象/操作员'], audit.map((item) =>
+            `<tr><td>${escapeText(item.created_at)}</td><td>${escapeText(auditActionLabel(item.action))}</td><td>${escapeText(item.target_type)} / ${escapeText(item.target_id)}<br><small>${escapeText(item.operator || '--')}</small></td></tr>`));
+    }
+    async function refreshAll() {
+        try { await Promise.all([loadStatus(), loadPeople(), loadVehicles(), loadEvents(), loadAudit()]); message('数据已刷新。'); }
+        catch (error) { document.getElementById('api-status').textContent = '○ 识别服务不可用'; document.getElementById('api-status').className = 'page-status error'; message(error.message || error, true); }
+    }
+    document.getElementById('person-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+            const sample_images_base64 = await filesAsBase64(document.getElementById('person-images').files);
+            await request('/person/upsert', {person_id: document.getElementById('person-id').value.trim(), name: document.getElementById('person-name').value.trim(), notes: document.getElementById('person-notes').value.trim(), sample_images_base64, operator: '网页操作员'});
+            event.target.reset(); await refreshAll();
+        } catch (error) { message(error.message || error, true); }
+    });
+    document.getElementById('vehicle-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+            await request('/vehicle/upsert', {vehicle_id: document.getElementById('vehicle-id').value.trim(), plate_number: document.getElementById('plate-number').value.trim(), owner: document.getElementById('vehicle-owner').value.trim(), plate_color: document.getElementById('plate-color').value, notes: document.getElementById('vehicle-notes').value.trim(), operator: '网页操作员'});
+            event.target.reset(); await refreshAll();
+        } catch (error) { message(error.message || error, true); }
+    });
+    document.getElementById('event-filter').addEventListener('submit', (event) => { event.preventDefault(); loadEvents().catch((error) => message(error.message, true)); });
+    document.addEventListener('click', async (event) => {
+        const target = event.target;
+        try {
+            if (target.dataset.deletePerson && confirm('确定删除该人员及其人脸特征？')) await request('/person/delete', {person_id: target.dataset.deletePerson, operator: '网页操作员'});
+            else if (target.dataset.deleteVehicle && confirm('确定删除该车辆？')) await request('/vehicle/delete', {vehicle_id: target.dataset.deleteVehicle, operator: '网页操作员'});
+            else if (target.dataset.review) {
+                const select = document.querySelector(`[data-review-status="${target.dataset.review}"]`);
+                await request('/event/review', {event_id: Number(target.dataset.review), status: select.value, operator: '网页操作员'});
+            } else return;
+            await refreshAll();
+        } catch (error) { message(error.message || error, true); }
+    });
+    document.getElementById('btn-cleanup').addEventListener('click', async () => {
+        if (!confirm('按180/90/30/365天策略清理过期记录、证据与审计？')) return;
+        try { const result = await request('/cleanup', {}); message(`清理完成：${JSON.stringify(result.removed || {})}`); await refreshAll(); }
+        catch (error) { message(error.message || error, true); }
+    });
+    document.getElementById('btn-refresh').addEventListener('click', refreshAll);
+    refreshAll();
+})();
+</script>
+</body>
+</html>

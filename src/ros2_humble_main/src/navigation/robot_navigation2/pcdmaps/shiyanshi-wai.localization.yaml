@@ -1,0 +1,131 @@
+schema: ros2_mid360_localization_map
+version: 1
+map_name: shiyanshi-wai
+frame_id: map
+pcd_file: shiyanshi-wai.pcd
+point_count: 169191
+pcd_size_bytes: 2030478
+pcd_sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+voxel_size: 0.1
+created_at_utc: '2026-10-22T08:34:24.380722+00:00'
+map_geometry:
+  image: shiyanshi-wai.pgm
+  width: 1880
+  height: 1568
+  resolution: 0.05000000074505806
+  origin:
+  - -79.35000000000001
+  - -48.1
+  - 0.0
+  negate: 0
+  occupied_thresh: 0.65
+  free_thresh: 0.196
+terrain_grid:
+  schema: quadruped_terrain_grid
+  version: 2
+  filename: shiyanshi-wai.terrain.npz
+  map_name: shiyanshi-wai
+  frame_id: map
+  source_pcd_sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+  size_bytes: 360916
+  sha256: 55dcf0874b2c93f4c046b85d104364a61a6de6e303cd50d5518bf385c3436a01
+  resolution: 0.25
+  width: 371
+  height: 320
+  origin_x: -77.75
+  origin_y: -47.75
+  cell_count: 118720
+  known_cells: 18628
+  blocked_cells: 2662
+  generation:
+    algorithm: clustered_measured_ground_v3
+    parameters:
+      blocked_slope_deg: 28.0
+      blocked_step_m: 0.18
+      caution_slope_deg: 12.0
+      caution_step_m: 0.08
+      maximum_cells: 400000
+      minimum_confidence: 0.35
+      overhead_min_clearance_m: 0.75
+      overhead_search_radius_m: 1.0
+      resolution: 0.25
+      roughness_caution_m: 0.05
+      special_slope_deg: 18.0
+      special_step_m: 0.12
+    quality:
+      blocked_supported_cells: 998
+      component_count: 191
+      coverage_ratio: 0.676282
+      known_supported_cells: 16201
+      largest_component_cells: 14730
+      largest_component_ratio: 0.968888
+      state: ready
+      supported_free_cells: 23956
+      traversable_supported_cells: 15203
+      warnings: []
+    source: manual_obstacle_cleanup
+    source_pcd_sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+coordinate_system:
+  map_frame: map
+  pcd_frame: map
+  capture_frame: odom
+  projected_map_frame: odom
+  pcd_to_map: identity
+  compatibility: The saved 2D map and PCD share mapping-session odom coordinates,
+    which become the saved map frame on reload.
+pcd:
+  file: shiyanshi-wai.pcd
+  point_count: 169191
+  size_bytes: 2030478
+  sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+  format: binary
+localization_pcd:
+  filename: shiyanshi-wai.pcd
+  point_count: 169191
+  size_bytes: 2030478
+  sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+  format: binary
+  fields:
+  - x
+  - y
+  - z
+  voxel_size: 0.1
+  filter:
+    type: distinct_frame_voxel_persistence
+    mode: protected
+    min_observations: 6
+    observation_stride: 3
+    received_frames: 4625
+    sampled_frames: 1542
+    tracked_voxels: 193863
+    ground_preservation:
+      enabled: true
+      cell_size: 0.2
+      max_height_above_envelope: 0.08
+      max_slope_deg: 30.0
+      min_neighbor_cells: 3
+      min_observations: 3
+      min_stable_span_frames: 6
+      protected_voxels_at_save: 22361
+capture:
+  source_topic: /cloud_registered
+  projected_map_topic: /projected_map
+  projected_map_stamp_ns: 1792658061246230840
+  pcd_capture_unix_ns: 1792658062800238460
+files:
+  map_yaml:
+    filename: shiyanshi-wai.yaml
+    size_bytes: 165
+  map_image:
+    filename: shiyanshi-wai.pgm
+    size_bytes_at_creation: 2947857
+  localization_pcd:
+    filename: shiyanshi-wai.pcd
+    size_bytes: 2030478
+    sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+  terrain_grid:
+    filename: shiyanshi-wai.terrain.npz
+    size_bytes: 360916
+    sha256: 55dcf0874b2c93f4c046b85d104364a61a6de6e303cd50d5518bf385c3436a01
+    source_pcd_sha256: e27b7daac691d7d2a78ffba15910e0d1b8acabea9fb8671769e48545f23b9e84
+cloud_edited_at_utc: '2026-10-23T11:04:08.088624+00:00'

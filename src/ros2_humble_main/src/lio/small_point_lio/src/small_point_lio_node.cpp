@@ -143,6 +143,27 @@ namespace small_point_lio {
         publish_lio_health(status.str());
     }
 
+    void SmallPointLioNode::set_motion_paused(const bool paused) {
+        // Serialize heartbeats and transitions so an old false heartbeat
+        // cannot be published after a new pause. This never clears a hard stop.
+        std::lock_guard<std::mutex> lock(motion_pause_mutex);
+        motion_paused = paused;
+        if (motion_pause_publisher) {
+            std_msgs::msg::Bool message;
+            message.data = motion_paused;
+            motion_pause_publisher->publish(message);
+        }
+    }
+
+    void SmallPointLioNode::repeat_motion_pause_state() {
+        std::lock_guard<std::mutex> lock(motion_pause_mutex);
+        if (motion_pause_publisher) {
+            std_msgs::msg::Bool message;
+            message.data = motion_paused;
+            motion_pause_publisher->publish(message);
+        }
+    }
+
     void SmallPointLioNode::begin_auto_recovery_pause(
         const std::string &reason) {
         if (!odometry_guard_auto_recovery_enabled) {
@@ -153,8 +174,9 @@ namespace small_point_lio {
             return;
         }
         odometry_guard_auto_recovery_pause_active = true;
-        if (emergency_stop_publisher) {
-            emergency_stop_publisher->publish(std_msgs::msg::Empty{});
+        set_motion_paused(true);
+        if (recoverable_stop_publisher) {
+            recoverable_stop_publisher->publish(std_msgs::msg::Empty{});
         }
         RCLCPP_WARN(
             get_logger(),
@@ -185,8 +207,11 @@ namespace small_point_lio {
         }
         odometry_guard_auto_recovery_pause_active = false;
         odometry_guard_auto_recovery_good_samples = 0;
-        if (clear_emergency_stop_publisher) {
-            clear_emergency_stop_publisher->publish(std_msgs::msg::Empty{});
+        if (lio_health_announced) {
+            set_motion_paused(false);
+        }
+        if (recoverable_resume_publisher) {
+            recoverable_resume_publisher->publish(std_msgs::msg::Empty{});
         }
         RCLCPP_INFO(
             get_logger(),
@@ -226,8 +251,9 @@ namespace small_point_lio {
         lio_fault_latched = false;
         odometry_guard_auto_recovery_pause_active = true;
         odometry_guard_auto_recovery_good_samples = 0;
-        if (emergency_stop_publisher) {
-            emergency_stop_publisher->publish(std_msgs::msg::Empty{});
+        set_motion_paused(true);
+        if (recoverable_stop_publisher) {
+            recoverable_stop_publisher->publish(std_msgs::msg::Empty{});
         }
         std::ostringstream status;
         status << "{\"state\":\"resetting\","
@@ -259,6 +285,7 @@ namespace small_point_lio {
             return;
         }
         lio_fault_latched = true;
+        set_motion_paused(true);
 
         const auto json_number = [](const double value) {
             if (!std::isfinite(value)) {
@@ -270,6 +297,7 @@ namespace small_point_lio {
         };
         std::ostringstream status;
         status << "{\"state\":\"fault\","
+               << "\"hard_stop\":false,"
                << "\"code\":\"odometry_diverged\","
                << "\"reason\":\"" << reason << "\","
                << "\"pose_linear_speed\":" << json_number(pose_linear_speed) << ","
@@ -312,10 +340,10 @@ namespace small_point_lio {
             "consistency error %.3f m, gravity "
             "[%.3f %.3f %.3f], acceleration [%.3f %.3f %.3f], gyro bias "
             "[%.3f %.3f %.3f], accel bias [%.3f %.3f %.3f]. /Odometry, TF and "
-            "/cloud_registered are now quarantined and /emergency_stop was "
-            "published. Keep motion stopped and call /lio/reset_estimator for "
-            "an in-process reset; the navigation manager performs this "
-            "automatically while retaining the active task. Never use the "
+            "/cloud_registered are now quarantined and /motion_stop was "
+            "published: zero velocity with a latched motion gate, no native "
+            "hardware emergency. Estimator reset alone does not release the "
+            "motion latch; human confirmation is required. Never use the "
             "quarantined outputs for motion.",
             reason.c_str(), pose_linear_speed, estimator_linear_speed,
             pose_angular_speed, estimator_angular_speed, position_z,
@@ -330,8 +358,8 @@ namespace small_point_lio {
             diagnostics.accelerometer_bias.y(),
             diagnostics.accelerometer_bias.z());
 
-        if (emergency_stop_publisher) {
-            emergency_stop_publisher->publish(std_msgs::msg::Empty{});
+        if (motion_stop_publisher) {
+            motion_stop_publisher->publish(std_msgs::msg::Empty{});
         }
     }
 
@@ -346,11 +374,62 @@ namespace small_point_lio {
         bool enable_localization_map =
             declare_parameter<bool>("enable_localization_map", legacy_save_pcd);
         const double localization_voxel_size =
-            declare_parameter<double>("localization_pcd_voxel_size", 0.20);
+            declare_parameter<double>("localization_pcd_voxel_size", 0.10);
         const auto localization_min_observations =
-            declare_parameter<int64_t>("localization_pcd_min_observations", 4);
+            declare_parameter<int64_t>("localization_pcd_min_observations", 6);
         const auto localization_observation_stride =
             declare_parameter<int64_t>("localization_pcd_observation_stride", 3);
+        const auto localization_max_observation_gap_frames =
+            declare_parameter<int64_t>(
+                "localization_pcd_max_observation_gap_frames", 6);
+        const auto localization_min_stable_span_frames =
+            declare_parameter<int64_t>(
+                "localization_pcd_min_stable_span_frames", 15);
+        const std::string localization_filter_mode_value =
+            declare_parameter<std::string>(
+                "localization_pcd_filter_mode", "protected");
+        bool localization_filter_mode_valid = false;
+        const auto localization_filter_mode =
+            util::pointcloud_mapping_filter_mode_from_string(
+                localization_filter_mode_value,
+                &localization_filter_mode_valid);
+        if (!localization_filter_mode_valid) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Unknown localization_pcd_filter_mode '%s'; using the safe "
+                "default 'protected'. Valid modes: protected, bypass, strict.",
+                localization_filter_mode_value.c_str());
+        }
+        const std::string localization_filter_mode_name =
+            util::pointcloud_mapping_filter_mode_name(
+                localization_filter_mode);
+        if (localization_filter_mode_value !=
+            localization_filter_mode_name) {
+            set_parameter(rclcpp::Parameter(
+                "localization_pcd_filter_mode",
+                localization_filter_mode_name));
+        }
+        const bool localization_ground_preservation_enabled =
+            declare_parameter<bool>(
+                "localization_pcd_ground_preservation_enabled", true);
+        const double localization_ground_cell_size =
+            declare_parameter<double>(
+                "localization_pcd_ground_cell_size", 0.20);
+        const double localization_ground_max_height_above_envelope =
+            declare_parameter<double>(
+                "localization_pcd_ground_max_height_above_envelope", 0.08);
+        const double localization_ground_max_slope_deg =
+            declare_parameter<double>(
+                "localization_pcd_ground_max_slope_deg", 30.0);
+        const auto localization_ground_min_neighbor_cells =
+            declare_parameter<int64_t>(
+                "localization_pcd_ground_min_neighbor_cells", 3);
+        const auto localization_ground_min_observations =
+            declare_parameter<int64_t>(
+                "localization_pcd_ground_min_observations", 3);
+        const auto localization_ground_min_stable_span_frames =
+            declare_parameter<int64_t>(
+                "localization_pcd_ground_min_stable_span_frames", 6);
         const auto localization_stale_frames =
             declare_parameter<int64_t>("localization_pcd_stale_frames", 150);
         const auto localization_prune_interval_frames =
@@ -363,6 +442,12 @@ namespace small_point_lio {
             declare_parameter<std::string>(
                 "localization_pcd_staging_directory",
                 "/tmp/small_point_lio");
+        double global_mapping_cloud_publish_period =
+            declare_parameter<double>(
+                "global_mapping_cloud_publish_period", 2.0);
+        auto global_mapping_cloud_max_points =
+            declare_parameter<int64_t>(
+                "global_mapping_cloud_max_points", 120000);
         odometry_guard_enabled =
             declare_parameter<bool>("odometry_guard_enabled", true);
         odometry_guard_max_linear_speed =
@@ -421,6 +506,28 @@ namespace small_point_lio {
             localization_voxel_size > 1.0 ||
             localization_min_observations < 1 ||
             localization_observation_stride < 1 ||
+            localization_max_observation_gap_frames <
+                localization_observation_stride ||
+            localization_min_stable_span_frames < 1 ||
+            !std::isfinite(localization_ground_cell_size) ||
+            localization_ground_cell_size < localization_voxel_size ||
+            localization_ground_cell_size > 1.0 ||
+            !std::isfinite(
+                localization_ground_max_height_above_envelope) ||
+            localization_ground_max_height_above_envelope < 0.01 ||
+            localization_ground_max_height_above_envelope > 0.15 ||
+            !std::isfinite(localization_ground_max_slope_deg) ||
+            localization_ground_max_slope_deg < 1.0 ||
+            localization_ground_max_slope_deg > 45.0 ||
+            localization_ground_min_neighbor_cells < 1 ||
+            localization_ground_min_neighbor_cells > 8 ||
+            localization_ground_min_observations < 2 ||
+            localization_ground_min_observations >=
+                localization_min_observations ||
+            localization_ground_min_stable_span_frames <
+                localization_observation_stride ||
+            localization_ground_min_stable_span_frames >=
+                localization_min_stable_span_frames ||
             localization_stale_frames < 1 ||
             localization_prune_interval_frames < 1 ||
             localization_max_voxels < 1000 ||
@@ -431,6 +538,18 @@ namespace small_point_lio {
                 "accumulation has been disabled. Check voxel size, observation "
                 "counts, frame intervals, point threshold, and voxel capacity.");
             enable_localization_map = false;
+        }
+        if (!std::isfinite(global_mapping_cloud_publish_period) ||
+            global_mapping_cloud_publish_period < 0.5 ||
+            global_mapping_cloud_publish_period > 30.0 ||
+            global_mapping_cloud_max_points < 1000 ||
+            global_mapping_cloud_max_points > 500000) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Invalid global mapping cloud preview limits; using 2.0 s "
+                "and 120000 points.");
+            global_mapping_cloud_publish_period = 2.0;
+            global_mapping_cloud_max_points = 120000;
         }
         if (!std::isfinite(odometry_guard_max_linear_speed) ||
             !std::isfinite(odometry_guard_max_vertical_speed) ||
@@ -511,22 +630,46 @@ namespace small_point_lio {
         small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
         odometry_publisher = create_publisher<nav_msgs::msg::Odometry>("/Odometry", 10);
         pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 10);
+        global_mapping_cloud_publisher =
+            create_publisher<sensor_msgs::msg::PointCloud2>(
+                "/global_mapping_cloud",
+                rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
         lio_health_publisher = create_publisher<std_msgs::msg::String>(
             "/lio_health",
             rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
-        emergency_stop_publisher = create_publisher<std_msgs::msg::Empty>(
-            "/emergency_stop", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
+        motion_stop_publisher = create_publisher<std_msgs::msg::Empty>(
+            "/motion_stop", rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
         clear_emergency_stop_publisher =
             create_publisher<std_msgs::msg::Empty>(
                 "/clear_emergency_stop",
                 rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
+        recoverable_stop_publisher = create_publisher<std_msgs::msg::Empty>(
+            "/lio/recoverable_stop", rclcpp::QoS(10).reliable());
+        recoverable_resume_publisher = create_publisher<std_msgs::msg::Empty>(
+            "/lio/recoverable_resume", rclcpp::QoS(10).reliable());
+        motion_pause_publisher = create_publisher<std_msgs::msg::Bool>(
+            "/lio/motion_paused",
+            rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+        set_motion_paused(true);
         publish_lio_health("{\"state\":\"initializing\"}");
+        interval_policy_subscription = create_subscription<std_msgs::msg::Bool>(
+            "/localization/interval_compensation",
+            rclcpp::QoS(1).reliable().transient_local(),
+            [this](const std_msgs::msg::Bool::SharedPtr message) {
+                const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                interval_policy.observe(message->data, now_ns);
+            });
+        RCLCPP_INFO(get_logger(),
+            "ODOMETRY_INTERVAL_POLICY model=xingji_3d_interval_v1 "
+            "lease=1s compensated_speed=0.6m/s legacy_step=unchanged");
         // rosbridge commonly creates a VOLATILE subscription, so it will not
         // receive a transient-local sample published before the browser
         // connects.  Repeat the tiny status payload at 1 Hz for late clients.
         lio_health_timer = create_wall_timer(
             std::chrono::seconds(1),
             [this]() {
+                repeat_motion_pause_state();
                 std::string payload;
                 {
                     std::lock_guard<std::mutex> lock(lio_health_mutex);
@@ -554,21 +697,99 @@ namespace small_point_lio {
         tf_buffer = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener = std::make_shared<tf2_ros::TransformListener>(*tf_buffer);
         if (enable_localization_map) {
+            const util::PointcloudMappingGroundPolicy ground_policy{
+                localization_ground_preservation_enabled,
+                static_cast<float>(localization_ground_cell_size),
+                static_cast<float>(
+                    localization_ground_max_height_above_envelope),
+                static_cast<float>(localization_ground_max_slope_deg),
+                static_cast<std::uint32_t>(
+                    localization_ground_min_neighbor_cells),
+                static_cast<std::uint32_t>(
+                    localization_ground_min_observations),
+                static_cast<std::uint64_t>(
+                    localization_ground_min_stable_span_frames),
+                localization_filter_mode};
             pointcloud_mapping = std::make_unique<util::PointcloudMapping>(
                 static_cast<float>(localization_voxel_size),
                 static_cast<std::uint32_t>(localization_min_observations),
                 static_cast<std::uint32_t>(localization_observation_stride),
+                static_cast<std::uint64_t>(
+                    localization_max_observation_gap_frames),
+                static_cast<std::uint64_t>(
+                    localization_min_stable_span_frames),
                 static_cast<std::uint64_t>(localization_stale_frames),
                 static_cast<std::uint64_t>(localization_prune_interval_frames),
-                static_cast<std::size_t>(localization_max_voxels));
+                static_cast<std::size_t>(localization_max_voxels),
+                ground_policy);
             RCLCPP_INFO(
                 get_logger(),
                 "Localization PCD accumulation enabled: voxel=%.3f m, "
-                "min_observations=%ld, stride=%ld, max_voxels=%ld.",
+                "min_observations=%ld, stride=%ld, max_gap=%ld frames, "
+                "min_span=%ld frames, max_voxels=%ld; mode=%s, ground=%s, "
+                "%ld observations/%ld frames, cell=%.2f m.",
                 localization_voxel_size,
                 static_cast<long>(localization_min_observations),
                 static_cast<long>(localization_observation_stride),
-                static_cast<long>(localization_max_voxels));
+                static_cast<long>(localization_max_observation_gap_frames),
+                static_cast<long>(localization_min_stable_span_frames),
+                static_cast<long>(localization_max_voxels),
+                localization_filter_mode_name.c_str(),
+                localization_ground_preservation_enabled ? "enabled" : "disabled",
+                static_cast<long>(localization_ground_min_observations),
+                static_cast<long>(localization_ground_min_stable_span_frames),
+                localization_ground_cell_size);
+            global_mapping_cloud_timer = create_wall_timer(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::duration<double>(
+                        global_mapping_cloud_publish_period)),
+                [this, global_mapping_cloud_max_points]() {
+                    if (!pointcloud_mapping || !global_mapping_cloud_publisher ||
+                        global_mapping_cloud_publisher->get_subscription_count() == 0) {
+                        return;
+                    }
+                    const auto snapshot = pointcloud_mapping->get_snapshot(
+                        static_cast<std::size_t>(
+                            global_mapping_cloud_max_points));
+                    if (snapshot.points.empty()) {
+                        return;
+                    }
+                    sensor_msgs::msg::PointCloud2 message;
+                    message.header.stamp = get_clock()->now();
+                    message.header.frame_id = "odom";
+                    message.height = 1;
+                    message.width = static_cast<std::uint32_t>(
+                        snapshot.points.size());
+                    message.fields.resize(3);
+                    const std::array<std::string, 3> names{"x", "y", "z"};
+                    for (std::size_t index = 0; index < names.size(); ++index) {
+                        message.fields[index].name = names[index];
+                        message.fields[index].offset =
+                            static_cast<std::uint32_t>(index * sizeof(float));
+                        message.fields[index].datatype =
+                            sensor_msgs::msg::PointField::FLOAT32;
+                        message.fields[index].count = 1;
+                    }
+                    message.is_bigendian = false;
+                    message.point_step = 3 * sizeof(float);
+                    message.row_step = message.width * message.point_step;
+                    message.is_dense = true;
+                    message.data.resize(message.row_step);
+                    auto *output = reinterpret_cast<float *>(message.data.data());
+                    for (const auto &point : snapshot.points) {
+                        *output++ = point.x();
+                        *output++ = point.y();
+                        *output++ = point.z();
+                    }
+                    global_mapping_cloud_publisher->publish(message);
+                });
+            RCLCPP_INFO(
+                get_logger(),
+                "Global mapping cloud preview enabled on "
+                "/global_mapping_cloud: period=%.1f s, max_points=%ld. "
+                "The saved PCD remains complete.",
+                global_mapping_cloud_publish_period,
+                static_cast<long>(global_mapping_cloud_max_points));
         } else {
             RCLCPP_INFO(
                 get_logger(),
@@ -581,6 +802,13 @@ namespace small_point_lio {
                  localization_voxel_size,
                  localization_min_observations,
                  localization_observation_stride,
+                 localization_ground_preservation_enabled,
+                 localization_ground_cell_size,
+                 localization_ground_max_height_above_envelope,
+                 localization_ground_max_slope_deg,
+                 localization_ground_min_neighbor_cells,
+                 localization_ground_min_observations,
+                 localization_ground_min_stable_span_frames,
                  localization_min_output_points,
                  localization_staging_directory](
                     const std_srvs::srv::Trigger::Request::SharedPtr req,
@@ -683,6 +911,26 @@ namespace small_point_lio {
                             << localization_min_observations << ","
                             << "\"observation_stride\":"
                             << localization_observation_stride << ","
+                            << "\"filter_mode\":\""
+                            << util::pointcloud_mapping_filter_mode_name(
+                                snapshot.filter_mode) << "\","
+                            << "\"ground_preservation_enabled\":"
+                            << (localization_ground_preservation_enabled
+                                    ? "true" : "false") << ","
+                            << "\"ground_cell_size\":"
+                            << localization_ground_cell_size << ","
+                            << "\"ground_max_height_above_envelope\":"
+                            << localization_ground_max_height_above_envelope << ","
+                            << "\"ground_max_slope_deg\":"
+                            << localization_ground_max_slope_deg << ","
+                            << "\"ground_min_neighbor_cells\":"
+                            << localization_ground_min_neighbor_cells << ","
+                            << "\"ground_min_observations\":"
+                            << localization_ground_min_observations << ","
+                            << "\"ground_min_stable_span_frames\":"
+                            << localization_ground_min_stable_span_frames << ","
+                            << "\"ground_protected_voxels\":"
+                            << snapshot.ground_protected_voxels << ","
                             << "\"received_frames\":"
                             << snapshot.received_frames << ","
                             << "\"sampled_frames\":"
@@ -1042,9 +1290,13 @@ namespace small_point_lio {
                 const bool pose_angular_violation =
                     pose_angular_speed >
                     odometry_guard_max_angular_speed;
-                const bool position_step_violation =
-                    dt <= 0.5 &&
-                    position_step > odometry_guard_max_position_step;
+                const auto interval_now_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                const bool interval_compensation = interval_policy.enabled(interval_now_ns);
+                const bool position_step_violation = exceeds_position_step(
+                    dt, position_step, odometry_guard_max_position_step,
+                    odometry_guard_max_linear_speed, interval_compensation);
                 const bool yaw_step_violation =
                     dt <= 0.5 &&
                     yaw_step > odometry_guard_max_yaw_step;
@@ -1341,6 +1593,9 @@ namespace small_point_lio {
                 odometry_guard_accepted_samples >=
                 odometry_guard_warmup_samples) {
                 lio_health_announced = true;
+                if (!odometry_guard_auto_recovery_pause_active) {
+                    set_motion_paused(false);
+                }
                 publish_lio_health("{\"state\":\"healthy\"}");
                 RCLCPP_INFO(
                     get_logger(),

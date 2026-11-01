@@ -1,0 +1,11 @@
+# Read-only, Xingji-only 3-D planning preview. A valid preview never starts motion.
+geometry_msgs/PoseStamped goal
+string map_name
+string map_load_id
+---
+bool valid
+string code
+string message
+string preview_id
+string map_name
+nav_msgs/Path path

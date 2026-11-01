@@ -1,0 +1,15 @@
+std_msgs/Header header
+string map_name
+string map_load_id
+float32 resolution
+uint32 width
+uint32 height
+float64 origin_x
+float64 origin_y
+float32[] elevation
+float32[] slope_deg
+float32[] roughness_m
+float32[] step_height_m
+float32[] confidence
+int8[] traversal_cost
+uint8[] ground_measured

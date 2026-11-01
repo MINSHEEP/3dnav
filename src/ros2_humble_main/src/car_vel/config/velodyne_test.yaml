@@ -13,7 +13,7 @@
 
 /global_map_publisher:
     ros__parameters:
-        map_file_path: "/home/zy/nav/ros2_humble_main/test.pcd"
+        map_file_path: "/home/a/nav/ros2_humble_main/test.pcd"
         interval: 5 # publish interval in seconds
 
 /**:

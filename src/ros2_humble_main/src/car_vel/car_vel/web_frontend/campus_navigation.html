@@ -1,0 +1,1245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>园区导航 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
+    <link rel="stylesheet" href="campus_navigation.css?v=20260812-terrain-nav">
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <script src="robot_ui_common.js?v=20260812-terrain-nav"></script>
+    <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
+</head>
+<body>
+<div class="app-shell campus-app">
+    <header class="topbar">
+        <div class="brand">四足机器人巡检</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a href="navigation.html">地形导航</a>
+            <a class="active" href="campus_navigation.html" aria-current="page">园区导航</a>
+            <a href="inspection.html">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
+            <a href="remote_control.html">遥控</a>
+            <a href="camera.html">USB相机</a>
+            <a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main class="campus-workspace">
+        <section class="campus-stage" aria-label="园区拓扑高程视图">
+            <div class="stage-heading">
+                <div>
+                    <span class="eyebrow">TOPOLOGY / ELEVATION</span>
+                    <h1>园区拓扑高程视图</h1>
+                    <p>区域、建筑、楼层、坡道与楼梯连接关系。当前不是实时点云画面。</p>
+                </div>
+                <div class="stage-actions">
+                    <div class="stage-buttons"><button id="btn-edit-topology" class="quiet" type="button" disabled>配置园区</button><button id="btn-retry-navigation" type="button" disabled>重试导航服务</button></div>
+                    <div class="stage-legend" aria-label="图例">
+                    <span><i class="legend-dot outdoor"></i>室外</span>
+                    <span><i class="legend-dot indoor"></i>室内</span>
+                    <span><i class="legend-line normal"></i>普通</span>
+                    <span><i class="legend-line special"></i>特殊地形</span>
+                    </div>
+                </div>
+            </div>
+            <div id="topology-empty" class="topology-empty">
+                <strong>等待园区拓扑</strong>
+                <span>点击“配置园区”添加区域、坡道、台阶和连接端点。</span>
+            </div>
+            <svg id="topology-view" class="topology-view" role="img" aria-label="园区区域和楼层连接图"></svg>
+            <div class="perception-strip">
+                <span id="perception-indicator" class="perception-indicator unavailable"></span>
+                <div><strong>实时地形 / 可通行性感知</strong><small id="perception-summary">等待实时地形数据…</small></div>
+            </div>
+        </section>
+
+        <aside class="campus-panel">
+            <section class="campus-summary">
+                <span class="eyebrow">MISSION PLANNER</span>
+                <h1>跨区域导航规划</h1>
+                <p>选择起终区域和已验证能力。系统优先绕开不可用楼梯、陡坡和危险地形。</p>
+                <div class="metric-grid">
+                    <div><span>区域</span><strong id="area-count">--</strong></div>
+                    <div><span>通道</span><strong id="transition-count">--</strong></div>
+                    <div><span>规划代价</span><strong id="plan-cost">--</strong></div>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">任务起终点</div>
+                <label class="field-label" for="source-area">当前位置区域</label>
+                <select id="source-area" disabled><option value="">等待拓扑…</option></select>
+                <label class="field-label" for="target-area">目标区域 / 楼层</label>
+                <select id="target-area" disabled><option value="">等待拓扑…</option></select>
+                <button id="btn-swap-areas" class="quiet full-width" type="button" disabled>交换起点和终点</button>
+            </section>
+
+            <section class="section">
+                <div class="section-title">已验证运动能力</div>
+                <div class="capability-grid">
+                    <label><input type="checkbox" value="rough_ground">草地 / 碎石</label>
+                    <label><input type="checkbox" value="obstacle">路缘 / 小台阶</label>
+                    <label><input type="checkbox" value="ramp">坡道</label>
+                    <label><input type="checkbox" value="stairs_up">上楼梯</label>
+                    <label><input type="checkbox" value="stairs_down">下楼梯</label>
+                </div>
+                <label class="route-preview-option"><input id="allow-preview" type="checkbox">允许预览缺少硬件适配器的路线</label>
+                <p class="hint">这里只声明已完成实地标定和安全验收的能力。勾选不会绕过后端执行门控。</p>
+                <button id="btn-plan" class="primary full-width" type="button" disabled>生成园区路线</button>
+            </section>
+
+            <section class="section plan-section">
+                <div class="section-title">规划结果</div>
+                <div id="plan-banner" class="plan-banner neutral">尚未规划</div>
+                <div id="plan-segments" class="plan-segments"><div class="route-empty">选择区域后生成路线</div></div>
+                <button id="btn-execute-plan" class="success full-width" type="button" disabled>执行路线</button>
+                <button id="btn-stop-plan" class="danger full-width" type="button" disabled>停止园区任务</button>
+                <p id="execute-reason" class="hint">路线必须包含已实地标定的连接器端点才能执行。</p>
+                <p class="hint">星玑自主导航固定越障模式；平地恢复、连接段完成或停止任务均不切换高速模式。地形阶段不代表本体步态。</p>
+                <div id="mission-status" class="terrain-result neutral">园区任务未启动</div>
+                <p id="velocity-guard-reason" class="hint" aria-live="polite" hidden></p>
+                <div id="navigation-motion-status" aria-live="polite" hidden></div>
+            </section>
+
+            <details class="section terrain-lab">
+                <summary class="section-title">单点地形评估工具</summary>
+                <div class="terrain-form">
+                    <label>地形<select id="terrain-type"></select></label>
+                    <label>纵坡 °<input id="slope-deg" type="number" step="0.5" value="0"></label>
+                    <label>横坡 °<input id="cross-slope-deg" type="number" step="0.5" value="0"></label>
+                    <label>台阶 m<input id="step-height" type="number" step="0.01" value="0"></label>
+                    <label>沟槽 m<input id="gap-width" type="number" min="0" step="0.01" value="0"></label>
+                    <label>粗糙度 m<input id="roughness" type="number" min="0" step="0.01" value="0"></label>
+                    <label>通行宽度 m<input id="clearance-width" type="number" min="0" step="0.05" value="1"></label>
+                    <label>置信度<input id="confidence" type="number" min="0" max="1" step="0.05" value="0.95"></label>
+                </div>
+                <div class="row wrap terrain-flags">
+                    <label><input id="negative-obstacle" type="checkbox">坑洞 / 临边</label>
+                    <label><input id="slippery" type="checkbox">湿滑</label>
+                </div>
+                <button id="btn-evaluate" class="full-width" type="button" disabled>评估可通行性</button>
+                <div id="terrain-result" class="terrain-result neutral">等待评估</div>
+            </details>
+
+            <section class="section">
+                <div class="section-title">运行日志</div>
+                <div id="log-area" class="log-area" aria-live="polite"></div>
+            </section>
+        </aside>
+    </main>
+</div>
+
+<dialog id="topology-editor" class="topology-editor">
+    <form method="dialog" class="topology-editor-shell" onsubmit="return false">
+        <header class="editor-header">
+            <div><span class="eyebrow">CAMPUS CONFIGURATION</span><h2>园区三维导航配置</h2></div>
+            <button id="btn-close-topology" class="quiet icon-button" type="button" aria-label="关闭">×</button>
+        </header>
+        <p id="topology-lock-warning" class="editor-warning">任务执行中禁止修改；请先停止园区任务。</p>
+        <div class="editor-columns">
+            <section id="area-editor" class="editor-card">
+                <div class="editor-card-title"><strong>区域 / 楼层</strong><button id="btn-new-area" type="button">新建</button></div>
+                <select id="edit-area-select" size="5" aria-label="区域列表"></select>
+                <div class="editor-grid two-columns">
+                    <label>区域 ID<input id="edit-area-id" maxlength="48" placeholder="park_west"></label>
+                    <label>地图名称<input id="edit-area-map" list="map-name-options" maxlength="96" placeholder="请选择已保存地图"></label>
+                    <datalist id="map-name-options"></datalist>
+                    <label>楼层<input id="edit-area-floor" maxlength="32" placeholder="ground / F2"></label>
+                    <label>环境<select id="edit-area-environment"><option value="outdoor">室外</option><option value="indoor">室内</option></select></label>
+                </div>
+                <div class="editor-row wrap"><button id="btn-load-area-map" type="button">加载该区域地图</button><button id="btn-upsert-area" class="primary" type="button">保存区域</button><button id="btn-delete-area" class="danger" type="button">删除区域</button></div>
+            </section>
+
+            <section id="transition-editor" class="editor-card transition-card">
+                <div class="editor-card-title"><strong>坡道 / 台阶 / 低障碍连接段</strong><button id="btn-new-transition" type="button">新建</button></div>
+                <select id="edit-transition-select" size="5" aria-label="连接段列表"></select>
+                <div class="editor-grid three-columns">
+                    <label>连接 ID<input id="edit-transition-id" maxlength="48" placeholder="ramp_a"></label>
+                    <label>起点区域<select id="edit-transition-source"></select></label>
+                    <label>终点区域<select id="edit-transition-target"></select></label>
+                    <label>地形<select id="edit-transition-terrain"><option value="flat">平整</option><option value="rough">粗糙</option><option value="curb">路缘/低障碍</option><option value="ramp">坡道</option><option value="stairs_up">上楼梯</option><option value="stairs_down">下楼梯</option></select></label>
+                    <label>水平距离 m<input id="edit-transition-distance" type="number" min="0.3" step="0.05" value="1"></label>
+                    <label>高差 m<input id="edit-transition-elevation" type="number" step="0.01" value="0"></label>
+                    <label>纵坡 °<input id="edit-transition-slope" type="number" step="0.5" value="0"></label>
+                    <label>横坡 °<input id="edit-transition-cross-slope" type="number" min="0" step="0.5" value="0"></label>
+                    <label>台阶 m<input id="edit-transition-step" type="number" min="0" step="0.01" value="0"></label>
+                    <label>间隙 m<input id="edit-transition-gap" type="number" min="0" step="0.01" value="0"></label>
+                    <label>粗糙度 m<input id="edit-transition-roughness" type="number" min="0" step="0.01" value="0"></label>
+                    <label>通行宽度 m<input id="edit-transition-clearance" type="number" min="0" step="0.05" value="1"></label>
+                    <label>标定置信度<input id="edit-transition-confidence" type="number" min="0" max="1" step="0.05" value="0.95"></label>
+                </div>
+                <div class="editor-row wrap">
+                    <label class="inline-check"><input id="edit-transition-bidirectional" type="checkbox" checked>双向通行</label>
+                    <label class="inline-check"><input id="edit-transition-negative" type="checkbox">坑洞 / 临边</label>
+                    <label class="inline-check"><input id="edit-transition-slippery" type="checkbox">湿滑</label>
+                    <label class="inline-check"><input id="edit-transition-calibrated" type="checkbox">已实地标定</label>
+                </div>
+                <div class="pose-capture-grid">
+                    <div><strong>起点端点</strong><code id="source-pose-preview">未采集</code><button id="btn-capture-source-pose" type="button">采集机器人当前位置</button></div>
+                    <div><strong>终点端点</strong><code id="target-pose-preview">未采集</code><button id="btn-capture-target-pose" type="button">采集机器人当前位置</button></div>
+                </div>
+                <div class="editor-row wrap"><button id="btn-use-live-terrain" type="button">采用当前实时地形</button><button id="btn-upsert-transition" class="primary" type="button">保存连接段</button><button id="btn-delete-transition" class="danger" type="button">删除连接段</button></div>
+            </section>
+
+            <section id="automatic-navigation-editor" class="editor-card profile-card">
+                <div class="editor-card-title"><strong>建图后直接导航</strong><span>同一张连续地图</span></div>
+                <label class="inline-check"><input id="automatic-navigation-enabled" type="checkbox" checked>启用自动地形导航</label>
+                <label class="inline-check"><input id="restricted-flat-site" type="checkbox">星玑受限平地低速通行：已人工确认场地没有坑洞、临边和台阶</label>
+                <p class="hint">仅在新版地图有实测地面、定位和实时避障有效时使用，速度最高 0.10 m/s。此选项不能实时发现近场盲区中新出现的坑洞。</p>
+                <div class="editor-row wrap" role="group" aria-label="允许自动切换的地形模式">
+                    <label class="inline-check"><input data-automatic-mode="rough_ground" type="checkbox" checked>草地、碎石和粗糙路面</label>
+                    <label class="inline-check"><input data-automatic-mode="obstacle" type="checkbox" checked>安全低台阶 / 低障碍</label>
+                    <label class="inline-check"><input data-automatic-mode="ramp" type="checkbox" checked>安全坡道</label>
+                </div>
+                <p class="hint">保存后，普通导航会依据全局三维地图生成的地形代价和实时点云自动通行。连续楼梯仍需人工确认；坑洞、临边、低置信度及超限地形始终禁止自动执行。</p>
+            </section>
+
+            <section id="capability-profile-editor" class="editor-card profile-card">
+                <div class="editor-card-title"><strong>机器狗安全能力阈值</strong><span><i id="current-map-name">当前地图 --</i> · <i id="topology-revision">版本 --</i></span></div>
+                <p class="hint">这里填写的是人工高风险连接段也会使用的验收上限，不是机械极限。自动导航无论此处填写多大，都不会超过18°坡和12 cm台阶；17 cm实测极限不会自动成为导航阈值。</p>
+                <div class="editor-grid four-columns">
+                    <label>上台阶 m<input data-profile="max_up_step_m" type="number" min="0.02" max="0.17" step="0.01"></label>
+                    <label>下台阶 m<input data-profile="max_down_step_m" type="number" min="0.02" max="0.17" step="0.01"></label>
+                    <label>上坡 °<input data-profile="max_up_slope_deg" type="number" min="1" max="25" step="0.5"></label>
+                    <label>下坡 °<input data-profile="max_down_slope_deg" type="number" min="1" max="22" step="0.5"></label>
+                    <label>横坡 °<input data-profile="max_cross_slope_deg" type="number" min="1" max="15" step="0.5"></label>
+                    <label>最大间隙 m<input data-profile="max_gap_width_m" type="number" min="0" max="0.12" step="0.01"></label>
+                    <label>最大粗糙度 m<input data-profile="max_roughness_m" type="number" min="0" max="0.08" step="0.01"></label>
+                    <label>最小通行宽度 m<input data-profile="min_clearance_width_m" type="number" min="0.5" max="2" step="0.05"></label>
+                    <label>最小置信度<input data-profile="min_confidence" type="number" min="0.5" max="1" step="0.05"></label>
+                    <label>普通速度 m/s<input data-profile="normal_speed_mps" type="number" min="0.04" max="0.35" step="0.01"></label>
+                    <label>谨慎速度 m/s<input data-profile="caution_speed_mps" type="number" min="0.04" max="0.20" step="0.01"></label>
+                    <label>特殊地形速度 m/s<input data-profile="special_speed_mps" type="number" min="0.04" max="0.10" step="0.01"></label>
+                </div>
+            </section>
+        </div>
+        <footer class="editor-footer"><span id="topology-editor-status">所有修改需点击保存才会生效。</span><button id="btn-cancel-topology" class="quiet" type="button">取消</button><button id="btn-save-topology" class="success" type="button">保存全部园区配置</button></footer>
+    </form>
+</dialog>
+
+<script>
+'use strict';
+
+const UI = window.RobotUi;
+const log = UI.createLogger(document.getElementById('log-area'));
+const TERRAIN_LABELS = Object.freeze({
+    flat: '平整地面', paved: '硬化路面', indoor: '室内地面',
+    grass: '草地', gravel: '碎石路', rough: '粗糙地面', curb: '路缘',
+    ramp: '坡道', stairs_up: '上楼梯', stairs_down: '下楼梯',
+    negative_obstacle: '坑洞 / 负障碍', cliff: '临边', water: '积水',
+    blocked: '禁行区', unknown: '未知地形'
+});
+const MODE_LABELS = Object.freeze({
+    normal: '普通步态', rough_ground: '粗糙地面模式', obstacle: '越障模式',
+    ramp: '坡道模式', stairs_up: '上楼模式', stairs_down: '下楼模式'
+});
+const DECISION_LABELS = Object.freeze({
+    normal: '普通通行', caution: '谨慎通行',
+    special_required: '需要特殊模式', blocked: '禁止通行'
+});
+
+let session = null;
+let topology = { version: 1, revision: 0, automatic_navigation: {}, capability_profile: {}, areas: [], transitions: [] };
+let topologyRevision = 0;
+let topologyDraft = null;
+let activePlan = null;
+let missionStatus = { active: false, state: 'idle', stage: 'idle' };
+let latestMapPose = null;
+let latestOdomPose = null;
+let latestTerrain = null;
+let latestTerrainAt = 0;
+let terrainCostmapStatus = null;
+let currentMapName = '';
+let healthTimer = null;
+let campusBodyStatus = null;
+let campusBodyStatusAt = 0;
+let campusStartPending = false;
+let editingSourcePose = null;
+let editingTargetPose = null;
+
+const DEFAULT_PROFILE = Object.freeze({
+    max_up_step_m: 0.15, max_down_step_m: 0.12,
+    max_up_slope_deg: 20, max_down_slope_deg: 18,
+    max_cross_slope_deg: 12, max_gap_width_m: 0.10,
+    max_roughness_m: 0.06, min_clearance_width_m: 0.65,
+    min_confidence: 0.70, normal_speed_mps: 0.25,
+    caution_speed_mps: 0.15, special_speed_mps: 0.10
+});
+const DEFAULT_AUTOMATIC_NAVIGATION = Object.freeze({
+    enabled: true,
+    enabled_modes: ['rough_ground', 'obstacle', 'ramp']
+});
+
+function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function normaliseTopology(value) {
+    const parsed = value && typeof value === 'object' ? value : {};
+    return {
+        version: 1,
+        revision: Number(parsed.revision || 0),
+        automatic_navigation: {
+            ...DEFAULT_AUTOMATIC_NAVIGATION,
+            ...(parsed.automatic_navigation || {}),
+            enabled_modes: Array.isArray(parsed.automatic_navigation && parsed.automatic_navigation.enabled_modes)
+                ? parsed.automatic_navigation.enabled_modes
+                : [...DEFAULT_AUTOMATIC_NAVIGATION.enabled_modes]
+        },
+        capability_profile: { ...DEFAULT_PROFILE, ...(parsed.capability_profile || {}) },
+        areas: Array.isArray(parsed.areas) ? parsed.areas : [],
+        transitions: Array.isArray(parsed.transitions) ? parsed.transitions : []
+    };
+}
+
+function availableModes() {
+    return [...document.querySelectorAll('.capability-grid input:checked')]
+        .map((input) => input.value);
+}
+
+function terrainLabel(value) {
+    return TERRAIN_LABELS[String(value || 'unknown')] || String(value || '未知');
+}
+
+function areaLabel(area) {
+    const context = [
+        area.environment === 'indoor' ? '室内' : '室外',
+        area.floor_id || '地面', area.map_name
+    ].filter(Boolean).join(' · ');
+    return `${area.area_id}（${context}）`;
+}
+
+function setConnected(connected) {
+    const status = document.getElementById('connection-status');
+    status.textContent = connected ? '● ROS2 已连接' : '○ ROS2 未连接';
+    status.className = `page-status ${connected ? 'connected' : 'error'}`;
+    document.getElementById('btn-evaluate').disabled = !connected;
+    updatePlanningControls();
+}
+
+function terrainIsFresh() {
+    return Boolean(latestTerrain && Date.now() - latestTerrainAt <= 750);
+}
+
+function terrainAllowsExecution() {
+    if (!terrainIsFresh()) return false;
+    const profile = topology.capability_profile || DEFAULT_PROFILE;
+    const terrain = String(latestTerrain.terrain_type || 'unknown');
+    const slope = Number(latestTerrain.slope_deg || 0);
+    const step = Number(latestTerrain.step_height_m || 0);
+    const requiredModes = {
+        grass: 'rough_ground', gravel: 'rough_ground', rough: 'rough_ground',
+        curb: 'obstacle', ramp: 'ramp',
+        stairs_up: 'stairs_up', stairs_down: 'stairs_down'
+    };
+    const requiredMode = requiredModes[terrain];
+    return !['unknown', 'blocked', 'negative_obstacle', 'cliff', 'water'].includes(terrain)
+        && !latestTerrain.negative_obstacle && !latestTerrain.slippery
+        && Number(latestTerrain.confidence || 0) >= Number(profile.min_confidence || 0.7)
+        && Number(latestTerrain.cross_slope_deg || 0) <= Number(profile.max_cross_slope_deg)
+        && slope <= Number(profile.max_up_slope_deg)
+        && slope >= -Number(profile.max_down_slope_deg)
+        && step <= Number(profile.max_up_step_m)
+        && Number(latestTerrain.gap_width_m || 0) <= Number(profile.max_gap_width_m)
+        && Number(latestTerrain.roughness_m || 0) <= Number(profile.max_roughness_m)
+        && Number(latestTerrain.clearance_width_m || 0) >= Number(profile.min_clearance_width_m)
+        && (!requiredMode || availableModes().includes(requiredMode));
+}
+
+function updatePlanningControls() {
+    const connected = Boolean(session && session.connected);
+    const haveTopology = topology.areas.length > 0;
+    const source = document.getElementById('source-area').value;
+    const target = document.getElementById('target-area').value;
+    document.getElementById('source-area').disabled = !haveTopology;
+    document.getElementById('target-area').disabled = !haveTopology;
+    document.getElementById('btn-swap-areas').disabled = !haveTopology;
+    document.getElementById('btn-plan').disabled = !connected || !source || !target || source === target;
+    const editButton = document.getElementById('btn-edit-topology');
+    editButton.disabled = !connected || missionStatus.active;
+    editButton.title = missionStatus.active ? '任务执行中禁止修改' : '';
+    document.getElementById('btn-retry-navigation').disabled = !connected || missionStatus.active;
+    const segments = activePlan && activePlan.segments || [];
+    const calibrated = segments.length > 0 && segments.every((segment) => segment.executable);
+    document.getElementById('btn-execute-plan').disabled = (
+        !connected || campusStartPending || missionStatus.active || !activePlan
+        || activePlan.requires_hardware_adapter || !calibrated
+        || !terrainAllowsExecution());
+    document.getElementById('btn-stop-plan').disabled = !connected || !missionStatus.active;
+    if (activePlan && !activePlan.requires_hardware_adapter && calibrated && !terrainAllowsExecution()) {
+        document.getElementById('execute-reason').textContent = terrainIsFresh()
+            ? '当前实时地形判定不安全，执行已锁定。'
+            : '实时地形数据缺失或已过期，执行已锁定。';
+    }
+    const saveButton = document.getElementById('btn-save-topology');
+    if (saveButton) saveButton.disabled = !connected || missionStatus.active;
+}
+
+function invalidatePlan() {
+    activePlan = null;
+    document.getElementById('plan-banner').className = 'plan-banner neutral';
+    document.getElementById('plan-banner').textContent = '配置已变化，请重新规划';
+    document.getElementById('execute-reason').textContent = '重新生成并审核路线后才能执行。';
+    updatePlanningControls();
+}
+
+function fillAreaSelectors() {
+    const sorted = [...topology.areas].sort((left, right) => (
+        String(left.environment).localeCompare(String(right.environment))
+        || String(left.floor_id).localeCompare(String(right.floor_id))
+        || String(left.area_id).localeCompare(String(right.area_id))
+    ));
+    for (const id of ['source-area', 'target-area']) {
+        const select = document.getElementById(id);
+        select.replaceChildren(new Option('请选择区域', ''));
+        sorted.forEach((area) => select.add(new Option(areaLabel(area), area.area_id)));
+    }
+    if (sorted.length > 1) {
+        document.getElementById('source-area').value = sorted[0].area_id;
+        document.getElementById('target-area').value = sorted[sorted.length - 1].area_id;
+    }
+    document.getElementById('area-count').textContent = String(topology.areas.length);
+    document.getElementById('transition-count').textContent = String(topology.transitions.length);
+    updatePlanningControls();
+}
+
+function nodePosition(area, index, floors, environments) {
+    const floor = area.floor_id || 'ground';
+    const floorIndex = floors.indexOf(floor);
+    const envIndex = environments.indexOf(area.environment || 'outdoor');
+    const siblings = topology.areas.filter((item) => (
+        (item.floor_id || 'ground') === floor
+        && (item.environment || 'outdoor') === (area.environment || 'outdoor')
+    ));
+    const siblingIndex = siblings.findIndex((item) => item.area_id === area.area_id);
+    return {
+        x: 150 + envIndex * 430 + siblingIndex * 155,
+        y: 105 + (floors.length - 1 - floorIndex) * 155,
+        index
+    };
+}
+
+function svgElement(name, attributes = {}) {
+    const element = document.createElementNS('http://www.w3.org/2000/svg', name);
+    Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+    return element;
+}
+
+function renderTopology() {
+    const svg = document.getElementById('topology-view');
+    const empty = document.getElementById('topology-empty');
+    svg.replaceChildren();
+    empty.hidden = topology.areas.length > 0;
+    if (!topology.areas.length) return;
+    const floors = [...new Set(topology.areas.map((area) => area.floor_id || 'ground'))]
+        .sort((left, right) => String(left).localeCompare(String(right), undefined, { numeric: true }));
+    const environments = [...new Set(topology.areas.map((area) => area.environment || 'outdoor'))];
+    const positions = new Map();
+    topology.areas.forEach((area, index) => positions.set(
+        area.area_id, nodePosition(area, index, floors, environments)));
+    const width = Math.max(820, environments.length * 430 + 270);
+    const height = Math.max(440, floors.length * 155 + 150);
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+
+    floors.forEach((floor, index) => {
+        const y = 105 + (floors.length - 1 - index) * 155;
+        svg.appendChild(svgElement('line', { x1: 60, y1: y + 43, x2: width - 50, y2: y + 43, class: 'floor-guide' }));
+        const label = svgElement('text', { x: 24, y: y + 5, class: 'floor-label' });
+        label.textContent = floor;
+        svg.appendChild(label);
+    });
+
+    const plannedIds = new Set((activePlan && activePlan.segments || [])
+        .map((item) => String(item.transition_id || '').replace(/:reverse$/, '')));
+    topology.transitions.forEach((transition) => {
+        const start = positions.get(transition.source_area);
+        const end = positions.get(transition.target_area);
+        if (!start || !end) return;
+        const terrain = transition.terrain || transition.observation || {};
+        const special = !['flat', 'paved', 'indoor'].includes(terrain.terrain_type);
+        const line = svgElement('line', {
+            x1: start.x, y1: start.y, x2: end.x, y2: end.y,
+            class: `topology-edge ${special ? 'special' : 'normal'} ${plannedIds.has(String(transition.transition_id).replace(/:reverse$/, '')) ? 'planned' : ''}`
+        });
+        const title = svgElement('title');
+        title.textContent = `${transition.transition_id} · ${terrainLabel(terrain.terrain_type)} · ${Number(transition.distance_m).toFixed(1)} m`;
+        line.appendChild(title);
+        svg.appendChild(line);
+    });
+
+    topology.areas.forEach((area) => {
+        const position = positions.get(area.area_id);
+        const group = svgElement('g', { class: `topology-node ${area.environment === 'indoor' ? 'indoor' : 'outdoor'}` });
+        group.dataset.areaId = area.area_id;
+        group.appendChild(svgElement('rect', { x: position.x - 70, y: position.y - 34, width: 140, height: 68, rx: 13 }));
+        const name = svgElement('text', { x: position.x, y: position.y - 4, class: 'node-name' });
+        name.textContent = area.area_id;
+        const detail = svgElement('text', { x: position.x, y: position.y + 18, class: 'node-detail' });
+        detail.textContent = `${area.floor_id || 'ground'} · ${area.map_name}`;
+        group.append(name, detail);
+        group.addEventListener('click', () => {
+            const source = document.getElementById('source-area');
+            const target = document.getElementById('target-area');
+            if (!source.value) source.value = area.area_id;
+            else target.value = area.area_id;
+            updatePlanningControls();
+        });
+        svg.appendChild(group);
+    });
+}
+
+async function setNavigationMode() {
+    try {
+        const result = await session.call('/control_launch', UI.TYPES.controlLaunch, {
+            action: 'start', package_name: 'car_vel', launch_type: 'car_vel'
+        }, 120000);
+        if (!result.success) throw new Error(result.message || '导航模式启动失败');
+        log(`园区导航模式已启动：${result.message || '成功'}`);
+        return true;
+    } catch (error) {
+        log(`园区导航模式启动失败：${error.message || error}`);
+        return false;
+    }
+}
+
+async function loadTopology(retryCount = 0) {
+    try {
+        const result = await session.call('/manage_campus_topology', UI.TYPES.manageCampusTopology, {
+            command: 'get', topology_json: '', expected_revision: 0
+        }, 10000);
+        if (!result.success) throw new Error(result.message || '拓扑未加载');
+        topology = normaliseTopology(JSON.parse(result.topology_json || '{}'));
+        topologyRevision = Number(result.revision || topology.revision || 0);
+        topology.revision = topologyRevision;
+        fillAreaSelectors();
+        renderTopology();
+        log(`已加载园区配置 v${topologyRevision}：${topology.areas.length} 个区域、${topology.transitions.length} 条通道。`);
+    } catch (error) {
+        topology = normaliseTopology({});
+        topologyRevision = 0;
+        fillAreaSelectors();
+        renderTopology();
+        log(`读取园区拓扑失败：${error.message || error}`);
+        if (retryCount < 5 && session && session.connected) {
+            window.setTimeout(() => loadTopology(retryCount + 1), 2500);
+        }
+    }
+}
+
+async function loadSavedMapOptions() {
+    try {
+        const result = await session.call('/get_map_list', UI.TYPES.mapList, {}, 10000);
+        if (!result.success) throw new Error(result.message || '读取地图列表失败');
+        const options = document.getElementById('map-name-options');
+        options.replaceChildren();
+        (result.map_names || []).forEach((name) => options.appendChild(new Option(name, name)));
+    } catch (error) {
+        log(`园区配置读取已保存地图失败：${error.message || error}`);
+    }
+}
+
+function assessmentClass(decision) {
+    return ['normal', 'caution', 'special_required', 'blocked'].includes(decision)
+        ? decision : 'neutral';
+}
+
+function renderPlan(result) {
+    activePlan = result;
+    const banner = document.getElementById('plan-banner');
+    const list = document.getElementById('plan-segments');
+    const segments = result.segments || [];
+    document.getElementById('plan-cost').textContent = Number(result.total_cost || 0).toFixed(1);
+    banner.className = `plan-banner ${result.requires_hardware_adapter ? 'special_required' : 'normal'}`;
+    banner.textContent = result.requires_hardware_adapter
+        ? '路线可预览，但包含特殊运动模式，当前禁止执行'
+        : `路线规划完成 · ${segments.length} 段`;
+    list.replaceChildren();
+    segments.forEach((segment, index) => {
+        const assessment = segment.assessment || {};
+        const observation = segment.observation || {};
+        const card = document.createElement('article');
+        card.className = `plan-segment ${assessmentClass(assessment.decision)}`;
+        const header = document.createElement('div');
+        header.className = 'segment-header';
+        const order = document.createElement('span');
+        order.className = 'segment-order';
+        order.textContent = String(index + 1);
+        const title = document.createElement('div');
+        title.innerHTML = `<strong>${UI.escapeText(segment.source_area)} → ${UI.escapeText(segment.target_area)}</strong><small>${UI.escapeText(segment.floor_id || 'ground')} · ${UI.escapeText(segment.map_name)}</small>`;
+        const badge = document.createElement('span');
+        badge.className = 'segment-badge';
+        badge.textContent = DECISION_LABELS[assessment.decision] || assessment.decision;
+        header.append(order, title, badge);
+        const metrics = document.createElement('div');
+        metrics.className = 'segment-metrics';
+        metrics.innerHTML = [
+            `<span>地形 <b>${UI.escapeText(terrainLabel(observation.terrain_type))}</b></span>`,
+            `<span>模式 <b>${UI.escapeText(MODE_LABELS[assessment.required_mode] || assessment.required_mode || '无')}</b></span>`,
+            `<span>限速 <b>${Number(assessment.speed_limit_mps || 0).toFixed(2)} m/s</b></span>`,
+            `<span>代价 <b>${Number(segment.cost || 0).toFixed(1)}</b></span>`
+        ].join('');
+        const reason = document.createElement('p');
+        reason.textContent = assessment.reason || '';
+        card.append(header, metrics, reason);
+        list.appendChild(card);
+    });
+    const calibrated = segments.length > 0 && segments.every((segment) => segment.executable);
+    document.getElementById('execute-reason').textContent = result.requires_hardware_adapter
+        ? '存在未完成实机闭环验收的特殊地形段，执行已锁定。'
+        : (!calibrated
+            ? '连接器的 source_pose / target_pose 尚未完成实地标定，禁止执行。'
+            : '安全门控已满足，可提交后端跨地图任务。');
+    updatePlanningControls();
+    renderTopology();
+}
+
+async function ensureCampusXingjiGait() {
+    const body = campusBodyStatus;
+    // Gangben retains its existing SDK and start behavior.
+    if (!body || body.active_body !== 'xingji') return;
+    if (Date.now() - campusBodyStatusAt > 2500 || body.switching || body.error
+        || body.connected !== true || !body.config || body.config.selected !== 'xingji') {
+        throw new Error('星玑本体状态未确认，不能启动园区任务');
+    }
+    const generation = body.generation;
+    const result = await session.call('/dog_remote/ensure_standing', UI.TYPES.trigger, {});
+    if (!result.success) throw new Error(result.message || '星玑越障模式未确认');
+    if (!session.connected || !campusBodyStatus
+        || campusBodyStatus.generation !== generation
+        || campusBodyStatus.active_body !== 'xingji'
+        || campusBodyStatus.switching || campusBodyStatus.error
+        || campusBodyStatus.connected !== true
+        || Date.now() - campusBodyStatusAt > 2500) {
+        throw new Error('本体或连接已变化，请重新确认园区任务');
+    }
+    log(result.message || '星玑越障模式已确认');
+}
+
+async function executeCampusPlan() {
+    if (!activePlan || campusStartPending) return;
+    campusStartPending = true;
+    const plan = activePlan;
+    updatePlanningControls();
+    try {
+        await ensureCampusXingjiGait();
+        if (plan !== activePlan) throw new Error('规划已变化，请重新审核后启动');
+        const result = await session.call('/start_campus_mission', UI.TYPES.startCampusMission, {
+            source_area: document.getElementById('source-area').value,
+            target_area: document.getElementById('target-area').value,
+            available_modes: availableModes(),
+            has_final_pose: false,
+            final_pose: {
+                position: { x: 0, y: 0, z: 0 },
+                orientation: { x: 0, y: 0, z: 0, w: 1 }
+            }
+        }, 15000);
+        if (!result.success) throw new Error(result.message || '任务被后端拒绝');
+        log(result.message);
+    } catch (error) {
+        log(`园区任务启动失败：${error.message || error}`);
+    } finally {
+        campusStartPending = false;
+        updatePlanningControls();
+    }
+}
+
+async function stopCampusPlan() {
+    try {
+        const result = await session.call(
+            '/control_campus_mission', UI.TYPES.controlCampusMission,
+            { command: 'stop' }, 10000);
+        if (!result.success) throw new Error(result.message || '停止请求被拒绝');
+        log(result.message);
+    } catch (error) {
+        log(`园区任务停止失败：${error.message || error}`);
+    }
+}
+
+function renderMissionStatus(status) {
+    missionStatus = status || { active: false, state: 'unknown', stage: 'unknown' };
+    const element = document.getElementById('mission-status');
+    element.className = `terrain-result ${status.state === 'failed' ? 'blocked' : (status.active ? 'caution' : 'neutral')}`;
+    const progress = Number(status.segment_count || 0) > 0
+        ? ` ${Number(status.segment_index || 0) + 1}/${status.segment_count}` : '';
+    element.textContent = `${status.active ? '执行中' : status.state || '空闲'} · ${status.stage || 'idle'}${progress} · ${status.message || ''}`;
+    if (status.active && document.getElementById('topology-editor').open) {
+        closeTopologyEditor();
+        log('园区任务已启动，配置窗口已关闭；任务执行中禁止修改。');
+    }
+    updatePlanningControls();
+}
+
+async function planCampusRoute() {
+    const source = document.getElementById('source-area').value;
+    const target = document.getElementById('target-area').value;
+    const button = document.getElementById('btn-plan');
+    button.disabled = true;
+    try {
+        const result = await session.call('/plan_campus_route', UI.TYPES.planCampusRoute, {
+            source_area: source,
+            target_area: target,
+            available_modes: availableModes(),
+            allow_unavailable_modes: document.getElementById('allow-preview').checked
+        }, 15000);
+        if (!result.success) throw new Error(result.message || '没有可通行路线');
+        renderPlan(result);
+        log(`规划完成：${source} → ${target}，${(result.segments || []).length} 段。`);
+    } catch (error) {
+        activePlan = null;
+        const banner = document.getElementById('plan-banner');
+        banner.className = 'plan-banner blocked';
+        banner.textContent = `规划失败：${error.message || error}`;
+        document.getElementById('plan-segments').innerHTML = '<div class="route-empty">请调整能力选择或检查拓扑配置</div>';
+        document.getElementById('plan-cost').textContent = '--';
+        renderTopology();
+        log(`园区规划失败：${error.message || error}`);
+    } finally {
+        updatePlanningControls();
+    }
+}
+
+function numericValue(id) {
+    const value = Number(document.getElementById(id).value);
+    return Number.isFinite(value) ? value : 0;
+}
+
+async function evaluateTerrain() {
+    const resultElement = document.getElementById('terrain-result');
+    try {
+        const result = await session.call('/evaluate_terrain', UI.TYPES.evaluateTerrain, {
+            observation: {
+                terrain_type: document.getElementById('terrain-type').value,
+                slope_deg: numericValue('slope-deg'),
+                cross_slope_deg: numericValue('cross-slope-deg'),
+                step_height_m: numericValue('step-height'),
+                gap_width_m: numericValue('gap-width'),
+                roughness_m: numericValue('roughness'),
+                clearance_width_m: numericValue('clearance-width'),
+                confidence: numericValue('confidence'),
+                negative_obstacle: document.getElementById('negative-obstacle').checked,
+                slippery: document.getElementById('slippery').checked
+            },
+            available_modes: availableModes()
+        }, 10000);
+        const assessment = result.assessment || {};
+        resultElement.className = `terrain-result ${assessmentClass(assessment.decision)}`;
+        resultElement.innerHTML = `<strong>${UI.escapeText(DECISION_LABELS[assessment.decision] || assessment.decision)}</strong><span>${UI.escapeText(assessment.reason || '')}</span><small>模式：${UI.escapeText(MODE_LABELS[assessment.required_mode] || assessment.required_mode || '无')} · 限速 ${Number(assessment.speed_limit_mps || 0).toFixed(2)} m/s</small>`;
+    } catch (error) {
+        resultElement.className = 'terrain-result blocked';
+        resultElement.textContent = `评估失败：${error.message || error}`;
+    }
+}
+
+function setEditorStatus(message, isError = false) {
+    const element = document.getElementById('topology-editor-status');
+    element.textContent = message;
+    element.className = isError ? 'error-text' : '';
+}
+
+function poseText(pose) {
+    if (!pose) return '未采集';
+    return `x ${Number(pose.x).toFixed(2)} · y ${Number(pose.y).toFixed(2)} · z ${Number(pose.z).toFixed(2)} · yaw ${(Number(pose.yaw) * 180 / Math.PI).toFixed(1)}°`;
+}
+
+function renderPosePreviews() {
+    document.getElementById('source-pose-preview').textContent = poseText(editingSourcePose);
+    document.getElementById('target-pose-preview').textContent = poseText(editingTargetPose);
+}
+
+function refreshEditorLists(selectedArea = '', selectedTransition = '') {
+    const areaList = document.getElementById('edit-area-select');
+    const transitionList = document.getElementById('edit-transition-select');
+    const source = document.getElementById('edit-transition-source');
+    const target = document.getElementById('edit-transition-target');
+    areaList.replaceChildren();
+    source.replaceChildren(new Option('请选择', ''));
+    target.replaceChildren(new Option('请选择', ''));
+    topologyDraft.areas.forEach((area) => {
+        areaList.add(new Option(areaLabel(area), area.area_id));
+        source.add(new Option(area.area_id, area.area_id));
+        target.add(new Option(area.area_id, area.area_id));
+    });
+    transitionList.replaceChildren();
+    topologyDraft.transitions.forEach((transition) => {
+        const terrain = transition.terrain || transition.observation || {};
+        transitionList.add(new Option(
+            `${transition.transition_id} · ${transition.source_area} → ${transition.target_area} · ${terrainLabel(terrain.terrain_type)}`,
+            transition.transition_id));
+    });
+    if (selectedArea) areaList.value = selectedArea;
+    if (selectedTransition) transitionList.value = selectedTransition;
+}
+
+function clearAreaForm() {
+    document.getElementById('edit-area-select').value = '';
+    document.getElementById('edit-area-id').value = '';
+    document.getElementById('edit-area-map').value = '';
+    document.getElementById('edit-area-floor').value = 'ground';
+    document.getElementById('edit-area-environment').value = 'outdoor';
+}
+
+function loadAreaForm() {
+    const selected = document.getElementById('edit-area-select').value;
+    const area = topologyDraft.areas.find((item) => item.area_id === selected);
+    if (!area) return clearAreaForm();
+    document.getElementById('edit-area-id').value = area.area_id;
+    document.getElementById('edit-area-map').value = area.map_name || '';
+    document.getElementById('edit-area-floor').value = area.floor_id || 'ground';
+    document.getElementById('edit-area-environment').value = area.environment || 'outdoor';
+}
+
+function upsertArea() {
+    const selected = document.getElementById('edit-area-select').value;
+    const area = {
+        area_id: document.getElementById('edit-area-id').value.trim(),
+        map_name: document.getElementById('edit-area-map').value.trim(),
+        floor_id: document.getElementById('edit-area-floor').value.trim() || 'ground',
+        environment: document.getElementById('edit-area-environment').value
+    };
+    if (!area.area_id || !area.map_name) return setEditorStatus('区域 ID 和地图名称不能为空。', true);
+    const duplicate = topologyDraft.areas.some((item) => item.area_id === area.area_id && item.area_id !== selected);
+    if (duplicate) return setEditorStatus(`区域 ID ${area.area_id} 已存在。`, true);
+    const index = topologyDraft.areas.findIndex((item) => item.area_id === selected);
+    if (index >= 0) {
+        topologyDraft.areas[index] = area;
+        if (selected !== area.area_id) topologyDraft.transitions.forEach((item) => {
+            if (item.source_area === selected) item.source_area = area.area_id;
+            if (item.target_area === selected) item.target_area = area.area_id;
+        });
+    } else topologyDraft.areas.push(area);
+    refreshEditorLists(area.area_id);
+    loadAreaForm();
+    setEditorStatus(`区域 ${area.area_id} 已加入草稿，尚未提交。`);
+}
+
+function deleteArea() {
+    const selected = document.getElementById('edit-area-select').value;
+    if (!selected) return setEditorStatus('请先选择要删除的区域。', true);
+    const used = topologyDraft.transitions.some((item) => item.source_area === selected || item.target_area === selected);
+    if (used) return setEditorStatus('该区域仍被连接段引用，请先删除相关连接段。', true);
+    topologyDraft.areas = topologyDraft.areas.filter((item) => item.area_id !== selected);
+    refreshEditorLists();
+    clearAreaForm();
+    setEditorStatus(`区域 ${selected} 已从草稿删除。`);
+}
+
+async function loadSelectedAreaMap() {
+    if (missionStatus.active) return setEditorStatus('任务执行中禁止切换地图。', true);
+    const selected = document.getElementById('edit-area-select').value;
+    const area = topologyDraft.areas.find((item) => item.area_id === selected);
+    const mapName = area ? area.map_name : document.getElementById('edit-area-map').value.trim();
+    if (!mapName) return setEditorStatus('请先选择已保存区域或填写地图名称。', true);
+    setEditorStatus(`正在加载地图 ${mapName}，请保持机器人静止…`);
+    try {
+        const result = await session.call('/switch_map', UI.TYPES.switchMap, {
+            map_name: mapName
+        }, 70000);
+        if (!result.success) throw new Error(result.message || '地图加载被拒绝');
+        setEditorStatus(`地图 ${mapName} 的加载请求已接受；等待顶部“当前地图”更新后再采集端点。`);
+    } catch (error) {
+        setEditorStatus(`地图加载失败：${error.message || error}`, true);
+    }
+}
+
+function clearTransitionForm() {
+    document.getElementById('edit-transition-select').value = '';
+    document.getElementById('edit-transition-id').value = '';
+    document.getElementById('edit-transition-source').value = '';
+    document.getElementById('edit-transition-target').value = '';
+    document.getElementById('edit-transition-terrain').value = 'flat';
+    ['distance', 'clearance', 'confidence'].forEach((name) => {
+        document.getElementById(`edit-transition-${name}`).value = name === 'distance' || name === 'clearance' ? '1' : '0.95';
+    });
+    ['elevation', 'slope', 'cross-slope', 'step', 'gap', 'roughness'].forEach((name) => {
+        document.getElementById(`edit-transition-${name}`).value = '0';
+    });
+    document.getElementById('edit-transition-bidirectional').checked = true;
+    document.getElementById('edit-transition-negative').checked = false;
+    document.getElementById('edit-transition-slippery').checked = false;
+    document.getElementById('edit-transition-calibrated').checked = false;
+    editingSourcePose = null;
+    editingTargetPose = null;
+    renderPosePreviews();
+}
+
+function loadTransitionForm() {
+    const selected = document.getElementById('edit-transition-select').value;
+    const item = topologyDraft.transitions.find((transition) => transition.transition_id === selected);
+    if (!item) return clearTransitionForm();
+    const terrain = item.terrain || item.observation || {};
+    document.getElementById('edit-transition-id').value = item.transition_id;
+    document.getElementById('edit-transition-source').value = item.source_area;
+    document.getElementById('edit-transition-target').value = item.target_area;
+    document.getElementById('edit-transition-terrain').value = terrain.terrain_type || 'unknown';
+    document.getElementById('edit-transition-distance').value = Number(item.distance_m || 1);
+    document.getElementById('edit-transition-elevation').value = Number(item.elevation_change_m || 0);
+    document.getElementById('edit-transition-slope').value = Number(terrain.slope_deg || 0);
+    document.getElementById('edit-transition-cross-slope').value = Number(terrain.cross_slope_deg || 0);
+    document.getElementById('edit-transition-step').value = Number(terrain.step_height_m || 0);
+    document.getElementById('edit-transition-gap').value = Number(terrain.gap_width_m || 0);
+    document.getElementById('edit-transition-roughness').value = Number(terrain.roughness_m || 0);
+    document.getElementById('edit-transition-clearance').value = Number(terrain.clearance_width_m || 1);
+    document.getElementById('edit-transition-confidence').value = Number(terrain.confidence || 0);
+    document.getElementById('edit-transition-bidirectional').checked = item.bidirectional !== false;
+    document.getElementById('edit-transition-negative').checked = Boolean(terrain.negative_obstacle);
+    document.getElementById('edit-transition-slippery').checked = Boolean(terrain.slippery);
+    document.getElementById('edit-transition-calibrated').checked = Boolean(item.calibrated);
+    editingSourcePose = item.source_pose ? cloneJson(item.source_pose) : null;
+    editingTargetPose = item.target_pose ? cloneJson(item.target_pose) : null;
+    renderPosePreviews();
+}
+
+function formTerrainObservation() {
+    return {
+        terrain_type: document.getElementById('edit-transition-terrain').value,
+        slope_deg: numericValue('edit-transition-slope'),
+        cross_slope_deg: numericValue('edit-transition-cross-slope'),
+        step_height_m: numericValue('edit-transition-step'),
+        gap_width_m: numericValue('edit-transition-gap'),
+        roughness_m: numericValue('edit-transition-roughness'),
+        clearance_width_m: numericValue('edit-transition-clearance'),
+        confidence: numericValue('edit-transition-confidence'),
+        negative_obstacle: document.getElementById('edit-transition-negative').checked,
+        slippery: document.getElementById('edit-transition-slippery').checked
+    };
+}
+
+function upsertTransition() {
+    const selected = document.getElementById('edit-transition-select').value;
+    const calibrated = document.getElementById('edit-transition-calibrated').checked;
+    const item = {
+        transition_id: document.getElementById('edit-transition-id').value.trim(),
+        source_area: document.getElementById('edit-transition-source').value,
+        target_area: document.getElementById('edit-transition-target').value,
+        distance_m: numericValue('edit-transition-distance'),
+        elevation_change_m: numericValue('edit-transition-elevation'),
+        calibrated,
+        bidirectional: document.getElementById('edit-transition-bidirectional').checked,
+        source_pose: editingSourcePose ? cloneJson(editingSourcePose) : null,
+        target_pose: editingTargetPose ? cloneJson(editingTargetPose) : null,
+        terrain: formTerrainObservation()
+    };
+    if (!item.transition_id || !item.source_area || !item.target_area || item.source_area === item.target_area) {
+        return setEditorStatus('连接 ID、两个不同的起终区域均为必填项。', true);
+    }
+    if (item.distance_m < 0.3) return setEditorStatus('连接段水平距离不能小于 0.3 m。', true);
+    if (calibrated && (!item.source_pose || !item.target_pose)) {
+        return setEditorStatus('标记为已实地标定前，必须采集起点和终点端点。', true);
+    }
+    const duplicate = topologyDraft.transitions.some((entry) => entry.transition_id === item.transition_id && entry.transition_id !== selected);
+    if (duplicate) return setEditorStatus(`连接 ID ${item.transition_id} 已存在。`, true);
+    const index = topologyDraft.transitions.findIndex((entry) => entry.transition_id === selected);
+    if (index >= 0) topologyDraft.transitions[index] = item;
+    else topologyDraft.transitions.push(item);
+    refreshEditorLists('', item.transition_id);
+    loadTransitionForm();
+    setEditorStatus(`连接段 ${item.transition_id} 已加入草稿，尚未提交。`);
+}
+
+function deleteTransition() {
+    const selected = document.getElementById('edit-transition-select').value;
+    if (!selected) return setEditorStatus('请先选择要删除的连接段。', true);
+    topologyDraft.transitions = topologyDraft.transitions.filter((item) => item.transition_id !== selected);
+    refreshEditorLists();
+    clearTransitionForm();
+    setEditorStatus(`连接段 ${selected} 已从草稿删除。`);
+}
+
+function captureEndpoint(which) {
+    const now = Date.now();
+    const areaId = document.getElementById(
+        which === 'source' ? 'edit-transition-source' : 'edit-transition-target').value;
+    const area = topologyDraft.areas.find((item) => item.area_id === areaId);
+    if (!area) return setEditorStatus(`请先选择${which === 'source' ? '起点' : '终点'}区域。`, true);
+    if (!currentMapName || currentMapName !== area.map_name) {
+        return setEditorStatus(
+            `当前地图为 ${currentMapName || '未知'}，${areaId} 需要 ${area.map_name}；请先在区域编辑器加载正确地图。`, true);
+    }
+    if (!latestMapPose || now - latestMapPose.receivedAt > 2000) {
+        return setEditorStatus('全局定位已过期，无法采集端点；请先完成地图定位。', true);
+    }
+    if (!latestMapPose.qualityOk) {
+        return setEditorStatus(
+            `全局定位不确定度过大（位置 ${latestMapPose.positionStd.toFixed(2)} m，航向 ${latestMapPose.yawStdDeg.toFixed(1)}°），禁止采集标定端点。`, true);
+    }
+    if (!latestOdomPose || now - latestOdomPose.receivedAt > 1000) {
+        return setEditorStatus('高度里程计已过期，无法采集三维端点。', true);
+    }
+    const pose = {
+        x: latestMapPose.x, y: latestMapPose.y, z: latestOdomPose.z,
+        yaw: latestMapPose.yaw
+    };
+    if (which === 'source') editingSourcePose = pose;
+    else editingTargetPose = pose;
+    if (editingSourcePose && editingTargetPose) {
+        const sourceArea = topologyDraft.areas.find((item) => (
+            item.area_id === document.getElementById('edit-transition-source').value));
+        const targetArea = topologyDraft.areas.find((item) => (
+            item.area_id === document.getElementById('edit-transition-target').value));
+        if (sourceArea && targetArea && sourceArea.map_name === targetArea.map_name) {
+            document.getElementById('edit-transition-distance').value = Math.hypot(
+                editingTargetPose.x - editingSourcePose.x,
+                editingTargetPose.y - editingSourcePose.y).toFixed(2);
+            document.getElementById('edit-transition-elevation').value = (
+                editingTargetPose.z - editingSourcePose.z).toFixed(2);
+        }
+    }
+    renderPosePreviews();
+    setEditorStatus(`已采集${which === 'source' ? '起点' : '终点'}端点；请在实地核对朝向后保存连接段。`);
+}
+
+function useLiveTerrain() {
+    if (!terrainIsFresh()) return setEditorStatus('实时地形数据已过期，不能用于标定。', true);
+    const mapping = {
+        terrain_type: 'terrain', slope_deg: 'slope', cross_slope_deg: 'cross-slope',
+        step_height_m: 'step', gap_width_m: 'gap', roughness_m: 'roughness',
+        clearance_width_m: 'clearance', confidence: 'confidence'
+    };
+    Object.entries(mapping).forEach(([field, suffix]) => {
+        document.getElementById(`edit-transition-${suffix}`).value = latestTerrain[field];
+    });
+    document.getElementById('edit-transition-negative').checked = Boolean(latestTerrain.negative_obstacle);
+    document.getElementById('edit-transition-slippery').checked = Boolean(latestTerrain.slippery);
+    setEditorStatus('已将当前实时地形观测填入草稿；仍需沿连接段多次测量并实地验收。');
+}
+
+function loadProfileForm() {
+    const profile = { ...DEFAULT_PROFILE, ...(topologyDraft.capability_profile || {}) };
+    document.querySelectorAll('[data-profile]').forEach((input) => {
+        input.value = profile[input.dataset.profile];
+    });
+}
+
+function collectProfileForm() {
+    const profile = {};
+    document.querySelectorAll('[data-profile]').forEach((input) => {
+        profile[input.dataset.profile] = Number(input.value);
+    });
+    return profile;
+}
+
+function loadAutomaticNavigationForm() {
+    const automatic = {
+        ...DEFAULT_AUTOMATIC_NAVIGATION,
+        ...(topologyDraft.automatic_navigation || {})
+    };
+    document.getElementById('automatic-navigation-enabled').checked = Boolean(automatic.enabled);
+    document.getElementById('restricted-flat-site').checked = automatic.restricted_flat_site === true;
+    const modes = new Set(Array.isArray(automatic.enabled_modes) ? automatic.enabled_modes : []);
+    document.querySelectorAll('[data-automatic-mode]').forEach((input) => {
+        input.checked = modes.has(input.dataset.automaticMode);
+    });
+}
+
+function collectAutomaticNavigationForm() {
+    return {
+        enabled: document.getElementById('automatic-navigation-enabled').checked,
+        restricted_flat_site: document.getElementById('restricted-flat-site').checked,
+        enabled_modes: [...document.querySelectorAll('[data-automatic-mode]:checked')]
+            .map((input) => input.dataset.automaticMode)
+    };
+}
+
+function openTopologyEditor() {
+    if (missionStatus.active) return log('任务执行中禁止修改园区配置，请先停止任务。');
+    topologyDraft = cloneJson(topology);
+    topologyDraft.capability_profile = { ...DEFAULT_PROFILE, ...(topologyDraft.capability_profile || {}) };
+    document.getElementById('topology-revision').textContent = `版本 ${topologyRevision}`;
+    document.getElementById('topology-lock-warning').hidden = !missionStatus.active;
+    refreshEditorLists();
+    clearAreaForm();
+    clearTransitionForm();
+    loadProfileForm();
+    loadAutomaticNavigationForm();
+    setEditorStatus('所有修改需点击“保存全部园区配置”才会生效。');
+    const dialog = document.getElementById('topology-editor');
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+}
+
+function closeTopologyEditor() {
+    topologyDraft = null;
+    const dialog = document.getElementById('topology-editor');
+    if (typeof dialog.close === 'function') dialog.close();
+    else dialog.removeAttribute('open');
+}
+
+async function saveTopology() {
+    if (!topologyDraft || missionStatus.active) return setEditorStatus('任务执行中禁止修改。', true);
+    topologyDraft.capability_profile = collectProfileForm();
+    topologyDraft.automatic_navigation = collectAutomaticNavigationForm();
+    const button = document.getElementById('btn-save-topology');
+    button.disabled = true;
+    setEditorStatus('正在校验并保存…');
+    try {
+        const result = await session.call('/manage_campus_topology', UI.TYPES.manageCampusTopology, {
+            command: 'save',
+            topology_json: JSON.stringify(topologyDraft),
+            expected_revision: topologyRevision
+        }, 15000);
+        if (!result.success) {
+            if (result.topology_json) {
+                topology = normaliseTopology(JSON.parse(result.topology_json));
+                topologyRevision = Number(result.revision || topology.revision || 0);
+            }
+            throw new Error(result.message || '配置保存被拒绝');
+        }
+        topology = normaliseTopology(JSON.parse(result.topology_json || '{}'));
+        topologyRevision = Number(result.revision || topology.revision || 0);
+        topology.revision = topologyRevision;
+        invalidatePlan();
+        fillAreaSelectors();
+        renderTopology();
+        closeTopologyEditor();
+        log(`园区配置已原子保存为版本 ${topologyRevision}，规划服务已刷新。`);
+    } catch (error) {
+        setEditorStatus(`保存失败：${error.message || error}`, true);
+        log(`园区配置保存失败：${error.message || error}`);
+    } finally {
+        updatePlanningControls();
+    }
+}
+
+function renderLiveTerrain() {
+    const indicator = document.getElementById('perception-indicator');
+    const summary = document.getElementById('perception-summary');
+    if (!terrainIsFresh()) {
+        indicator.className = 'perception-indicator unavailable';
+        summary.textContent = '实时地形数据缺失或已过期；园区任务执行已锁定。';
+    } else {
+        const allowed = terrainAllowsExecution();
+        indicator.className = `perception-indicator ${allowed ? 'ready' : 'blocked'}`;
+        const globalReady = terrainCostmapStatus && terrainCostmapStatus.state === 'ready';
+        summary.textContent = `${terrainLabel(latestTerrain.terrain_type)} · 纵坡 ${Number(latestTerrain.slope_deg || 0).toFixed(1)}° · 台阶 ${Number(latestTerrain.step_height_m || 0).toFixed(2)} m · 置信度 ${Number(latestTerrain.confidence || 0).toFixed(2)}${globalReady ? ' · 全局地形图在线' : ''}${allowed ? '' : ' · 当前禁止执行'}`;
+    }
+    updatePlanningControls();
+}
+
+function initialiseTerrainOptions() {
+    const select = document.getElementById('terrain-type');
+    Object.entries(TERRAIN_LABELS).forEach(([value, label]) => select.add(new Option(label, value)));
+}
+
+document.getElementById('source-area').addEventListener('change', invalidatePlan);
+document.getElementById('target-area').addEventListener('change', invalidatePlan);
+document.querySelectorAll('.capability-grid input, #allow-preview').forEach((input) => {
+    input.addEventListener('change', invalidatePlan);
+});
+document.getElementById('btn-swap-areas').addEventListener('click', () => {
+    const source = document.getElementById('source-area');
+    const target = document.getElementById('target-area');
+    [source.value, target.value] = [target.value, source.value];
+    invalidatePlan();
+});
+document.getElementById('btn-plan').addEventListener('click', planCampusRoute);
+document.getElementById('btn-evaluate').addEventListener('click', evaluateTerrain);
+document.getElementById('btn-execute-plan').addEventListener('click', executeCampusPlan);
+document.getElementById('btn-stop-plan').addEventListener('click', stopCampusPlan);
+document.getElementById('btn-edit-topology').addEventListener('click', openTopologyEditor);
+document.getElementById('btn-retry-navigation').addEventListener('click', async () => {
+    if (await setNavigationMode()) await loadTopology();
+});
+document.getElementById('btn-close-topology').addEventListener('click', closeTopologyEditor);
+document.getElementById('btn-cancel-topology').addEventListener('click', closeTopologyEditor);
+document.getElementById('btn-save-topology').addEventListener('click', saveTopology);
+document.getElementById('btn-new-area').addEventListener('click', clearAreaForm);
+document.getElementById('btn-upsert-area').addEventListener('click', upsertArea);
+document.getElementById('btn-delete-area').addEventListener('click', deleteArea);
+document.getElementById('btn-load-area-map').addEventListener('click', loadSelectedAreaMap);
+document.getElementById('edit-area-select').addEventListener('change', loadAreaForm);
+document.getElementById('btn-new-transition').addEventListener('click', clearTransitionForm);
+document.getElementById('btn-upsert-transition').addEventListener('click', upsertTransition);
+document.getElementById('btn-delete-transition').addEventListener('click', deleteTransition);
+document.getElementById('edit-transition-select').addEventListener('change', loadTransitionForm);
+document.getElementById('btn-capture-source-pose').addEventListener('click', () => captureEndpoint('source'));
+document.getElementById('btn-capture-target-pose').addEventListener('click', () => captureEndpoint('target'));
+document.getElementById('btn-use-live-terrain').addEventListener('click', useLiveTerrain);
+
+initialiseTerrainOptions();
+session = new UI.RosSession({
+    log,
+    onReady: () => {
+        setConnected(true);
+        VelocityGuardWidget.attach(session,
+            document.getElementById('velocity-guard-reason'), UI.TYPES.string, {
+                onEvent: log, motionElement: document.getElementById('navigation-motion-status') });
+        session.subscribe('/robot_body/status', UI.TYPES.string, (message) => {
+            try { campusBodyStatus = JSON.parse(message.data); }
+            catch (_error) { campusBodyStatus = null; }
+            campusBodyStatusAt = Date.now();
+        });
+        loadSavedMapOptions();
+        setNavigationMode().then((started) => {
+            if (started) loadTopology();
+        });
+        session.subscribe('/terrain_observation', UI.TYPES.terrainObservation, (message) => {
+            latestTerrain = { ...message };
+            latestTerrainAt = Date.now();
+            renderLiveTerrain();
+        });
+        session.subscribe('/terrain_costmap/status', UI.TYPES.string, (message) => {
+            try { terrainCostmapStatus = JSON.parse(message.data); }
+            catch (_error) { terrainCostmapStatus = message.data || null; }
+            renderLiveTerrain();
+        });
+        session.subscribe('/Odometry', UI.TYPES.odometry, (message) => {
+            const pose = message && message.pose && message.pose.pose;
+            if (!pose) return;
+            latestOdomPose = {
+                x: Number(pose.position.x || 0), y: Number(pose.position.y || 0),
+                z: Number(pose.position.z || 0),
+                yaw: UI.yawFromQuaternion(pose.orientation), receivedAt: Date.now()
+            };
+        });
+        session.subscribe('/localization/navigation_pose', UI.TYPES.poseWithCovariance, (message) => {
+            const pose = message && message.pose && message.pose.pose;
+            if (!pose) return;
+            const covariance = message.pose.covariance || [];
+            const positionStd = Math.sqrt(Math.max(0, Number(covariance[0] || 0), Number(covariance[7] || 0)));
+            const yawStdDeg = Math.sqrt(Math.max(0, Number(covariance[35] || 0))) * 180 / Math.PI;
+            latestMapPose = {
+                x: Number(pose.position.x || 0), y: Number(pose.position.y || 0),
+                z: Number(pose.position.z || 0),
+                yaw: UI.yawFromQuaternion(pose.orientation),
+                positionStd, yawStdDeg,
+                qualityOk: Number.isFinite(positionStd) && Number.isFinite(yawStdDeg)
+                    && positionStd <= 0.50 && yawStdDeg <= 20.0,
+                receivedAt: Date.now()
+            };
+        });
+        session.subscribe('/current_map_info', UI.TYPES.currentMap, (message) => {
+            if (!message || !message.success) return;
+            const nextMap = String(message.map_name || '');
+            if (currentMapName !== nextMap) latestMapPose = null;
+            currentMapName = nextMap;
+            document.getElementById('current-map-name').textContent = `当前地图 ${currentMapName || '--'}`;
+        });
+        session.subscribe('/campus_mission/status', UI.TYPES.string, (message) => {
+            try {
+                renderMissionStatus(JSON.parse(message.data));
+            } catch (error) {
+                log(`园区任务状态无效：${error.message || error}`);
+            }
+        });
+    },
+    onState: (connected) => {
+        if (!connected) { campusBodyStatus = null; campusBodyStatusAt = 0; }
+        setConnected(Boolean(connected));
+    }
+});
+session.connect();
+setConnected(false);
+healthTimer = window.setInterval(renderLiveTerrain, 500);
+window.addEventListener('pagehide', () => {
+    window.clearInterval(healthTimer);
+    session.stop();
+}, { once: true });
+</script>
+</body>
+</html>

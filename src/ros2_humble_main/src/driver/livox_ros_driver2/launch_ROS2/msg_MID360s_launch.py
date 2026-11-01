@@ -1,6 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import launch
 
@@ -27,7 +29,7 @@ livox_ros2_params = [
     {"output_data_type": output_type},
     {"frame_id": frame_id},
     {"lvx_file_path": lvx_file_path},
-    {"user_config_path": user_config_path},
+    {"user_config_path": LaunchConfiguration('user_config_path')},
     {"cmdline_input_bd_code": cmdline_bd_code}
 ]
 
@@ -42,6 +44,7 @@ def generate_launch_description():
         )
 
     return LaunchDescription([
+        DeclareLaunchArgument('user_config_path', default_value=user_config_path),
         livox_driver,
         # launch.actions.RegisterEventHandler(
         #     event_handler=launch.event_handlers.OnProcessExit(

@@ -19,10 +19,11 @@ import threading
 import time
 import hashlib
 import math
+import uuid
+import json
 import numpy as np
 from PIL import Image
 from lzp_interface.srv import EditMap  # 导入新定义的服务
-from ament_index_python.packages import get_package_share_directory
 from lzp_interface.srv import ControlLaunch
 from lzp_interface.srv import GetMapList  # 需要添加这个导入
 from lzp_interface.srv import GetCurrentMap  # 新增：查询当前地图服务
@@ -30,9 +31,13 @@ from lzp_interface.srv import DeleteMap      # 新增：删除地图服务
 from lzp_interface.msg import CurrentMap
 from lzp_interface.srv import GetEditedMap   # 新增：获取编辑后的地图
 from lzp_interface.srv import SetMapPixelIndices
+from lzp_interface.srv import EditMapCloud
 from std_msgs.msg import Bool
 
 from .route_database import RouteDatabase
+from .terrain_grid_io import load_bound_terrain_grid
+from .map_cloud_editor import MapCloudEditor
+from .saved_map_lock import saved_map_lock
 
 
 LOCALIZATION_MAP_SCHEMA = 'ros2_mid360_localization_map'
@@ -53,8 +58,8 @@ class MapSwitcherService(Node):
         self.callback_group = ReentrantCallbackGroup()
         
         # 地图文件目录
-        self.map_directory = os.path.join('/home/a/nav_ws/src/ros2_humble_main/src/navigation/robot_navigation2', 'maps')
-        self.pcdmap_directory = os.path.join('/home/a/nav_ws/src/ros2_humble_main/src/navigation/robot_navigation2', 'pcdmaps')
+        self.map_directory = os.path.join('/home/a/3dnav/src/ros2_humble_main/src/navigation/robot_navigation2', 'maps')
+        self.pcdmap_directory = os.path.join('/home/a/3dnav/src/ros2_humble_main/src/navigation/robot_navigation2', 'pcdmaps')
         
         # 缓存已加载的地图图像，用于批量编辑
         self.loaded_maps_cache = {}  # {map_name: {'image': img_array, 'original_path': path}}
@@ -63,10 +68,14 @@ class MapSwitcherService(Node):
         self.map_cache_lock = threading.RLock()
         self._undo_sequence = 0
         self.map_load_lock = threading.RLock()
+        self.cloud_edit_lock = threading.Lock()
+        self.cloud_edit_busy = False
+        self.cloud_editor = MapCloudEditor(self.map_directory, self.pcdmap_directory)
         self.pending_map_name = None
-        # Authoritative live map name. The YAML value is only the startup
-        # default and must not overwrite a successful LoadMap result.
+        # Authoritative live map name. Startup deliberately has no selected
+        # map; only a successful live LoadMap result may set this value.
         self.active_map_name = None
+        self.active_map_load_id = ''
         self.navigation_active = False
         configured_map_server_timeout = self.declare_parameter(
             'map_server_active_timeout_sec', 60.0).value
@@ -82,6 +91,9 @@ class MapSwitcherService(Node):
 
         self.set_pixel_indices_service = self.create_service(
             SetMapPixelIndices, 'set_map_pixel_indices', self.handle_set_map_pixel_indices,
+            callback_group=self.callback_group)
+        self.cloud_edit_service = self.create_service(
+            EditMapCloud, 'edit_map_cloud', self.handle_edit_map_cloud,
             callback_group=self.callback_group)
 
 
@@ -160,6 +172,69 @@ class MapSwitcherService(Node):
 
     def navigation_active_callback(self, message):
         self.navigation_active = bool(message.data)
+
+    def handle_edit_map_cloud(self, request, response):
+        """Exclusive explicit cleanup; require a successful core-stop ACK."""
+        response.success, response.result_json = False, '{}'
+        if not self.cloud_edit_lock.acquire(blocking=False):
+            response.message = '另一个三维地图编辑正在进行'
+            return response
+        self.cloud_edit_busy = True
+        lease = None
+        try:
+            name = self._safe_map_name(request.map_name)
+            preview_action = request.action in ('preview', 'preview_linked')
+            if not preview_action and request.action not in ('commit', 'restore'):
+                raise ValueError('三维编辑动作无效')
+            if self.navigation_active or self.pending_map_name:
+                raise ValueError('请先停止所有导航任务和地图加载，再进行三维编辑')
+            candidate_lease = saved_map_lock(self.pcdmap_directory)
+            candidate_lease.__enter__()
+            lease = candidate_lease
+            with self.map_cache_lock:
+                cached = self.loaded_maps_cache.get(name)
+                if cached and cached.get('has_changes'):
+                    raise ValueError('请先保存或撤销普通二维画笔修改，再清理三维误障碍')
+            if not self.restart_launch_cli.service_is_ready():
+                raise ValueError('核心停止确认服务尚未就绪，未修改地图')
+            stop = ControlLaunch.Request()
+            stop.action, stop.package_name, stop.launch_type = 'stop', 'car_vel', 'all'
+            future = self.restart_launch_cli.call_async(stop)
+            done = threading.Event()
+            future.add_done_callback(lambda _: done.set())
+            if not done.wait(30) or not future.result().success:
+                raise ValueError('未获得建图/导航核心停止确认，未修改地图')
+            # Share the load/edit lock; switching to a new map cannot race
+            # installation. Live map identity is retracted even after a failed
+            # transaction because the core has already been stopped.
+            with self.map_load_lock, self.map_cache_lock:
+                self.active_map_name = None
+                self.active_map_load_id = ''
+                self.publish_current_map_info()
+                if request.action == 'preview_linked':
+                    result = self.cloud_editor.preview(name, request.indices,
+                        request.minimum_height_m, request.maximum_height_m, linked=True)
+                elif request.action == 'preview':
+                    result = self.cloud_editor.preview(name, request.indices,
+                        request.minimum_height_m, request.maximum_height_m)
+                elif request.action == 'commit':
+                    result = self.cloud_editor.commit(name, request.preview_id)
+                else:
+                    result = self.cloud_editor.restore(name)
+                if not preview_action:
+                    self.loaded_maps_cache.pop(name, None)
+                response.result_json = json.dumps(result, ensure_ascii=False, allow_nan=False)
+                response.message = result['message']
+                response.success = True
+        except Exception as error:
+            response.message = f'三维地图编辑未完成：{error}'
+            self.get_logger().error(response.message)
+        finally:
+            if lease is not None:
+                lease.__exit__(None, None, None)
+            self.cloud_edit_busy = False
+            self.cloud_edit_lock.release()
+        return response
 
 
     def pgm_to_occgrid(self,pgm_value):
@@ -249,6 +324,8 @@ class MapSwitcherService(Node):
         are intentionally rejected.  This prevents an unrelated or stale PCD
         from silently refining an otherwise valid 2D initial pose.
         """
+        if os.path.exists(os.path.join(self.pcdmap_directory, f'.{map_name}.cloud-edit-pending')):
+            raise ValueError('三维地图编辑事务未完成，请先在修图页恢复备份')
         expected_image_name = f'{map_name}.pgm'
         expected_pcd_name = f'{map_name}.pcd'
         image_path = os.path.join(self.map_directory, expected_image_name)
@@ -319,6 +396,29 @@ class MapSwitcherService(Node):
         actual_hash = self._sha256_file(pcd_path)
         if actual_hash != recorded_hash:
             raise ValueError('定位 PCD 校验和不匹配，文件可能损坏，禁止导航')
+
+        if 'terrain_grid' not in metadata:
+            self.get_logger().warning(
+                f'地图“{map_name}”没有持久化地形网格；这是兼容的旧地图，'
+                '导航时将从已校验 PCD 重建地形。')
+        else:
+            try:
+                terrain_map = load_bound_terrain_grid(
+                    self.pcdmap_directory,
+                    map_name=map_name,
+                    localization_metadata=metadata,
+                    actual_pcd_sha256=actual_hash,
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f'持久化地形网格校验失败：{error}，禁止导航'
+                ) from error
+            if terrain_map is None:
+                raise ValueError('地形元数据存在但地形网格未加载，禁止导航')
+            self.get_logger().info(
+                f'Terrain artifact verified for map {map_name}: '
+                f'{terrain_map.grid.width}x{terrain_map.grid.height} at '
+                f'{terrain_map.grid.resolution:.3f} m')
 
         voxel_size = self._finite_float(metadata.get('voxel_size'), 'voxel_size')
         if voxel_size <= 0.0:
@@ -705,6 +805,9 @@ class MapSwitcherService(Node):
 
     def handle_save_edited_maps(self, request, response):
         """Overwrite edited PGM files and establish a new undo baseline."""
+        if getattr(self, 'cloud_edit_busy', False):
+            response.success, response.message = False, '三维地图编辑正在进行，禁止并发覆盖PGM'
+            return response
         try:
             requested_map_name = self._safe_map_name(
                 request.map_name, allow_empty=True)
@@ -733,6 +836,8 @@ class MapSwitcherService(Node):
                 if not cached_data.get('has_changes', False):
                     continue
                 try:
+                    if os.path.exists(os.path.join(getattr(self, 'pcdmap_directory', self.map_directory), f'.{map_name}.cloud-edit-pending')):
+                        raise ValueError('三维编辑事务未完成，请先恢复备份')
                     # This deliberately writes to the original PGM path rather
                     # than creating a second map. YAML metadata is untouched.
                     edited_img = Image.fromarray(
@@ -849,7 +954,7 @@ class MapSwitcherService(Node):
         """处理地图切换请求"""
         self.get_logger().info(f'Received switch map request for: {request.map_name}')
 
-        if self.navigation_active:
+        if self.navigation_active or getattr(self, 'cloud_edit_busy', False):
             response.success = False
             response.message = (
                 'Navigation is active. Stop the current navigation task '
@@ -914,18 +1019,21 @@ class MapSwitcherService(Node):
                         # Once map_server disappears, the previous map is no
                         # longer an active live map and must not be advertised.
                         self.active_map_name = None
-                current_map = self.get_current_map_name()
-                msg = CurrentMap()
-                if current_map:
-                    msg.map_name = current_map
-                    msg.success = True
-                    msg.message = f"Current map: {current_map}"
-                else:
-                    msg.map_name = ""
-                    msg.success = False
-                    msg.message = "Could not determine current map"
-                
-                self.current_map_publisher.publish(msg)
+                        self.active_map_load_id = ''
+                    current_map = self.active_map_name
+                    load_id = self.active_map_load_id
+                    msg = CurrentMap()
+                    if current_map and load_id:
+                        msg.map_name = current_map
+                        msg.load_id = load_id
+                        msg.success = True
+                        msg.message = f"Current map: {current_map}"
+                    else:
+                        msg.map_name = ""
+                        msg.load_id = ''
+                        msg.success = False
+                        msg.message = "Could not determine current map"
+                    self.current_map_publisher.publish(msg)
                 # self.get_logger().info(f'Published current map info: {current_map}')
             except Exception as e:
                 self.get_logger().error(f'Error publishing current map info: {str(e)}')
@@ -941,12 +1049,35 @@ class MapSwitcherService(Node):
             return
         msg = CurrentMap()
         msg.map_name = map_name
-        msg.success = True
-        msg.message = message
-        self.current_map_publisher.publish(msg)
+        with self.map_load_lock:
+            msg.load_id = (
+                self.active_map_load_id
+                if self.active_map_name == map_name else '')
+            if not msg.load_id:
+                self.get_logger().error(
+                    'Refusing to confirm a map without a live load ID')
+                return
+            msg.success = True
+            msg.message = message
+            self.current_map_publisher.publish(msg)
+
+    def _invalidate_uncertain_map(self, reason):
+        """Fail closed when a timed-out LoadMap may still finish later."""
+        with self.map_load_lock:
+            self.active_map_name = None
+            self.active_map_load_id = ''
+            msg = CurrentMap()
+            msg.success = False
+            msg.map_name = ''
+            msg.load_id = ''
+            msg.message = str(reason)
+            self.current_map_publisher.publish(msg)
 
     def handle_delete_map(self, request, response):
         """处理删除地图请求"""
+        if getattr(self, 'cloud_edit_busy', False):
+            response.success, response.message = False, '三维编辑正在进行，不能同时删除地图'
+            return response
         try:
             map_name = self._safe_map_name(request.map_name)
         except ValueError as error:
@@ -974,6 +1105,8 @@ class MapSwitcherService(Node):
             pcd_files_deleted = self.delete_pcd_files(map_name)
             
             if map_files_deleted or pcd_files_deleted:
+                with self.map_cache_lock:
+                    self.loaded_maps_cache.pop(map_name, None)
                 deleted_routes = self.route_database.delete_routes_by_map(
                     map_name)
                 response.success = True
@@ -1022,12 +1155,19 @@ class MapSwitcherService(Node):
         return deleted_count > 0
 
     def delete_pcd_files(self, map_name):
-        """删除指定地图的3D文件及其定位校验元数据。"""
+        """删除指定地图的3D、地形文件及其定位校验元数据。"""
         deleted = False
         pcd_path = os.path.join(self.pcdmap_directory, f'{map_name}.pcd')
         if os.path.exists(pcd_path):
             os.remove(pcd_path)
             self.get_logger().info(f'Deleted PCD file: {pcd_path}')
+            deleted = True
+        terrain_path = os.path.join(
+            self.pcdmap_directory, f'{map_name}.terrain.npz')
+        if os.path.exists(terrain_path):
+            os.remove(terrain_path)
+            self.get_logger().info(
+                f'Deleted terrain grid file: {terrain_path}')
             deleted = True
         metadata_path = os.path.join(
             self.pcdmap_directory,
@@ -1044,8 +1184,11 @@ class MapSwitcherService(Node):
     def load_map_blocking(self, map_path, map_name):
         """Load one map and return only after map_server reports completion."""
         self.get_logger().info(f'Starting confirmed map loading for: {map_name}')
+        request_sent = False
 
         with self.map_load_lock:
+            if getattr(self, 'cloud_edit_busy', False):
+                return False, '三维地图编辑正在进行，禁止加载地图'
             if self.pending_map_name is not None:
                 message = f'Another map is still loading: {self.pending_map_name}'
                 self.get_logger().warn(message)
@@ -1073,6 +1216,7 @@ class MapSwitcherService(Node):
             request = LoadMap.Request()
             request.map_url = map_path
             future = self.load_map_cli.call_async(request)
+            request_sent = True
             completed = threading.Event()
             future.add_done_callback(lambda _future: completed.set())
             if not completed.wait(timeout=30.0):
@@ -1082,9 +1226,10 @@ class MapSwitcherService(Node):
                     pass
                 message = (
                     f'Loading map {map_name} timed out after 30 seconds; '
-                    'map_server did not return a final result.')
+                    'map_server may still complete; navigation map identity '
+                    'has been revoked until a new confirmed load.')
                 self.get_logger().error(message)
-                self.publish_map_load_result(map_name, False, message)
+                self._invalidate_uncertain_map(message)
                 return False, message
 
             result = future.result()
@@ -1099,19 +1244,18 @@ class MapSwitcherService(Node):
 
             with self.map_load_lock:
                 self.active_map_name = map_name
-            config_updated = self.update_map_path_in_yaml(map_name)
+                self.active_map_load_id = uuid.uuid4().hex
             message = f'Successfully loaded and confirmed map: {map_name}'
             self.get_logger().info(message)
-            if not config_updated:
-                self.get_logger().warn(
-                    'The map is active, but the startup default path could '
-                    'not be persisted. The live map state remains correct.')
             self.publish_map_load_result(map_name, True, message)
             return True, message
         except Exception as error:
             message = f'Failed to call load_map service for {map_name}: {error}'
             self.get_logger().error(message)
-            self.publish_map_load_result(map_name, False, message)
+            if request_sent:
+                # Once the request reached map_server, a transport/client
+                # error does not prove whether the server changed maps.
+                self._invalidate_uncertain_map(message)
             return False, message
         finally:
             with self.map_load_lock:
@@ -1212,12 +1356,8 @@ class MapSwitcherService(Node):
             if success:
                 with self.map_load_lock:
                     self.active_map_name = map_name
-                # Keep the selected map as the default for the next startup.
-                config_updated = self.update_map_path_in_yaml(map_name)
+                    self.active_map_load_id = uuid.uuid4().hex
                 self.get_logger().info(f'Successfully loaded map: {map_name}')
-                if not config_updated:
-                    self.get_logger().warn(
-                        'The map is active, but the default map path could not be persisted.')
                 # LoadMap changes the live map_server in place.  Restarting the
                 # complete navigation launch here would discard AMCL state and
                 # any goal sent by the web page.
@@ -1230,7 +1370,7 @@ class MapSwitcherService(Node):
         except Exception as e:
             message = f'Failed to call load_map service: {e}'
             self.get_logger().error(message)
-            self.publish_map_load_result(map_name, False, message)
+            self._invalidate_uncertain_map(message)
         finally:
             with self.map_load_lock:
                 if self.pending_map_name == map_name:
@@ -1300,45 +1440,6 @@ class MapSwitcherService(Node):
                 self.get_logger().error(f'Failed to restart navigation: {result.message}')
         except Exception as e:
             self.get_logger().error(f'Failed to call restart launch service: {e}')
-    def update_map_path_in_yaml(self, map_name):
-        """更新nav2_params.yaml中的地图路径"""
-        fishbot_navigation2_dir = get_package_share_directory('robot_navigation2')
-        params_file = os.path.join(fishbot_navigation2_dir, 'config', 'nav2_params.yaml')
-        
-        
-        try:
-            # 构建新的地图路径
-            new_map_path = os.path.join(self.map_directory, f'{map_name}.yaml')
-            
-            # 读取原始文件内容
-            with open(params_file, 'r', encoding='utf-8') as file:
-                original_content = file.read()
-            
-            # 保存旧路径用于日志
-            import re
-            old_path_match = re.search(r'yaml_filename:\s*["\']?([^\s"\'\n]+)["\']?', original_content)
-            old_path = old_path_match.group(1) if old_path_match else "Unknown"
-            
-            # 替换yaml_filename的值
-            updated_content = re.sub(
-                r'(yaml_filename:\s*["\']?)[^\s"\'\n]+(["\']?)',
-                f'\\g<1>{new_map_path}\\g<2>',
-                original_content
-            )
-            
-            # 写回文件
-            with open(params_file, 'w', encoding='utf-8') as file:
-                file.write(updated_content)
-            
-            self.get_logger().info(f'成功更新配置文件中的地图路径为: {new_map_path} (原路径: {old_path})')
-            return True
-
-            
-        except Exception as e:
-            self.get_logger().error(f'更新YAML配置文件失败: {e}')
-            return False
-
-
 def main(args=None):
     rclpy.init(args=args)
     
@@ -1358,4 +1459,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-

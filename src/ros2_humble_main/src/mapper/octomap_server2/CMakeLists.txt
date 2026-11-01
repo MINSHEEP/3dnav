@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.5)
 project(octomap_server2)
 
+set(MAPPING_FILTER_CONTRACT "mapping_cloud_filter_modes_v3")
+file(WRITE
+  "${CMAKE_CURRENT_BINARY_DIR}/mapping_filter_contract.txt"
+  "${MAPPING_FILTER_CONTRACT}\n")
+
 # Default to C99
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 99)
@@ -99,5 +104,9 @@ install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}/
   )
+
+install(FILES
+  "${CMAKE_CURRENT_BINARY_DIR}/mapping_filter_contract.txt"
+  DESTINATION share/${PROJECT_NAME})
 
 ament_package()

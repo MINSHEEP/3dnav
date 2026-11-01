@@ -1,0 +1,7 @@
+float64 radius_m
+---
+bool success
+bool applied
+string message
+float64 radius_m
+uint64 version

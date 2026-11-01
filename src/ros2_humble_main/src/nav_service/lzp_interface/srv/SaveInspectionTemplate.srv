@@ -1,0 +1,6 @@
+int64 route_id
+string config_json
+---
+bool success
+string message
+string template_json

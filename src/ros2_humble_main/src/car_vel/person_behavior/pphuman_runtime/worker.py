@@ -1,0 +1,75 @@
+"""python -m pphuman_runtime.worker --config config/inference.yaml"""
+import argparse
+import os
+import sys
+import traceback
+
+from .protocol import read_request, write_message
+
+
+def serve(runtime, cfg, input_stream, output_stream):
+    write_message(output_stream, {"type": "ready", "protocol_version": 1,
+                                  "models": runtime.backend.identities,
+                                  "runtime": runtime.backend.metadata,
+                                  "branches": cfg["branches"],
+                                  "sampling": {k: cfg[k] for k in ("fall", "fight")}})
+    import numpy as np
+    limits = {key: cfg["stream"][key] for key in (
+        "max_header_bytes", "max_payload_bytes", "max_dimension")}
+    while True:
+        packet = read_request(input_stream, **limits)
+        if packet is None:
+            return
+        header, payload = packet
+        if header["op"] == "shutdown":
+            write_message(output_stream, {"type": "shutdown_ack", "request_id": header.get("request_id"),
+                                          "source_epoch": header.get("source_epoch")})
+            return
+        if header["op"] == "reset":
+            runtime.reset()
+            write_message(output_stream, {"type": "reset_ack", "request_id": header.get("request_id"),
+                                          "source_epoch": header.get("source_epoch"),
+                                          "generation": runtime.generation})
+            continue
+        stamps = header.get("clip_stamps_ns")
+        if stamps is None:
+            frame = np.frombuffer(payload, dtype=np.uint8).reshape(header["shape"])
+            result = runtime.infer(frame, header)
+        else:
+            frames = np.frombuffer(payload, dtype=np.uint8).reshape([len(stamps), *header["shape"]])
+            result = runtime.infer(frames[-1], header, fight_samples=list(zip(stamps, frames)))
+        write_message(output_stream, result)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--branch", choices=("fall", "fight"))
+    args = parser.parse_args()
+    # Native Paddle output must not corrupt the binary response stream.
+    sys.stdout.flush()
+    output = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    sys.stdout = sys.stderr
+    try:
+        from .runtime_yolo import RuntimeYolo, load_config
+        from .yolo_backend import YoloBackend
+        cfg = load_config(args.config)
+        if args.branch:
+            cfg["branches"] = {key: cfg["branches"][key] and key == args.branch for key in ("fall", "fight")}
+        import cv2
+        cv2.setNumThreads(cfg["cpu_threads"])
+        backend = YoloBackend(cfg)
+        serve(RuntimeYolo(cfg, backend), cfg, sys.stdin.buffer, output)
+    except BrokenPipeError:
+        return 1
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        return 1
+    finally:
+        output.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

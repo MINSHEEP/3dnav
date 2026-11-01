@@ -1,0 +1,6 @@
+int32 limit
+int32 offset
+---
+bool success
+string message
+string history_json

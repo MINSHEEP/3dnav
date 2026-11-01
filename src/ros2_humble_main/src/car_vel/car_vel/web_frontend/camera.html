@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>USB相机 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260805-usb-camera">
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <script src="robot_ui_common.js?v=20261022-web-preview"></script>
+    <script src="behavior_widget.js?v=20261027"></script>
+    <style>
+        .usb-camera-workspace { display:grid; grid-template-columns:minmax(0,2.2fr) minmax(300px,.8fr); gap:16px; padding:16px; min-height:calc(100vh - 82px); }
+        .usb-camera-card { min-width:0; padding:16px; border:1px solid var(--border); border-radius:14px; background:var(--panel); }
+        .usb-camera-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding-bottom:13px; border-bottom:1px solid var(--border); }
+        .usb-camera-heading h1,.usb-camera-heading h2 { margin:0; font-size:20px; }
+        .usb-camera-heading p { margin:5px 0 0; color:var(--muted); }
+        .usb-video-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px; align-items:start; }
+        .usb-video-panel { min-width:0; }
+        .usb-video-panel h3 { margin:0 0 7px; color:#dbeaff; font-size:15px; }
+        .usb-video-frame { position:relative; display:grid; place-items:center; min-height:320px; aspect-ratio:16/9; overflow:hidden; border:1px solid #34445f; border-radius:12px; background:#060b14; }
+        .usb-video-frame.thermal { aspect-ratio:4/3; }
+        .usb-video-frame img { display:block; width:100%; height:100%; max-height:72vh; object-fit:contain; opacity:0; transition:opacity .15s ease; }
+        .usb-video-frame img.ready { opacity:1; }
+        .usb-video-message { position:absolute; color:var(--muted); }
+        .usb-video-badge { position:absolute; top:12px; left:12px; z-index:2; padding:6px 10px; border:1px solid #445575; border-radius:7px; background:rgba(8,15,28,.86); }
+        .usb-actions { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px; }
+        .usb-status-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:14px; }
+        .usb-status-grid div { min-height:76px; padding:12px; border-radius:10px; background:var(--panel-strong); }
+        .usb-status-grid span { display:block; color:var(--muted); font-size:13px; }
+        .usb-status-grid strong { display:block; margin-top:8px; font-size:18px; word-break:break-word; }
+        .usb-note { margin-top:14px; padding:12px; border:1px solid var(--border); border-radius:10px; color:var(--muted); line-height:1.65; }
+        .thermal-config { margin-top:14px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--panel-strong); }
+        .thermal-config label { display:block; margin-bottom:8px; color:var(--muted); }
+        .thermal-config-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; align-items:center; }
+        .thermal-config input { width:100%; min-width:0; }
+        .thermal-config small { display:block; margin-top:8px; color:var(--muted); line-height:1.5; }
+        .usb-log { min-height:150px; max-height:260px; margin-top:14px; padding:12px; overflow:auto; white-space:pre-wrap; border-radius:10px; background:#080f1d; color:#b9d6ff; font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }
+        .behavior-controls { margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:10px; }
+        .behavior-head,.behavior-branches label { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+        .behavior-head { justify-content:space-between; margin-bottom:10px; }
+        .behavior-branches { display:grid; gap:10px; }
+        .behavior-branches span { margin-left:auto; color:var(--muted); }
+        .behavior-branches input { width:auto; }
+        @media (max-width:1250px) { .usb-video-grid { grid-template-columns:1fr; } }
+        @media (max-width:1050px) { .usb-camera-workspace { grid-template-columns:1fr; } .usb-video-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .usb-video-frame { min-height:280px; } }
+        @media (max-width:760px) { .usb-video-grid { grid-template-columns:1fr; } }
+        @media (max-width:700px) { .usb-actions { grid-template-columns:repeat(2,1fr); } .usb-camera-workspace { padding:10px; } .thermal-config-row { grid-template-columns:1fr auto; } .thermal-config-row span { display:none; } }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div class="brand">四足机器人巡检</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a href="navigation.html">地形导航</a>
+            <a href="campus_navigation.html">园区导航</a>
+            <a href="inspection.html">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
+            <a href="remote_control.html">遥控</a>
+            <a class="active" aria-current="page" href="camera.html">USB相机</a>
+            <a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
+            <div id="camera-top-status" class="page-status">○ 正在连接相机…</div>
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main class="usb-camera-workspace">
+        <section class="usb-camera-card">
+            <div class="usb-camera-heading">
+                <div>
+                    <h1>普通相机与热成像</h1>
+                    <p>两台设备分别由后台单点持有；网页只消费共享视频流。</p>
+                </div>
+                <span id="feed-state" class="page-status">原始画面</span>
+            </div>
+            <div class="usb-video-grid">
+                <div class="usb-video-panel">
+                    <h3>普通摄像头</h3>
+                    <div class="usb-video-frame">
+                        <span id="feed-badge" class="usb-video-badge">原始画面</span>
+                        <img id="camera-feed" alt="普通摄像头实时画面（来源由设置页选择）">
+                        <div id="video-message" class="usb-video-message">正在等待视频帧…</div>
+                    </div>
+                </div>
+                <div class="usb-video-panel">
+                    <h3>热成像</h3>
+                    <div class="usb-video-frame thermal">
+                        <span id="thermal-feed-badge" class="usb-video-badge">最高温 -- ℃</span>
+                        <img id="thermal-feed" alt="USB热成像实时画面">
+                        <div id="thermal-video-message" class="usb-video-message">正在等待热成像帧…</div>
+                    </div>
+                </div>
+            </div>
+            <div class="usb-actions">
+                <button id="btn-yolo" class="primary" type="button">启动识别</button>
+                <button id="btn-view" type="button">查看识别画面</button>
+                <button id="btn-behavior-view" type="button">查看行为画面</button>
+                <button id="btn-reconnect" type="button">重连视频</button>
+                <button id="btn-frame" type="button">打开当前帧</button>
+            </div>
+        </section>
+
+        <aside class="usb-camera-card">
+            <div class="usb-camera-heading">
+                <div><h2>设备与识别状态</h2><p>普通画面来源可在设置页切换，以下为实际采集信息。</p></div>
+            </div>
+            <div class="usb-status-grid">
+                <div><span>相机连接</span><strong id="status-connection">检查中</strong></div>
+                <div><span>采集后端</span><strong id="status-backend">--</strong></div>
+                <div><span>设备 / 图传地址</span><strong id="status-device">--</strong></div>
+                <div><span>实际格式</span><strong id="status-format">--</strong></div>
+                <div><span>视觉识别</span><strong id="status-yolo">已停止</strong></div>
+                <div><span>推理 / 发布</span><strong id="status-fps">--</strong></div>
+                <div><span>热成像</span><strong id="status-thermal">检查中</strong></div>
+                <div><span>当前最高温</span><strong id="status-temperature">-- ℃</strong></div>
+                <div><span>高温检测</span><strong id="status-thermal-detection">已停止</strong></div>
+                <div><span>热图帧龄</span><strong id="status-thermal-age">--</strong></div>
+            </div>
+            <div id="camera-behavior" class="behavior-controls" aria-label="人员行为识别设置与状态"></div>
+            <form id="thermal-config-form" class="thermal-config">
+                <label for="thermal-threshold">默认高温报警阈值</label>
+                <div class="thermal-config-row">
+                    <input id="thermal-threshold" type="number" step="0.1" required aria-describedby="thermal-config-help">
+                    <span>℃</span>
+                    <button id="btn-save-threshold" type="submit">保存阈值</button>
+                </div>
+                <small id="thermal-config-help">保存后供手动识别和未单独设置阈值的巡检任务使用。</small>
+            </form>
+            <div id="status-note" class="usb-note">普通画面来源在设置页选择。视觉识别复用本机共享画面，不会再次打开 USB 设备。</div>
+            <pre id="camera-log" class="usb-log">[系统] USB 相机页面已加载。</pre>
+        </aside>
+    </main>
+</div>
+
+<script>
+(() => {
+    'use strict';
+    const UI = window.RobotUi;
+    const $ = selector => document.querySelector(selector);
+    const CAMERA_BASE = `${window.location.protocol}//${window.location.hostname}:8766`;
+    const feed = $('#camera-feed');
+    const message = $('#video-message');
+    const thermalFeed = $('#thermal-feed');
+    const thermalMessage = $('#thermal-video-message');
+    const logBox = $('#camera-log');
+    const batteryStatus = $('#battery-status');
+    let state = { yolo: {}, thermal: {}, detection: {} };
+    let viewMode = 'raw';
+    let reconnectTimer = null;
+    let thermalReconnectTimer = null;
+    let yoloBusy = false;
+    let thermalConfigVersion = null;
+    let previewPageReleased = false;
+    let lastRecognitionLabel = '';
+    const behaviorWidget = window.RobotBehavior.attach($('#camera-behavior'), {
+        baseUrl: CAMERA_BASE, image: feed, message,
+        isPreviewAllowed: () => UI.previewAllowed('ordinary'), onError: log
+    });
+
+    function cameraUrl(path) { return `${CAMERA_BASE}${path}`; }
+    function stamped(path) { return UI.previewUrl(`${cameraUrl(path)}${path.includes('?') ? '&' : '?'}t=${Date.now()}`); }
+    function log(text) {
+        const lines = logBox.textContent.split('\n').filter(Boolean);
+        lines.push(`[${new Date().toLocaleTimeString()}] ${text}`);
+        logBox.textContent = lines.slice(-12).join('\n');
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+    async function api(path, options = {}) {
+        const response = await fetch(cameraUrl(path), { cache:'no-store', ...options });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        return payload;
+    }
+    function post(path, payload) {
+        return api(path, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload)
+        });
+    }
+    function feedPath() {
+        return viewMode === 'yolo' ? '/api/yolo/stream.mjpg' : '/api/stream';
+    }
+    function connectFeed(delay = 0) {
+        window.clearTimeout(reconnectTimer);
+        if (previewPageReleased) return;
+        behaviorWidget.setPreviewActive(viewMode === 'behavior');
+        if (viewMode === 'behavior') return;
+        reconnectTimer = window.setTimeout(() => {
+            if (previewPageReleased) return;
+            if (!UI.previewAllowed('ordinary')) {
+                message.hidden = false;
+                message.textContent = '普通画面预览已暂停；可在右上角选择预览来源。';
+                return;
+            }
+            feed.classList.remove('ready');
+            message.hidden = false;
+            message.textContent = viewMode === 'yolo' ? '正在等待 YOLO 标注帧…' : '正在等待普通摄像头视频帧…';
+            feed.removeAttribute('src');
+            if (viewMode === 'yolo' && !state.yolo?.running) return;
+            feed.src = stamped(feedPath());
+        }, delay);
+    }
+    function connectThermalFeed(delay = 0) {
+        window.clearTimeout(thermalReconnectTimer);
+        thermalReconnectTimer = window.setTimeout(() => {
+            if (previewPageReleased) return;
+            if (!UI.previewAllowed('thermal')) {
+                thermalMessage.hidden = false;
+                thermalMessage.textContent = '热成像预览已暂停（5G默认单路）；可在右上角选择热成像或双路。测温不受影响。';
+                return;
+            }
+            thermalFeed.classList.remove('ready');
+            thermalMessage.hidden = false;
+            thermalMessage.textContent = '正在等待热成像帧…';
+            thermalFeed.removeAttribute('src');
+            thermalFeed.src = stamped('/api/thermal/stream.mjpg');
+        }, delay);
+    }
+    function updateViewUi() {
+        const yoloView = viewMode === 'yolo';
+        const behaviorView = viewMode === 'behavior';
+        $('#feed-badge').textContent = behaviorView ? '行为识别 · 对应推理帧' : (yoloView ? 'YOLO 标注画面' : '原始画面');
+        $('#feed-state').textContent = behaviorView ? '行为识别' : (yoloView ? 'YOLO 结果' : '原始画面');
+        $('#btn-view').textContent = yoloView ? '查看原始画面' : '查看识别画面';
+        $('#btn-behavior-view').textContent = behaviorView ? '返回原始画面' : '查看行为画面';
+    }
+    function updateStatus(payload) {
+        const previousThermalReady = Boolean(state.thermal?.ready);
+        const previousSourceGeneration = state.camera_source?.generation;
+        state = payload;
+        const video = payload.video || {};
+        const yolo = payload.yolo || {};
+        const thermal = payload.thermal || {};
+        const thermalBecameReady = Boolean(thermal.ready && !previousThermalReady);
+        const detection = payload.detection || {};
+        behaviorWidget.observeSource(payload.camera_source?.generation);
+        const connected = Boolean(payload.connected && !video.error);
+        const sourceName = payload.camera_source?.label || (payload.camera_type === 'body' ? '狗本体摄像头' : 'USB摄像头');
+        $('#camera-top-status').textContent = `${connected ? '●' : '○'} ${sourceName}${connected ? '在线' : '异常'}`;
+        $('#camera-top-status').className = `page-status ${connected ? 'connected' : 'error'}`;
+        $('#status-connection').textContent = connected ? '在线' : '离线';
+        $('#status-backend').textContent = video.backend === 'v4l2' ? 'V4L2 / MJPG' : (video.backend || '--');
+        $('#status-device').textContent = video.device || '--';
+        $('#status-format').textContent = video.width && video.height
+            ? `${video.width}×${video.height} / ${Number(video.fps || 0).toFixed(1)} FPS / ${video.fourcc || '--'}` : '--';
+        $('#status-yolo').textContent = yolo.running ? (yolo.ready ? '运行中' : '启动中') : (yolo.error ? '异常' : '已停止');
+        $('#status-fps').textContent = yolo.running
+            ? `${Number(yolo.inference_fps || 0).toFixed(1)} / ${Number(yolo.publish_fps || 0).toFixed(1)} FPS` : '--';
+        $('#status-thermal').textContent = thermal.ready ? '在线' : (thermal.error ? '异常' : '等待首帧');
+        $('#status-temperature').textContent = Number.isFinite(Number(thermal.max_temperature_c))
+            ? `${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '-- ℃';
+        $('#status-thermal-detection').textContent = thermal.detection_enabled
+            ? (thermal.alarm_active ? '高温报警' : '运行中') : '已停止';
+        $('#status-thermal-age').textContent = Number.isFinite(Number(thermal.frame_age_seconds))
+            ? `${Number(thermal.frame_age_seconds).toFixed(1)} 秒` : '--';
+        $('#thermal-feed-badge').textContent = Number.isFinite(Number(thermal.max_temperature_c))
+            ? `最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '最高温 -- ℃';
+        const recognitionRunning = Boolean(detection.running ?? (yolo.running || thermal.manual_detection_enabled || payload.behavior?.running));
+        $('#btn-yolo').textContent = recognitionRunning ? '停止识别' : '启动识别';
+        if (lastRecognitionLabel) {
+            const label = window.RobotBehavior.recognitionLabel({ ...detection, yolo, thermal, behavior:payload.behavior || detection.behavior });
+            if (label !== lastRecognitionLabel) { log(label); lastRecognitionLabel = label; }
+        }
+        const config = thermal.config || {};
+        if (document.activeElement !== $('#thermal-threshold') && Number.isFinite(Number(config.threshold_c))) {
+            $('#thermal-threshold').value = Number(config.threshold_c).toFixed(1);
+            $('#thermal-threshold').min = config.minimum_c;
+            $('#thermal-threshold').max = config.maximum_c;
+            thermalConfigVersion = Number(config.global_version || config.version);
+        }
+        $('#status-note').textContent = video.error
+            ? `视频异常：${video.error}`
+            : (thermal.error
+                ? `普通相机可用；热成像部分不可用：${thermal.error}`
+                : `当前来源：${sourceName}（在设置页切换）。普通画面与视觉识别共享取流，热成像独立。`);
+        if (previousSourceGeneration !== undefined && previousSourceGeneration !== payload.camera_source?.generation) {
+            log(`普通画面来源已更新：${sourceName}`);
+            if (viewMode !== 'behavior') viewMode = 'raw';
+            updateViewUi();
+            connectFeed(0);
+        }
+        if (!yolo.running && viewMode === 'yolo') {
+            viewMode = 'raw';
+            updateViewUi();
+            connectFeed(50);
+        }
+        if (thermalBecameReady) connectThermalFeed(0);
+        (yolo.logs || []).slice(-3).forEach(line => {
+            if (!logBox.textContent.includes(line)) log(`[YOLO] ${line}`);
+        });
+    }
+    async function refreshStatus() {
+        try { updateStatus(await api('/api/status')); }
+        catch (error) {
+            $('#camera-top-status').textContent = '○ 相机服务失联';
+            $('#camera-top-status').className = 'page-status error';
+            $('#status-connection').textContent = '离线';
+        }
+    }
+
+    feed.addEventListener('load', () => {
+        if (viewMode === 'behavior' || previewPageReleased) return;
+        feed.classList.add('ready');
+        message.hidden = true;
+    });
+    feed.addEventListener('error', () => {
+        if (viewMode === 'behavior' || previewPageReleased) return;
+        feed.classList.remove('ready');
+        message.hidden = false;
+        message.textContent = '视频连接中断，正在重试；如打开了多个视频页面，请关闭多余页面。';
+        connectFeed(1800);
+    });
+    thermalFeed.addEventListener('load', () => {
+        thermalFeed.classList.add('ready');
+        thermalMessage.hidden = true;
+        window.clearTimeout(thermalReconnectTimer);
+    });
+    thermalFeed.addEventListener('error', () => {
+        thermalFeed.classList.remove('ready');
+        thermalMessage.hidden = false;
+        thermalMessage.textContent = '热成像连接中断，普通摄像头和视觉识别不受影响，正在重试。';
+        connectThermalFeed(2200);
+    });
+    $('#btn-yolo').addEventListener('click', async () => {
+        if (yoloBusy) return;
+        yoloBusy = true;
+        $('#btn-yolo').disabled = true;
+        try {
+            const detection = await post('/api/detection', { operation:'toggle' });
+            state.detection = detection;
+            state.yolo = detection.yolo || {};
+            state.thermal = detection.thermal || {};
+            state.behavior = detection.behavior || {};
+            lastRecognitionLabel = window.RobotBehavior.recognitionLabel(detection);
+            log(lastRecognitionLabel);
+            if (viewMode !== 'behavior') viewMode = state.yolo.running ? 'yolo' : 'raw';
+            updateViewUi();
+            connectFeed(100);
+            behaviorWidget.refreshNow();
+            await refreshStatus();
+        } catch (error) { log(`识别操作失败：${error.message}`); }
+        finally { yoloBusy = false; $('#btn-yolo').disabled = false; }
+    });
+    $('#btn-view').addEventListener('click', () => {
+        if (viewMode !== 'yolo') {
+            if (!state.yolo?.running) { log('请先启动视觉识别。'); return; }
+            viewMode = 'yolo';
+        } else viewMode = 'raw';
+        updateViewUi();
+        connectFeed(0);
+    });
+    $('#btn-behavior-view').addEventListener('click', () => {
+        viewMode = viewMode === 'behavior' ? 'raw' : 'behavior';
+        updateViewUi();
+        connectFeed(0);
+    });
+    $('#btn-reconnect').addEventListener('click', async () => {
+        try {
+            if (viewMode === 'raw') await post('/api/video', { operation:'restart' });
+            connectFeed(80);
+            log('已重新连接视频。');
+        } catch (error) { log(`视频重连失败：${error.message}`); }
+    });
+    $('#btn-frame').addEventListener('click', () => {
+        const path = viewMode === 'behavior' ? '/api/behavior/frame.jpg'
+            : (viewMode === 'yolo' ? '/api/yolo/frame.jpg' : '/api/snapshot');
+        window.open(stamped(path), '_blank', 'noopener');
+    });
+    $('#thermal-config-form').addEventListener('submit', async event => {
+        event.preventDefault();
+        const button = $('#btn-save-threshold');
+        button.disabled = true;
+        try {
+            const config = await post('/api/thermal/config', {
+                threshold_c:Number($('#thermal-threshold').value),
+                scope:'global', expected_version:thermalConfigVersion,
+                actor:'usb-camera-page'
+            });
+            thermalConfigVersion = Number(config.global_version || config.version);
+            log(`默认高温阈值已更新为 ${Number(config.threshold_c).toFixed(1)} ℃。`);
+            await refreshStatus();
+        } catch (error) { log(`保存高温阈值失败：${error.message}`); }
+        finally { button.disabled = false; }
+    });
+
+    const batterySession = new UI.RosSession({
+        onState: connected => {
+            $('#connection-status').textContent = connected ? '● 已连接 ROS2' : '○ ROS2 已断开';
+            $('#connection-status').className = `page-status ${connected ? 'connected' : 'error'}`;
+            if (!connected) UI.setBatteryDisconnected(batteryStatus);
+        },
+        onReady: activeSession => UI.subscribeDogStatus(activeSession, batteryStatus)
+    });
+    updateViewUi();
+    UI.previewControls();
+    function stopPreviewFeeds() {
+        behaviorWidget.setPreviewActive(false);
+        window.clearTimeout(reconnectTimer); window.clearTimeout(thermalReconnectTimer);
+        feed.classList.remove('ready'); thermalFeed.classList.remove('ready');
+        feed.removeAttribute('src'); thermalFeed.removeAttribute('src');
+    }
+    function syncPreviewFeeds() { stopPreviewFeeds(); connectFeed(); connectThermalFeed(); }
+    window.addEventListener('robot-preview-change', syncPreviewFeeds);
+    document.addEventListener('visibilitychange', syncPreviewFeeds);
+    window.addEventListener('pagehide', () => {
+        previewPageReleased = true;
+        behaviorWidget.dispose();
+        stopPreviewFeeds(); window.clearInterval(statusTimer); batterySession.stop();
+    });
+    window.addEventListener('pageshow', event => {
+        if (event.persisted && previewPageReleased) window.location.reload();
+    });
+    connectFeed();
+    connectThermalFeed();
+    refreshStatus();
+    batterySession.connect();
+    const statusTimer = window.setInterval(() => { if (!document.hidden) refreshStatus(); }, 2000);
+})();
+</script>
+</body>
+</html>

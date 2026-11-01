@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -6,6 +7,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <pcl/common/point_tests.h>
@@ -13,14 +15,57 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/header.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2/exceptions.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
 namespace octomap_server {
+
+enum class FilterMode {
+    Protected,
+    Bypass,
+    Strict,
+};
+
+FilterMode parse_filter_mode(const std::string &value, bool &valid) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (const unsigned char character : value) {
+        if (!std::isspace(character)) {
+            normalized.push_back(static_cast<char>(
+                std::tolower(character)));
+        }
+    }
+    valid = true;
+    if (normalized == "protected") {
+        return FilterMode::Protected;
+    }
+    if (normalized == "bypass") {
+        return FilterMode::Bypass;
+    }
+    if (normalized == "strict") {
+        return FilterMode::Strict;
+    }
+    valid = false;
+    return FilterMode::Protected;
+}
+
+const char *filter_mode_name(const FilterMode mode) {
+    switch (mode) {
+        case FilterMode::Bypass:
+            return "bypass";
+        case FilterMode::Strict:
+            return "strict";
+        case FilterMode::Protected:
+        default:
+            return "protected";
+    }
+}
 
 class MappingCloudFilter final : public rclcpp::Node {
 public:
@@ -32,6 +77,26 @@ public:
             "input_topic", "/cloud_registered");
         output_topic_ = declare_parameter<std::string>(
             "output_topic", "/cloud_mapping_filtered");
+        dynamic_output_topic_ = declare_parameter<std::string>(
+            "dynamic_output_topic", "/cloud_mapping_dynamic");
+        const std::string dynamic_filter_mode_value =
+            declare_parameter<std::string>(
+                "dynamic_filter_mode", "protected");
+        bool dynamic_filter_mode_valid = false;
+        filter_mode_ = parse_filter_mode(
+            dynamic_filter_mode_value, dynamic_filter_mode_valid);
+        dynamic_filter_mode_name_ = filter_mode_name(filter_mode_);
+        if (!dynamic_filter_mode_valid) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Unknown dynamic_filter_mode '%s'; using the safe default "
+                "'protected'. Valid modes: protected, bypass, strict.",
+                dynamic_filter_mode_value.c_str());
+        }
+        if (dynamic_filter_mode_value != dynamic_filter_mode_name_) {
+            set_parameter(rclcpp::Parameter(
+                "dynamic_filter_mode", dynamic_filter_mode_name_));
+        }
         world_frame_ = declare_parameter<std::string>(
             "world_frame", "odom");
         sensor_frame_ = declare_parameter<std::string>(
@@ -66,12 +131,37 @@ public:
             "max_floor_range", 12.0);
         minimum_output_points_ = declare_parameter<int>(
             "minimum_output_points", 20);
+        temporal_voxel_size_ = declare_parameter<double>(
+            "temporal_voxel_size", 0.15);
+        static_confirmation_observations_ = declare_parameter<int>(
+            "static_confirmation_observations", 8);
+        static_confirmation_seconds_ = declare_parameter<double>(
+            "static_confirmation_seconds", 1.5);
+        ground_preservation_enabled_ = declare_parameter<bool>(
+            "ground_preservation_enabled", true);
+        ground_confirmation_observations_ = declare_parameter<int>(
+            "ground_confirmation_observations", 3);
+        ground_confirmation_seconds_ = declare_parameter<double>(
+            "ground_confirmation_seconds", 0.2);
+        max_observation_gap_frames_ = declare_parameter<int>(
+            "max_observation_gap_frames", 3);
+        candidate_stale_frames_ = declare_parameter<int>(
+            "candidate_stale_frames", 30);
+        confirmed_stale_frames_ = declare_parameter<int>(
+            "confirmed_stale_frames", 1800);
+        temporal_prune_interval_frames_ = declare_parameter<int>(
+            "temporal_prune_interval_frames", 30);
+        max_tracked_voxels_ = declare_parameter<int>(
+            "max_tracked_voxels", 500000);
 
         validate_parameters();
 
         filtered_cloud_publisher_ =
             create_publisher<sensor_msgs::msg::PointCloud2>(
                 output_topic_, rclcpp::SensorDataQoS());
+        dynamic_cloud_publisher_ =
+            create_publisher<sensor_msgs::msg::PointCloud2>(
+                dynamic_output_topic_, rclcpp::SensorDataQoS());
         status_publisher_ = create_publisher<std_msgs::msg::String>(
             "/mapping_cloud_filter/status",
             rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
@@ -85,13 +175,28 @@ public:
 
         RCLCPP_INFO(
             get_logger(),
-            "Mapping-only cloud protection enabled: %s -> %s; dynamic "
-            "obstacle band %.2f..%.2f m above the estimated floor. "
-            "Navigation topics are unchanged.",
+            "Temporal mapping filter enabled: %s -> static %s, dynamic %s; "
+            "voxel=%.2f m, mode=%s, confirmation=%d observations/%.1f s, "
+            "ground=%s "
+            "%d observations/%.1f s. Navigation "
+            "continues to use the untouched input cloud.",
             input_topic_.c_str(),
             output_topic_.c_str(),
-            min_obstacle_height_,
-            max_obstacle_height_);
+            dynamic_output_topic_.c_str(),
+            temporal_voxel_size_,
+            dynamic_filter_mode_name_.c_str(),
+            static_confirmation_observations_,
+            static_confirmation_seconds_,
+            ground_preservation_enabled_ ? "protected" : "normal",
+            ground_confirmation_observations_,
+            ground_confirmation_seconds_);
+        if (filter_mode_ == FilterMode::Bypass) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Dynamic temporal confirmation is BYPASSED for controlled "
+                "static-scene mapping. Finite/range/floor/height/capacity "
+                "guards remain active, but moving objects can be persisted.");
+        }
     }
 
 private:
@@ -100,6 +205,70 @@ private:
         double height{0.0};
         std::size_t support{0};
         std::size_t candidates{0};
+    };
+
+    struct VoxelKey {
+        int x{0};
+        int y{0};
+        int z{0};
+
+        bool operator==(const VoxelKey &other) const {
+            return x == other.x && y == other.y && z == other.z;
+        }
+    };
+
+    struct VoxelKeyHasher {
+        std::size_t operator()(const VoxelKey &key) const {
+            const auto x = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(key.x));
+            const auto y = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(key.y));
+            const auto z = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(key.z));
+            return static_cast<std::size_t>(
+                (x * 73856093ULL) ^ (y * 19349663ULL) ^ (z * 83492791ULL));
+        }
+    };
+
+    struct VoxelState {
+        std::uint64_t first_frame{0};
+        std::uint64_t last_frame{0};
+        std::uint32_t consecutive_observations{0};
+        double first_stamp_seconds{0.0};
+        std::uint64_t last_ground_frame{0};
+        std::uint32_t consecutive_ground_observations{0};
+        double first_ground_stamp_seconds{0.0};
+        bool confirmed{false};
+        bool confirmed_as_ground{false};
+    };
+
+    struct FrameVoxel {
+        double sum_x{0.0};
+        double sum_y{0.0};
+        double sum_z{0.0};
+        std::size_t count{0};
+        std::size_t ground_count{0};
+
+        void add(const pcl::PointXYZ &point, const bool is_ground) {
+            sum_x += point.x;
+            sum_y += point.y;
+            sum_z += point.z;
+            ++count;
+            ground_count += is_ground ? 1U : 0U;
+        }
+
+        bool is_ground_candidate() const {
+            return count > 0 && ground_count == count;
+        }
+
+        pcl::PointXYZ centroid() const {
+            pcl::PointXYZ point;
+            const double divisor = static_cast<double>(std::max<std::size_t>(1, count));
+            point.x = static_cast<float>(sum_x / divisor);
+            point.y = static_cast<float>(sum_y / divisor);
+            point.z = static_cast<float>(sum_z / divisor);
+            return point;
+        }
     };
 
     void validate_parameters() {
@@ -155,6 +324,196 @@ private:
             max_floor_range_ = 12.0;
         }
         minimum_output_points_ = std::max(1, minimum_output_points_);
+        if (!std::isfinite(temporal_voxel_size_) ||
+            temporal_voxel_size_ < 0.05 || temporal_voxel_size_ > 1.0) {
+            temporal_voxel_size_ = 0.15;
+        }
+        static_confirmation_observations_ =
+            std::max(2, static_confirmation_observations_);
+        if (!std::isfinite(static_confirmation_seconds_) ||
+            static_confirmation_seconds_ < 0.0 ||
+            static_confirmation_seconds_ > 60.0) {
+            static_confirmation_seconds_ = 1.5;
+        }
+        ground_confirmation_observations_ = std::max(
+            2,
+            std::min(
+                ground_confirmation_observations_,
+                std::max(2, static_confirmation_observations_ - 1)));
+        if (!std::isfinite(ground_confirmation_seconds_) ||
+            ground_confirmation_seconds_ < 0.0 ||
+            ground_confirmation_seconds_ >= static_confirmation_seconds_) {
+            ground_confirmation_seconds_ = 0.2;
+        }
+        max_observation_gap_frames_ = std::max(1, max_observation_gap_frames_);
+        candidate_stale_frames_ = std::max(
+            max_observation_gap_frames_ + 1, candidate_stale_frames_);
+        confirmed_stale_frames_ = std::max(
+            candidate_stale_frames_ + 1, confirmed_stale_frames_);
+        temporal_prune_interval_frames_ =
+            std::max(1, temporal_prune_interval_frames_);
+        max_tracked_voxels_ = std::max(1000, max_tracked_voxels_);
+    }
+
+    VoxelKey voxel_key(const pcl::PointXYZ &point) const {
+        const double inverse = 1.0 / temporal_voxel_size_;
+        VoxelKey key;
+        key.x = static_cast<int>(
+            std::floor(static_cast<double>(point.x) * inverse));
+        key.y = static_cast<int>(
+            std::floor(static_cast<double>(point.y) * inverse));
+        key.z = static_cast<int>(
+            std::floor(static_cast<double>(point.z) * inverse));
+        return key;
+    }
+
+    void reset_temporal_state_if_clock_rewound(const rclcpp::Time &stamp) {
+        if (last_cloud_stamp_.nanoseconds() > 0 &&
+            stamp.nanoseconds() < last_cloud_stamp_.nanoseconds()) {
+            temporal_voxels_.clear();
+            confirmed_voxels_ = 0;
+            ground_confirmed_voxels_ = 0;
+            capacity_exceeded_latched_ = false;
+            frame_index_ = 0;
+            RCLCPP_WARN(
+                get_logger(),
+                "ROS time moved backwards; temporal mapping state was reset.");
+        }
+        last_cloud_stamp_ = stamp;
+    }
+
+    void prune_temporal_voxels() {
+        for (auto iterator = temporal_voxels_.begin();
+             iterator != temporal_voxels_.end();) {
+            const auto stale_limit = iterator->second.confirmed
+                ? static_cast<std::uint64_t>(confirmed_stale_frames_)
+                : static_cast<std::uint64_t>(candidate_stale_frames_);
+            if (frame_index_ > iterator->second.last_frame + stale_limit) {
+                if (iterator->second.confirmed && confirmed_voxels_ > 0) {
+                    --confirmed_voxels_;
+                }
+                if (iterator->second.confirmed_as_ground &&
+                    ground_confirmed_voxels_ > 0) {
+                    --ground_confirmed_voxels_;
+                }
+                iterator = temporal_voxels_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+        if (temporal_voxels_.size() <
+            static_cast<std::size_t>(max_tracked_voxels_)) {
+            capacity_exceeded_latched_ = false;
+        }
+    }
+
+    bool observe_voxel(
+        const VoxelKey &key,
+        const rclcpp::Time &stamp,
+        const bool ground_candidate,
+        bool &capacity_exceeded,
+        bool &ground_protected) {
+        ground_protected = false;
+        auto iterator = temporal_voxels_.find(key);
+        if (iterator == temporal_voxels_.end()) {
+            if (temporal_voxels_.size() >=
+                static_cast<std::size_t>(max_tracked_voxels_)) {
+                capacity_exceeded = true;
+                capacity_exceeded_latched_ = true;
+                return false;
+            }
+            VoxelState state;
+            state.first_frame = frame_index_;
+            state.last_frame = frame_index_;
+            state.consecutive_observations = 1;
+            state.first_stamp_seconds = stamp.seconds();
+            if (filter_mode_ == FilterMode::Protected &&
+                ground_preservation_enabled_ && ground_candidate) {
+                state.last_ground_frame = frame_index_;
+                state.consecutive_ground_observations = 1;
+                state.first_ground_stamp_seconds = stamp.seconds();
+            }
+            iterator = temporal_voxels_.emplace(key, state).first;
+        } else {
+            auto &state = iterator->second;
+            if (state.confirmed) {
+                state.last_frame = frame_index_;
+                ground_protected = state.confirmed_as_ground;
+                return true;
+            }
+            if (!state.confirmed &&
+                frame_index_ > state.last_frame +
+                    static_cast<std::uint64_t>(max_observation_gap_frames_)) {
+                state.first_frame = frame_index_;
+                state.consecutive_observations = 1;
+                state.first_stamp_seconds = stamp.seconds();
+            } else if (state.last_frame != frame_index_ && !state.confirmed) {
+                state.consecutive_observations = std::min<std::uint32_t>(
+                    std::numeric_limits<std::uint32_t>::max(),
+                    state.consecutive_observations + 1);
+            }
+            state.last_frame = frame_index_;
+            if (filter_mode_ == FilterMode::Protected &&
+                ground_preservation_enabled_ && ground_candidate) {
+                if (state.consecutive_ground_observations == 0 ||
+                    frame_index_ > state.last_ground_frame +
+                        static_cast<std::uint64_t>(
+                            max_observation_gap_frames_)) {
+                    state.consecutive_ground_observations = 1;
+                    state.first_ground_stamp_seconds = stamp.seconds();
+                } else if (state.last_ground_frame != frame_index_) {
+                    state.consecutive_ground_observations =
+                        std::min<std::uint32_t>(
+                            std::numeric_limits<std::uint32_t>::max(),
+                            state.consecutive_ground_observations + 1);
+                }
+                state.last_ground_frame = frame_index_;
+            } else {
+                state.last_ground_frame = 0;
+                state.consecutive_ground_observations = 0;
+                state.first_ground_stamp_seconds = stamp.seconds();
+            }
+        }
+
+        auto &state = iterator->second;
+        const bool regular_confirmation =
+            state.consecutive_observations >=
+                static_cast<std::uint32_t>(static_confirmation_observations_) &&
+            stamp.seconds() - state.first_stamp_seconds >=
+                static_confirmation_seconds_;
+        const bool ground_confirmation =
+            filter_mode_ == FilterMode::Protected &&
+            ground_preservation_enabled_ &&
+            state.consecutive_ground_observations >=
+                static_cast<std::uint32_t>(
+                    ground_confirmation_observations_) &&
+            stamp.seconds() - state.first_ground_stamp_seconds >=
+                ground_confirmation_seconds_;
+        const bool bypass_confirmation =
+            filter_mode_ == FilterMode::Bypass;
+        if (!state.confirmed &&
+            (bypass_confirmation || regular_confirmation ||
+             ground_confirmation)) {
+            state.confirmed = true;
+            state.confirmed_as_ground =
+                ground_confirmation && !regular_confirmation;
+            ++confirmed_voxels_;
+            if (state.confirmed_as_ground) {
+                ++ground_confirmed_voxels_;
+            }
+        }
+        ground_protected = state.confirmed_as_ground;
+        return state.confirmed;
+    }
+
+    void publish_cloud(
+        const pcl::PointCloud<pcl::PointXYZ> &cloud,
+        const std_msgs::msg::Header &header,
+        const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr &publisher) {
+        sensor_msgs::msg::PointCloud2 output;
+        pcl::toROSMsg(cloud, output);
+        output.header = header;
+        publisher->publish(output);
     }
 
     FloorMeasurement estimate_floor(
@@ -371,6 +730,14 @@ private:
 
         pcl::PointCloud<pcl::PointXYZ> input_cloud;
         pcl::fromROSMsg(*message, input_cloud);
+        reset_temporal_state_if_clock_rewound(stamp);
+        ++frame_index_;
+        if (frame_index_ %
+                static_cast<std::uint64_t>(temporal_prune_interval_frames_) == 0 ||
+            temporal_voxels_.size() >=
+                static_cast<std::size_t>(max_tracked_voxels_)) {
+            prune_temporal_voxels();
+        }
         const double sensor_x = sensor_transform.transform.translation.x;
         const double sensor_y = sensor_transform.transform.translation.y;
         const double sensor_z = sensor_transform.transform.translation.z;
@@ -382,9 +749,8 @@ private:
             return;
         }
 
-        pcl::PointCloud<pcl::PointXYZ> filtered_cloud;
-        filtered_cloud.header = input_cloud.header;
-        filtered_cloud.points.reserve(input_cloud.points.size() / 2 + 1);
+        std::unordered_map<VoxelKey, FrameVoxel, VoxelKeyHasher> frame_voxels;
+        frame_voxels.reserve(input_cloud.points.size() / 4 + 1);
         std::size_t ground_points = 0;
         std::size_t obstacle_points = 0;
         for (const auto &point : input_cloud.points) {
@@ -401,45 +767,100 @@ private:
             if (!is_ground && !is_obstacle) {
                 continue;
             }
-            auto output_point = point;
-            // Normalize only the mapping copy of the cloud so its detected
-            // floor is always z=0. OctoMap can then treat ground returns as
-            // free-space rays and obstacle returns as occupied endpoints.
-            output_point.z = static_cast<float>(relative_height);
-            filtered_cloud.points.push_back(output_point);
+            frame_voxels[voxel_key(point)].add(point, is_ground);
             ground_points += is_ground ? 1U : 0U;
             obstacle_points += is_obstacle ? 1U : 0U;
         }
-        if (filtered_cloud.points.size() <
+
+        pcl::PointCloud<pcl::PointXYZ> static_cloud;
+        pcl::PointCloud<pcl::PointXYZ> dynamic_cloud;
+        const bool publish_dynamic_cloud =
+            dynamic_cloud_publisher_->get_subscription_count() > 0U;
+        std::size_t dynamic_points = 0;
+        std::size_t ground_protected_voxels = 0;
+        static_cloud.header = input_cloud.header;
+        static_cloud.points.reserve(frame_voxels.size());
+        if (publish_dynamic_cloud) {
+            dynamic_cloud.header = input_cloud.header;
+            dynamic_cloud.points.reserve(frame_voxels.size());
+        }
+        bool capacity_exceeded = false;
+        for (const auto &entry : frame_voxels) {
+            bool ground_protected = false;
+            if (observe_voxel(
+                    entry.first,
+                    stamp,
+                    entry.second.is_ground_candidate(),
+                    capacity_exceeded,
+                    ground_protected)) {
+                auto mapping_point = entry.second.centroid();
+                // Normalize only the persistent mapping copy. Dynamic debug
+                // points retain odom-frame z so the browser can overlay the
+                // live robot pose correctly.
+                mapping_point.z = static_cast<float>(
+                    static_cast<double>(mapping_point.z) - filtered_floor_);
+                static_cloud.points.push_back(mapping_point);
+                ground_protected_voxels += ground_protected ? 1U : 0U;
+            } else {
+                ++dynamic_points;
+                if (publish_dynamic_cloud) {
+                    dynamic_cloud.points.push_back(
+                        entry.second.centroid());
+                }
+            }
+        }
+
+        static_cloud.width =
+            static_cast<std::uint32_t>(static_cloud.points.size());
+        static_cloud.height = 1;
+        static_cloud.is_dense = false;
+        if (publish_dynamic_cloud) {
+            dynamic_cloud.width =
+                static_cast<std::uint32_t>(dynamic_cloud.points.size());
+            dynamic_cloud.height = 1;
+            dynamic_cloud.is_dense = false;
+            // Include empty frames while subscribed so a live viewer clears
+            // stale moving obstacles. With no subscriber, skip constructing
+            // and serializing this display-only cloud entirely.
+            publish_cloud(dynamic_cloud, message->header, dynamic_cloud_publisher_);
+        }
+        capacity_exceeded = capacity_exceeded || capacity_exceeded_latched_;
+
+        if (static_cloud.points.size() <
             static_cast<std::size_t>(minimum_output_points_)) {
             RCLCPP_WARN_THROTTLE(
                 get_logger(),
                 *get_clock(),
                 3000,
-                "Mapping scan skipped: only %zu points remain in "
-                "the protected ground/obstacle cloud.",
-                filtered_cloud.points.size());
+                "Persistent mapping scan is warming up: %zu static and %zu "
+                "dynamic/candidate voxels.",
+                static_cloud.points.size(),
+                dynamic_points);
             publish_status(
-                "insufficient_mapping_points",
+                capacity_exceeded ? "capacity_exceeded" : "confirming_static_voxels",
                 measurement,
-                filtered_cloud.points.size());
+                static_cloud.points.size(),
+                ground_points,
+                obstacle_points,
+                input_cloud.points.size(),
+                dynamic_points,
+                frame_voxels.size(),
+                capacity_exceeded,
+                ground_protected_voxels);
             return;
         }
-
-        filtered_cloud.width =
-            static_cast<std::uint32_t>(filtered_cloud.points.size());
-        filtered_cloud.height = 1;
-        filtered_cloud.is_dense = false;
-        sensor_msgs::msg::PointCloud2 output_message;
-        pcl::toROSMsg(filtered_cloud, output_message);
-        output_message.header = message->header;
-        filtered_cloud_publisher_->publish(output_message);
+        publish_cloud(static_cloud, message->header, filtered_cloud_publisher_);
         publish_status(
-            "healthy",
+            capacity_exceeded ? "capacity_exceeded" : "healthy",
             measurement,
-            filtered_cloud.points.size(),
+            static_cloud.points.size(),
             ground_points,
-            obstacle_points);
+            obstacle_points,
+            input_cloud.points.size(),
+            dynamic_points,
+            frame_voxels.size(),
+            capacity_exceeded,
+            ground_protected_voxels);
     }
 
     void publish_status(
@@ -447,21 +868,54 @@ private:
         const FloorMeasurement &measurement,
         const std::size_t output_points,
         const std::size_t ground_points = 0,
-        const std::size_t obstacle_points = 0) {
+        const std::size_t obstacle_points = 0,
+        const std::size_t input_points = 0,
+        const std::size_t dynamic_points = 0,
+        const std::size_t relevant_voxels = 0,
+        const bool capacity_exceeded = false,
+        const std::size_t ground_protected_voxels = 0) {
         const auto now = get_clock()->now();
         if (last_status_publish_time_.nanoseconds() > 0 &&
             (now - last_status_publish_time_).seconds() < 1.0) {
             return;
         }
         last_status_publish_time_ = now;
+        const double filtered_ratio = relevant_voxels > 0
+            ? static_cast<double>(dynamic_points) /
+                static_cast<double>(relevant_voxels)
+            : 0.0;
+        const bool dynamic_cloud_subscribed =
+            dynamic_cloud_publisher_->get_subscription_count() > 0U;
         std::ostringstream payload;
         payload << "{\"state\":\"" << state << "\","
                 << "\"floor_initialized\":"
                 << (floor_initialized_ ? "true" : "false") << ","
+                << "\"filter_mode\":\""
+                << dynamic_filter_mode_name_ << "\","
+                << "\"temporal_bypass_active\":"
+                << (filter_mode_ == FilterMode::Bypass ? "true" : "false")
+                << ","
                 << "\"floor_z\":"
                 << (floor_initialized_ ? filtered_floor_ : 0.0) << ","
                 << "\"floor_support\":" << measurement.support << ","
                 << "\"floor_candidates\":" << measurement.candidates << ","
+                << "\"input_points\":" << input_points << ","
+                << "\"relevant_voxels\":" << relevant_voxels << ","
+                << "\"static_points\":" << output_points << ","
+                << "\"dynamic_points\":" << dynamic_points << ","
+                << "\"filtered_ratio\":" << filtered_ratio << ","
+                << "\"tracked_voxels\":" << temporal_voxels_.size() << ","
+                << "\"confirmed_voxels\":" << confirmed_voxels_ << ","
+                << "\"ground_confirmed_voxels\":"
+                << ground_confirmed_voxels_ << ","
+                << "\"ground_protected_voxels\":"
+                << ground_protected_voxels << ","
+                << "\"candidate_voxels\":"
+                << (temporal_voxels_.size() - confirmed_voxels_) << ","
+                << "\"capacity_exceeded\":"
+                << (capacity_exceeded ? "true" : "false") << ","
+                << "\"dynamic_cloud_subscribed\":"
+                << (dynamic_cloud_subscribed ? "true" : "false") << ","
                 << "\"output_points\":" << output_points << ","
                 << "\"ground_points\":" << ground_points << ","
                 << "\"obstacle_points\":" << obstacle_points << "}";
@@ -472,6 +926,9 @@ private:
 
     std::string input_topic_;
     std::string output_topic_;
+    std::string dynamic_output_topic_;
+    std::string dynamic_filter_mode_name_{"protected"};
+    FilterMode filter_mode_{FilterMode::Protected};
     std::string world_frame_;
     std::string sensor_frame_;
     double nominal_sensor_height_{0.52};
@@ -489,6 +946,17 @@ private:
     double min_floor_range_{0.40};
     double max_floor_range_{12.0};
     int minimum_output_points_{20};
+    double temporal_voxel_size_{0.15};
+    int static_confirmation_observations_{8};
+    double static_confirmation_seconds_{1.5};
+    bool ground_preservation_enabled_{true};
+    int ground_confirmation_observations_{3};
+    double ground_confirmation_seconds_{0.2};
+    int max_observation_gap_frames_{3};
+    int candidate_stale_frames_{30};
+    int confirmed_stale_frames_{1800};
+    int temporal_prune_interval_frames_{30};
+    int max_tracked_voxels_{500000};
 
     bool floor_initialized_{false};
     double filtered_floor_{0.0};
@@ -496,6 +964,12 @@ private:
     double pending_floor_{0.0};
     int pending_floor_count_{0};
     rclcpp::Time last_status_publish_time_{0, 0, RCL_ROS_TIME};
+    rclcpp::Time last_cloud_stamp_{0, 0, RCL_ROS_TIME};
+    std::uint64_t frame_index_{0};
+    std::size_t confirmed_voxels_{0};
+    std::size_t ground_confirmed_voxels_{0};
+    bool capacity_exceeded_latched_{false};
+    std::unordered_map<VoxelKey, VoxelState, VoxelKeyHasher> temporal_voxels_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -503,6 +977,8 @@ private:
         cloud_subscription_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
         filtered_cloud_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
+        dynamic_cloud_publisher_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
 };
 

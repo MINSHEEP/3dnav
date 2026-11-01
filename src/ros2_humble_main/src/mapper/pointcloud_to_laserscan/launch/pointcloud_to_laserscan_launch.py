@@ -35,6 +35,10 @@ def generate_launch_description():
                 # 0.23 m forward sensor offset without injecting body tilt.
                 'target_frame': 'laser_2d',
                 'transform_tolerance': 0.2,
+                # Collision avoidance values freshness over backlog: if TF or
+                # LIO briefly stalls, discard superseded clouds instead of
+                # replaying old obstacles after the robot has already moved.
+                'queue_size': 1,
                 # The MID360 centre is 0.52 m above the floor and its current
                 # gravity-levelled TF is about 0.04 m above laser_2d, placing
                 # the floor near z=-0.48 m in this frame.  Keep points from

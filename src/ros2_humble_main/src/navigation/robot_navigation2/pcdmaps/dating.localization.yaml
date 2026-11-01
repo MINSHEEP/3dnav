@@ -1,0 +1,129 @@
+schema: ros2_mid360_localization_map
+version: 1
+map_name: dating
+frame_id: map
+pcd_file: dating.pcd
+point_count: 145585
+pcd_size_bytes: 1747194
+pcd_sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a
+voxel_size: 0.1
+created_at_utc: '2026-10-20T10:58:39.036610+00:00'
+map_geometry:
+  image: dating.pgm
+  width: 851
+  height: 709
+  resolution: 0.05000000074505806
+  origin:
+  - -18.25
+  - -18.8
+  - 0.0
+  negate: 0
+  occupied_thresh: 0.65
+  free_thresh: 0.196
+terrain_grid:
+  schema: quadruped_terrain_grid
+  version: 2
+  filename: dating.terrain.npz
+  map_name: dating
+  frame_id: map
+  source_pcd_sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a
+  size_bytes: 109292
+  sha256: a29345033fd1856826250f51e4ae5561f9ea570d845d532e9a7fd588fbe3b1c5
+  resolution: 0.25
+  width: 145
+  height: 142
+  origin_x: -17.0
+  origin_y: -18.5
+  cell_count: 20590
+  known_cells: 5604
+  blocked_cells: 1453
+  generation:
+    algorithm: clustered_measured_ground_v3
+    parameters:
+      blocked_slope_deg: 28.0
+      blocked_step_m: 0.18
+      caution_slope_deg: 12.0
+      caution_step_m: 0.08
+      maximum_cells: 400000
+      minimum_confidence: 0.35
+      overhead_min_clearance_m: 0.75
+      overhead_search_radius_m: 1.0
+      resolution: 0.25
+      roughness_caution_m: 0.05
+      special_slope_deg: 18.0
+      special_step_m: 0.12
+    quality:
+      blocked_supported_cells: 768
+      component_count: 33
+      coverage_ratio: 0.73379
+      known_supported_cells: 4504
+      largest_component_cells: 3621
+      largest_component_ratio: 0.969218
+      state: ready
+      supported_free_cells: 6138
+      traversable_supported_cells: 3736
+      warnings: []
+    source: complete_localization_pcd
+    source_pcd_sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a
+coordinate_system:
+  map_frame: map
+  pcd_frame: map
+  capture_frame: odom
+  projected_map_frame: odom
+  pcd_to_map: identity
+  compatibility: The saved 2D map and PCD share mapping-session odom coordinates,
+    which become the saved map frame on reload.
+pcd:
+  file: dating.pcd
+  point_count: 145585
+  size_bytes: 1747194
+  sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a
+localization_pcd:
+  filename: dating.pcd
+  point_count: 145585
+  size_bytes: 1747194
+  sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a
+  format: binary
+  fields:
+  - x
+  - y
+  - z
+  voxel_size: 0.1
+  filter:
+    type: distinct_frame_voxel_persistence
+    mode: protected
+    min_observations: 6
+    observation_stride: 3
+    received_frames: 4584
+    sampled_frames: 1528
+    tracked_voxels: 157373
+    ground_preservation:
+      enabled: true
+      cell_size: 0.2
+      max_height_above_envelope: 0.08
+      max_slope_deg: 30.0
+      min_neighbor_cells: 3
+      min_observations: 3
+      min_stable_span_frames: 6
+      protected_voxels_at_save: 3261
+capture:
+  source_topic: /cloud_registered
+  projected_map_topic: /projected_map
+  projected_map_stamp_ns: 1792493917510801076
+  pcd_capture_unix_ns: 1792493918571893483
+files:
+  map_yaml:
+    filename: dating.yaml
+    size_bytes: 146
+  map_image:
+    filename: dating.pgm
+    size_bytes_at_creation: 603374
+  localization_pcd:
+    filename: dating.pcd
+    size_bytes: 1747194
+    sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a
+  terrain_grid:
+    filename: dating.terrain.npz
+    size_bytes: 109292
+    sha256: a29345033fd1856826250f51e4ae5561f9ea570d845d532e9a7fd588fbe3b1c5
+    source_pcd_sha256: 9fa12877a49d12d55409f77137a3cc9d172d41a9cf8491e46d8309b9aa83ee6a

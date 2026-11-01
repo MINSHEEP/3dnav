@@ -1,0 +1,6 @@
+---
+bool success
+string message
+lzp_interface/CampusArea[] areas
+lzp_interface/CampusTransition[] transitions
+

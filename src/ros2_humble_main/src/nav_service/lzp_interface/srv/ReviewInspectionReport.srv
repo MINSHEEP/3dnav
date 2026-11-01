@@ -1,0 +1,8 @@
+string task_id
+string report_status
+string conclusion
+string reviewer
+---
+bool success
+string message
+string report_json

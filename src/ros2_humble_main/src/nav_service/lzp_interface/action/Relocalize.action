@@ -1,6 +1,6 @@
 # Rough robot pose in the map frame. The action server never republishes this
 # pose and never owns map->odom; the caller decides whether to pass the result
-# (or the original rough pose) to AMCL.
+# to the scoped authority, or retains the legacy AMCL initialization.
 geometry_msgs/PoseWithCovarianceStamped rough_pose
 string map_name
 
@@ -11,6 +11,11 @@ float32 search_yaw
 
 # End-to-end deadline in seconds. A value <= 0 uses the server default.
 float32 timeout_sec
+
+# Opt-in for Xingji 3D only; legacy callers keep their existing contract.
+bool robust_validation
+bool tracking
+string map_load_id
 ---
 uint16 CODE_OK=0
 uint16 CODE_CANCELLED=1
@@ -41,6 +46,11 @@ float32 overlap
 # Metres and radians respectively.
 float32 correction_xy
 float32 correction_yaw
+bool candidate_verified
+uint32 candidates_checked
+# Geometry used by the returned pose and its quality metrics. Robust Xingji
+# 3D clients require se3_map_odom_v1; legacy output remains planar.
+string transform_model
 ---
 string stage
 float32 progress

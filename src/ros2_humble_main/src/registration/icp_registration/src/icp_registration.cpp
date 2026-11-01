@@ -1,4 +1,10 @@
 #include "icp_registration/icp_registration.hpp"
+#include "icp_registration/search_seeds.hpp"
+#include "icp_registration/candidate_quality.hpp"
+#include "icp_registration/refinement_budget.hpp"
+#include "icp_registration/tracking_validation.hpp"
+#include "icp_registration/target_sampling.hpp"
+#include "icp_registration/pose_output.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
@@ -31,6 +37,7 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <lzp_interface/action/relocalize.hpp>
+#include <lzp_interface/msg/current_map.hpp>
 #include <pcl/common/point_tests.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
@@ -43,6 +50,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2/exceptions.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -540,15 +548,71 @@ public:
         handleAccepted(goal_handle);
       });
 
+    auto global_map_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    global_map_qos.reliable().transient_local();
+    global_map_publisher_ =
+      node_.create_publisher<sensor_msgs::msg::PointCloud2>(
+      global_map_topic_, global_map_qos);
+    global_map_status_publisher_ =
+      node_.create_publisher<std_msgs::msg::String>(
+      global_map_topic_ + "/status", global_map_qos);
+    auto current_map_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    current_map_qos.reliable().transient_local();
+    current_map_subscription_ =
+      node_.create_subscription<lzp_interface::msg::CurrentMap>(
+      "/current_map_info", current_map_qos,
+      [this](lzp_interface::msg::CurrentMap::ConstSharedPtr message) {
+        const std::string next_map_name =
+          message->success ? message->map_name : "";
+        const std::string next_load_id =
+          message->success ? message->load_id : "";
+        const std::string announcement = message->message;
+        const bool confirmed_reload =
+          announcement.rfind("Successfully loaded and confirmed map:", 0) == 0 ||
+          announcement.rfind("Successfully loaded map:", 0) == 0;
+        bool identity_changed = false;
+        {
+          std::lock_guard<std::mutex> lock(active_map_mutex_);
+          identity_changed =
+            active_map_name_ != next_map_name ||
+            active_map_load_id_ != next_load_id;
+          if (identity_changed || confirmed_reload) {
+            ++active_map_generation_;
+          }
+          active_map_name_ = next_map_name;
+          active_map_load_id_ = next_load_id;
+        }
+        std::lock_guard<std::mutex> lock(published_map_mutex_);
+        if (identity_changed || confirmed_reload) {
+          published_map_name_.clear();
+        }
+      });
+    global_map_timer_ = node_.create_wall_timer(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double>(global_map_publish_period_sec_)),
+      [this]() {publishActiveGlobalMap();});
+
     RCLCPP_INFO(
       node_.get_logger(),
       "Relocalization action ready on /relocalize. It is on-demand only and "
       "publishes neither TF nor /initialpose.");
+    RCLCPP_INFO(node_.get_logger(),
+      "REGISTRATION_CONTRACT model=%s robust_only=true legacy_projection_unchanged=true",
+      icp::kRigidTransformModel);
+    RCLCPP_INFO(node_.get_logger(),
+      "REGISTRATION_TARGET_POLICY model=%s robust_only=true max_refinements=3",
+      icp::kTargetSamplingModel);
     RCLCPP_INFO(
       node_.get_logger(),
       "PCD directory: %s; metadata schema: %s v%d; internal registration "
       "worker limit: 1 (PCL NDT/GICP are used single-threaded).",
       pcd_directory_.c_str(), metadata_schema_.c_str(), metadata_version_);
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "Saved global map publication ready on %s: period %.1f s, max %zu "
+      "points, published only while subscribers exist.",
+      global_map_topic_.c_str(), global_map_publish_period_sec_,
+      global_map_maximum_points_);
   }
 
   ~Impl()
@@ -591,7 +655,82 @@ private:
     double search_xy{0.0};
     double search_yaw{0.0};
     double timeout_sec{10.0};
+    std::string last_candidate_error{};
   };
+
+  void publishActiveGlobalMap()
+  {
+    if (!global_map_publisher_ ||
+      global_map_publisher_->get_subscription_count() == 0U)
+    {
+      return;
+    }
+
+    std::string map_name;
+    std::string map_load_id;
+    uint64_t map_generation = 0;
+    {
+      std::lock_guard<std::mutex> lock(active_map_mutex_);
+      map_name = active_map_name_;
+      map_load_id = active_map_load_id_;
+      map_generation = active_map_generation_;
+    }
+    if (map_name.empty()) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(published_map_mutex_);
+      if (published_map_name_ == map_name) {
+        return;
+      }
+    }
+
+    LoadedMap loaded_map;
+    uint16_t error_code = CODE_INTERNAL_ERROR;
+    std::string error;
+    if (!loadMap(map_name, loaded_map, error_code, error)) {
+      RCLCPP_WARN_THROTTLE(
+        node_.get_logger(), *node_.get_clock(), 10000,
+        "Global map preview skipped: %s", error.c_str());
+      return;
+    }
+    const auto preview = limitCloud(
+      loaded_map.cloud, global_map_maximum_points_);
+    if (!preview || preview->empty()) {
+      return;
+    }
+
+    sensor_msgs::msg::PointCloud2 message;
+    pcl::toROSMsg(*preview, message);
+    message.header.stamp = node_.get_clock()->now();
+    message.header.frame_id = map_frame_;
+    // PointCloud2 has only a frame_id, not a map identity. Publish a second
+    // latched message keyed by the exact cloud timestamp so the browser can
+    // reject a stale cloud after a map switch or same-name reload. Keep the
+    // nanoseconds as a JSON string: JavaScript Number loses 64-bit precision.
+    std_msgs::msg::String status;
+    std::ostringstream status_json;
+    status_json << "{\"map_name\":\"" << map_name
+                << "\",\"load_id\":\"" << map_load_id
+                << "\",\"stamp_ns\":\""
+                << stampNanoseconds(message.header.stamp) << "\"}";
+    status.data = status_json.str();
+    {
+      // A load can complete while this cloud is being prepared. Publish the
+      // cloud and its identity only for the same active-map generation.
+      std::lock_guard<std::mutex> active_lock(active_map_mutex_);
+      if (active_map_name_ != map_name ||
+        active_map_load_id_ != map_load_id ||
+        active_map_generation_ != map_generation)
+      {
+        return;
+      }
+      global_map_publisher_->publish(message);
+      global_map_status_publisher_->publish(status);
+      std::lock_guard<std::mutex> published_lock(published_map_mutex_);
+      published_map_name_ = map_name;
+    }
+  }
 
   void declareParameters()
   {
@@ -599,34 +738,41 @@ private:
       node_.declare_parameter<std::string>("pointcloud_topic", "/cloud_registered");
     pcd_directory_ = node_.declare_parameter<std::string>(
       "pcd_directory",
-      "/home/a/nav_ws/src/ros2_humble_main/src/navigation/"
+      "/home/a/3dnav/src/ros2_humble_main/src/navigation/"
       "robot_navigation2/pcdmaps");
     metadata_schema_ = node_.declare_parameter<std::string>(
       "metadata_schema", "ros2_mid360_localization_map");
     metadata_version_ = static_cast<int>(
       node_.declare_parameter<int64_t>("metadata_version", 1));
+    global_map_topic_ = node_.declare_parameter<std::string>(
+      "global_map_topic", "/global_localization_map");
+    global_map_publish_period_sec_ = node_.declare_parameter<double>(
+      "global_map_publish_period_sec", 3.0);
+    global_map_maximum_points_ = static_cast<std::size_t>(std::max<int64_t>(
+        1000, node_.declare_parameter<int64_t>(
+          "global_map_maximum_points", 120000)));
     map_frame_ = normalizeFrame(node_.declare_parameter<std::string>("map_frame", "map"));
     odom_frame_ = normalizeFrame(node_.declare_parameter<std::string>("odom_frame", "odom"));
     base_frame_ = normalizeFrame(
       node_.declare_parameter<std::string>("base_frame", "base_footprint"));
 
     default_search_xy_ =
-      node_.declare_parameter<double>("default_search_xy", 1.0);
+      node_.declare_parameter<double>("default_search_xy", 3.0);
     default_search_yaw_ = degreesToRadians(
-      node_.declare_parameter<double>("default_search_yaw_deg", 30.0));
+      node_.declare_parameter<double>("default_search_yaw_deg", 90.0));
     hard_max_search_xy_ =
-      node_.declare_parameter<double>("hard_max_search_xy", 1.0);
+      node_.declare_parameter<double>("hard_max_search_xy", 3.0);
     hard_max_search_yaw_ = degreesToRadians(
-      node_.declare_parameter<double>("hard_max_search_yaw_deg", 30.0));
+      node_.declare_parameter<double>("hard_max_search_yaw_deg", 90.0));
     default_timeout_sec_ =
-      node_.declare_parameter<double>("default_timeout_sec", 10.0);
+      node_.declare_parameter<double>("default_timeout_sec", 30.0);
     maximum_timeout_sec_ =
-      node_.declare_parameter<double>("maximum_timeout_sec", 10.0);
+      node_.declare_parameter<double>("maximum_timeout_sec", 30.0);
 
     accumulation_frames_ = static_cast<int>(std::max<int64_t>(
-        3, node_.declare_parameter<int64_t>("accumulation_frames", 3)));
+        3, node_.declare_parameter<int64_t>("accumulation_frames", 5)));
     minimum_consistent_frames_ = static_cast<int>(std::max<int64_t>(
-        2, node_.declare_parameter<int64_t>("minimum_consistent_frames", 3)));
+        2, node_.declare_parameter<int64_t>("minimum_consistent_frames", 5)));
     cloud_wait_timeout_sec_ =
       node_.declare_parameter<double>("cloud_wait_timeout_sec", 3.0);
     tf_lookup_retry_sec_ =
@@ -648,7 +794,7 @@ private:
     rough_leaf_size_ =
       node_.declare_parameter<double>("rough_leaf_size", 0.45);
     fine_leaf_size_ =
-      node_.declare_parameter<double>("fine_leaf_size", 0.18);
+      node_.declare_parameter<double>("fine_leaf_size", 0.15);
     minimum_points_per_frame_ =
       static_cast<std::size_t>(std::max<int64_t>(
         50, node_.declare_parameter<int64_t>("minimum_points_per_frame", 300)));
@@ -702,7 +848,7 @@ private:
     ndt_maximum_iterations_ = static_cast<int>(std::max<int64_t>(
         1, node_.declare_parameter<int64_t>("ndt_maximum_iterations", 12)));
     ndt_yaw_hypotheses_ = static_cast<int>(std::clamp<int64_t>(
-        node_.declare_parameter<int64_t>("ndt_yaw_hypotheses", 3), 1, 3));
+        node_.declare_parameter<int64_t>("ndt_yaw_hypotheses", 5), 1, 5));
     ndt_maximum_fitness_ =
       node_.declare_parameter<double>("ndt_maximum_fitness", 2.0);
 
@@ -712,6 +858,12 @@ private:
       static_cast<int>(std::max<int64_t>(
         1, node_.declare_parameter<int64_t>(
           "gicp_maximum_optimizer_iterations", 8)));
+    initial_budget_.ndt = static_cast<int>(std::clamp<int64_t>(
+        node_.declare_parameter<int64_t>("initial_ndt_maximum_iterations", 20), 1, 40));
+    initial_budget_.gicp = static_cast<int>(std::clamp<int64_t>(
+        node_.declare_parameter<int64_t>("initial_gicp_maximum_iterations", 40), 1, 80));
+    initial_budget_.optimizer = static_cast<int>(std::clamp<int64_t>(
+        node_.declare_parameter<int64_t>("initial_gicp_maximum_optimizer_iterations", 12), 1, 30));
     gicp_maximum_correspondence_distance_ =
       node_.declare_parameter<double>(
       "gicp_maximum_correspondence_distance", 0.6);
@@ -737,6 +889,10 @@ private:
         100, node_.declare_parameter<int64_t>("minimum_matched_points", 500)));
     maximum_vertical_correction_ =
       node_.declare_parameter<double>("maximum_vertical_correction", 0.35);
+    tracking_maximum_rmse_ =
+      node_.declare_parameter<double>("tracking_maximum_rmse", 0.22);
+    tracking_maximum_vertical_correction_ =
+      node_.declare_parameter<double>("tracking_maximum_vertical_correction", 0.45);
     maximum_tilt_ = degreesToRadians(
       node_.declare_parameter<double>("maximum_tilt_deg", 8.0));
     refined_yaw_stddev_ = degreesToRadians(
@@ -751,6 +907,9 @@ private:
   {
     const bool invalid =
       pcd_directory_.empty() || metadata_schema_.empty() ||
+      global_map_topic_.empty() ||
+      !std::isfinite(global_map_publish_period_sec_) ||
+      global_map_publish_period_sec_ < 0.5 ||
       metadata_version_ <= 0 ||
       map_frame_.empty() || odom_frame_.empty() || base_frame_.empty() ||
       hard_max_search_xy_ <= 0.0 || hard_max_search_yaw_ <= 0.0 ||
@@ -776,7 +935,12 @@ private:
       minimum_overlap_ <= 0.0 || minimum_overlap_ > 1.0 ||
       minimum_planar_eigen_ratio_ < 0.0 ||
       minimum_planar_eigen_ratio_ > 1.0 ||
-      maximum_vertical_correction_ < 0.0 || maximum_tilt_ <= 0.0;
+      maximum_vertical_correction_ < 0.0 || maximum_tilt_ <= 0.0 ||
+      !std::isfinite(tracking_maximum_rmse_) || tracking_maximum_rmse_ <= 0.0 ||
+      tracking_maximum_rmse_ > 0.25 ||
+      !std::isfinite(tracking_maximum_vertical_correction_) ||
+      tracking_maximum_vertical_correction_ <= 0.0 ||
+      tracking_maximum_vertical_correction_ > 0.60;
     if (invalid) {
       const std::string message =
         "icp_registration 参数无效；请检查搜索/超时、点云范围、"
@@ -925,6 +1089,9 @@ private:
 
   bool stopRequested(ExecutionContext & context)
   {
+    if (!context.goal_handle->is_active() && !context.goal_handle->is_canceling()) {
+      return true;
+    }
     if (shutting_down_.load() || context.goal_handle->is_canceling()) {
       context.result->success = false;
       context.result->code = CODE_CANCELLED;
@@ -1008,6 +1175,15 @@ private:
       abortGoal(context, CODE_INVALID_GOAL, message.str());
       return false;
     }
+    if (goal.robust_validation) {
+      std::lock_guard<std::mutex> lock(active_map_mutex_);
+      if (goal.map_load_id.empty() || goal.map_name != active_map_name_ ||
+        goal.map_load_id != active_map_load_id_)
+      {
+        abortGoal(context, CODE_INVALID_GOAL, "三维定位地图加载身份不一致");
+        return false;
+      }
+    }
     return true;
   }
 
@@ -1015,6 +1191,7 @@ private:
     const std::string & map_name, LoadedMap & loaded_map,
     uint16_t & error_code, std::string & error)
   {
+    std::lock_guard<std::mutex> cache_lock(map_cache_mutex_);
     const std::filesystem::path directory(pcd_directory_);
     const auto metadata_path =
       directory / (map_name + ".localization.yaml");
@@ -1475,24 +1652,42 @@ private:
       abortGoal(
         context, CODE_VALIDATION_FAILED,
         "粗初始点周围的定位 PCD 只有 " + std::to_string(roi->size()) +
-        " 个点；地图覆盖不足或初始点不在有效三维地图内");
+        " 个点（最低要求 " + std::to_string(minimum_target_points_) +
+        "，半径 " + std::to_string(radius) +
+        " m）；地图覆盖不足或初始点不在有效三维地图内");
       return false;
     }
 
-    const double target_fine_leaf =
-      std::max(fine_leaf_size_, loaded_map.voxel_size);
-    fine_target = limitCloud(
-      voxelFilter(roi, target_fine_leaf), maximum_fine_target_points_);
-    rough_target = limitCloud(
-      voxelFilter(roi, std::max(rough_leaf_size_, loaded_map.voxel_size)),
-      maximum_rough_target_points_);
-    if (fine_target->size() < minimum_target_points_ ||
-      rough_target->size() < std::min<std::size_t>(
-        minimum_target_points_, maximum_rough_target_points_))
-    {
+    const auto sampling = prepareTargetSampling(
+      context.goal_handle->get_goal()->robust_validation, roi->size(),
+      loaded_map.voxel_size, fine_leaf_size_, rough_leaf_size_,
+      minimum_target_points_, maximum_fine_target_points_,
+      maximum_rough_target_points_,
+      [&](bool rough, double leaf, std::size_t maximum) {
+        auto sampled = limitCloud(voxelFilter(roi, leaf), maximum);
+        if (rough) {rough_target = sampled;} else {fine_target = sampled;}
+        return sampled->size();
+      });
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "REGISTRATION_TARGET model=%s center=[%.3f,%.3f] radius=%.3f "
+      "z=[%.3f,%.3f] raw=%zu fine=%zu rough=%zu initial_rough=%zu "
+      "fine_leaf=%.4f rough_leaf=%.4f minimum=%zu refinements=%zu ready=%s",
+      kTargetSamplingModel, center_x, center_y, radius, roi_min_z_, roi_max_z_,
+      sampling.raw_count, sampling.fine_count, sampling.rough_count,
+      sampling.initial_rough_count, sampling.fine_leaf, sampling.rough_leaf,
+      minimum_target_points_, sampling.refinements, sampling.ready ? "true" : "false");
+    if (!sampling.ready) {
       abortGoal(
         context, CODE_VALIDATION_FAILED,
-        "定位 PCD 的局部 ROI 降采样后点数不足，无法可靠精修");
+        "定位 PCD 局部点数不足：原始 " + std::to_string(sampling.raw_count) +
+        "，细配准 " + std::to_string(sampling.fine_count) +
+        "，粗配准 " + std::to_string(sampling.rough_count) +
+        "（初次 " + std::to_string(sampling.initial_rough_count) +
+        "，最低要求 " + std::to_string(minimum_target_points_) +
+        "，粗体素 " + std::to_string(sampling.rough_leaf) +
+        " m，重采样 " + std::to_string(sampling.refinements) +
+        " 次）；无法可靠精修");
       return false;
     }
     return true;
@@ -1503,7 +1698,8 @@ private:
     const PointCloudPtr & rough_target,
     const Eigen::Matrix4d & rough_map_from_base,
     const Eigen::Matrix4d & latest_odom_from_base,
-    Eigen::Matrix4f & best_transform)
+    Eigen::Matrix4f & best_transform,
+    std::vector<std::pair<double, Eigen::Matrix4f>> * alternatives = nullptr)
   {
     pcl::NormalDistributionsTransform<PointT, PointT> ndt;
     ndt.setInputSource(rough_source);
@@ -1511,35 +1707,62 @@ private:
     ndt.setResolution(static_cast<float>(ndt_resolution_));
     ndt.setStepSize(ndt_step_size_);
     ndt.setTransformationEpsilon(ndt_transformation_epsilon_);
-    ndt.setMaximumIterations(ndt_maximum_iterations_);
-
-    std::vector<double> yaw_offsets{0.0};
-    if (ndt_yaw_hypotheses_ >= 2) {
-      yaw_offsets.push_back(-context.search_yaw);
-    }
-    if (ndt_yaw_hypotheses_ >= 3) {
-      yaw_offsets.push_back(context.search_yaw);
-    }
+    const auto goal = context.goal_handle->get_goal();
+    const auto budget = icp::refinementBudget(goal->robust_validation, goal->tracking,
+      {ndt_maximum_iterations_, gicp_maximum_iterations_, gicp_maximum_optimizer_iterations_}, initial_budget_);
+    ndt.setMaximumIterations(budget.ndt);
 
     const double rough_yaw = matrixYaw(rough_map_from_base);
+    const auto seeds = icp::makeSearchSeeds(
+      context.search_xy, context.search_yaw, ndt_yaw_hypotheses_);
+    std::vector<Eigen::Matrix4f> seed_transforms;
+    std::vector<double> seed_scores;
+    pcl::KdTreeFLANN<PointT> seed_tree;
+    seed_tree.setInputCloud(rough_target);
+    const Eigen::Matrix4d base_from_odom = latest_odom_from_base.inverse();
+    // Ranking is bounded to at most 512 measured points per candidate. It
+    // only chooses starts for NDT and is never a localization acceptance test.
+    const std::size_t stride = std::max<std::size_t>(
+      1U, (rough_source->size() + 511U) / 512U);
+    std::vector<int> nearest(1);
+    std::vector<float> distances(1);
+    for (const auto & seed : seeds) {
+      if (stopRequested(context)) {return false;}
+      const Eigen::Matrix4f transform = (planarPoseMatrix(
+          rough_map_from_base(0, 3) + seed.x,
+          rough_map_from_base(1, 3) + seed.y,
+          rough_map_from_base(2, 3), rough_yaw + seed.yaw) * base_from_odom).cast<float>();
+      double sum = 0.0;
+      std::size_t count = 0;
+      for (std::size_t i = 0; i < rough_source->size(); i += stride) {
+        const auto & point = (*rough_source)[i];
+        const Eigen::Vector4f mapped = transform * Eigen::Vector4f(point.x, point.y, point.z, 1.0F);
+        PointT query;
+        query.x = mapped.x(); query.y = mapped.y(); query.z = mapped.z();
+        sum += seed_tree.nearestKSearch(query, 1, nearest, distances) > 0 ?
+          std::min(4.0, static_cast<double>(distances[0])) : 4.0;
+        ++count;
+      }
+      seed_transforms.push_back(transform);
+      seed_scores.push_back(count > 0 ? sum / count : std::numeric_limits<double>::infinity());
+    }
+    const auto candidates = icp::shortlistSeeds(seed_scores, 9U);
     double best_score = std::numeric_limits<double>::infinity();
     bool converged = false;
     PointCloud aligned;
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "Starting NDT: source=%zu target=%zu hypotheses=%zu max_iterations=%d.",
-      rough_source->size(), rough_target->size(), yaw_offsets.size(),
-      ndt_maximum_iterations_);
-    for (std::size_t index = 0; index < yaw_offsets.size(); ++index) {
+      "Starting NDT: source=%zu target=%zu hypotheses=%zu shortlisted=%zu "
+      "search_xy=%.2f search_yaw_deg=%.1f max_iterations=%d.",
+      rough_source->size(), rough_target->size(), seeds.size(), candidates.size(),
+      context.search_xy, context.search_yaw * 180.0 / kPi,
+      budget.ndt);
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
       if (stopRequested(context)) {
         return false;
       }
-      const Eigen::Matrix4d candidate_map_from_base = planarPoseMatrix(
-        rough_map_from_base(0, 3), rough_map_from_base(1, 3),
-        rough_map_from_base(2, 3), rough_yaw + yaw_offsets[index]);
-      const Eigen::Matrix4f candidate_map_from_odom =
-        (candidate_map_from_base * latest_odom_from_base.inverse()).cast<float>();
+      const auto & candidate_map_from_odom = seed_transforms[candidates[index]];
 
       aligned.clear();
       const auto candidate_started = SteadyClock::now();
@@ -1550,7 +1773,7 @@ private:
       RCLCPP_INFO(
         node_.get_logger(),
         "NDT candidate %zu/%zu returned after %.3f s.",
-        index + 1U, yaw_offsets.size(), candidate_seconds);
+        index + 1U, candidates.size(), candidate_seconds);
       if (stopRequested(context)) {
         return false;
       }
@@ -1573,6 +1796,7 @@ private:
       {
         continue;
       }
+      if (alternatives) {alternatives->emplace_back(score, ndt.getFinalTransformation());}
       if (score < best_score) {
         best_score = score;
         best_transform = ndt.getFinalTransformation();
@@ -1583,9 +1807,9 @@ private:
         context.goal_handle, "coarse_ndt",
         0.48F + 0.12F *
         static_cast<float>(index + 1U) /
-        static_cast<float>(yaw_offsets.size()),
+        static_cast<float>(candidates.size()),
         "NDT 粗配准候选 " + std::to_string(index + 1U) + "/" +
-        std::to_string(yaw_offsets.size()));
+        std::to_string(candidates.size()));
     }
 
     if (!converged) {
@@ -1603,16 +1827,24 @@ private:
   bool runGicp(
     ExecutionContext & context, const PointCloudPtr & fine_source,
     const PointCloudPtr & fine_target, const Eigen::Matrix4f & initial_guess,
-    Eigen::Matrix4f & final_transform)
+    Eigen::Matrix4f & final_transform, bool report_failure = true)
   {
     if (stopRequested(context)) {
       return false;
     }
-    pcl::GeneralizedIterativeClosestPoint<PointT, PointT> gicp;
+    class MeasuredGicp : public pcl::GeneralizedIterativeClosestPoint<PointT, PointT>
+    {
+    public:
+      int iterations() const {return this->nr_iterations_;}
+    } gicp;
+    const auto goal = context.goal_handle->get_goal();
+    const bool robust_initial = goal->robust_validation && !goal->tracking;
+    const auto budget = icp::refinementBudget(goal->robust_validation, goal->tracking,
+      {ndt_maximum_iterations_, gicp_maximum_iterations_, gicp_maximum_optimizer_iterations_}, initial_budget_);
     gicp.setInputSource(fine_source);
     gicp.setInputTarget(fine_target);
-    gicp.setMaximumIterations(gicp_maximum_iterations_);
-    gicp.setMaximumOptimizerIterations(gicp_maximum_optimizer_iterations_);
+    gicp.setMaximumIterations(budget.gicp);
+    gicp.setMaximumOptimizerIterations(budget.optimizer);
     gicp.setMaxCorrespondenceDistance(gicp_maximum_correspondence_distance_);
     gicp.setTransformationEpsilon(gicp_transformation_epsilon_);
     gicp.setEuclideanFitnessEpsilon(gicp_fitness_epsilon_);
@@ -1624,20 +1856,24 @@ private:
       node_.get_logger(),
       "Starting GICP: source=%zu target=%zu max_iterations=%d "
       "optimizer_iterations=%d.",
-      fine_source->size(), fine_target->size(), gicp_maximum_iterations_,
-      gicp_maximum_optimizer_iterations_);
+      fine_source->size(), fine_target->size(), budget.gicp, budget.optimizer);
     const auto gicp_started = SteadyClock::now();
     gicp.align(aligned, initial_guess);
     const double gicp_seconds =
       std::chrono::duration<double>(
       SteadyClock::now() - gicp_started).count();
     RCLCPP_INFO(
-      node_.get_logger(), "GICP returned after %.3f s.", gicp_seconds);
+      node_.get_logger(), "GICP returned after %.3f s; iterations=%d/%d; iteration_ceiling=%s.",
+      gicp_seconds, gicp.iterations(), budget.gicp,
+      icp::iterationCeiling(gicp.hasConverged(), gicp.iterations(), budget.gicp) ? "true" : "false");
     if (stopRequested(context)) {
       return false;
     }
-    if (!gicp.hasConverged() || !isFiniteMatrix(gicp.getFinalTransformation())) {
-      abortGoal(context, CODE_GICP_FAILED, "GICP 精配准未收敛");
+    if (!gicp.hasConverged() || !isFiniteMatrix(gicp.getFinalTransformation()) ||
+      (robust_initial && icp::iterationCeiling(gicp.hasConverged(), gicp.iterations(), budget.gicp)))
+    {
+      context.last_candidate_error = "GICP未稳定收敛或达到迭代上限，未放行该候选";
+      if (report_failure) {abortGoal(context, CODE_GICP_FAILED, "GICP 精配准未收敛");}
       return false;
     }
     final_transform = gicp.getFinalTransformation();
@@ -1647,6 +1883,14 @@ private:
     return true;
   }
 
+  icp::ValidationLimits validationLimitsFor(const ExecutionContext & context) const
+  {
+    const auto goal = context.goal_handle->get_goal();
+    return icp::validationLimits(goal->robust_validation, goal->tracking,
+      {maximum_rmse_, maximum_vertical_correction_},
+      {tracking_maximum_rmse_, tracking_maximum_vertical_correction_});
+  }
+
   bool validateRegistration(
     ExecutionContext & context, const Eigen::Matrix4d & rough_map_from_base,
     const Eigen::Matrix4d & latest_odom_from_base,
@@ -1654,8 +1898,16 @@ private:
     const PointCloudPtr & aggregate, const PointCloudPtr & fine_target,
     const std::vector<FrameData> & frames,
     Eigen::Matrix4d & refined_map_from_base,
-    RegistrationMetrics & metrics)
+    RegistrationMetrics & metrics, bool report_failure = true)
   {
+    const auto limits = validationLimitsFor(context);
+    auto reject = [&](ExecutionContext & ctx, uint16_t code, const std::string & message) {
+        if (report_failure) {abortGoal(ctx, code, message);}
+        else {
+          ctx.last_candidate_error = message;
+          RCLCPP_WARN(node_.get_logger(), "Rejected candidate: %s", message.c_str());
+        }
+      };
     refined_map_from_base =
       final_map_from_odom.cast<double>() * latest_odom_from_base;
     const double correction_xy = std::hypot(
@@ -1674,22 +1926,22 @@ private:
               << " m / " << context.search_xy << " m，旋转 "
               << correction_yaw * 180.0 / kPi << "° / "
               << context.search_yaw * 180.0 / kPi << "°";
-      abortGoal(context, CODE_VALIDATION_FAILED, message.str());
+      reject(context, CODE_VALIDATION_FAILED, message.str());
       return false;
     }
 
     const double vertical_correction = std::abs(
       refined_map_from_base(2, 3) - rough_map_from_base(2, 3));
     const auto [roll, pitch] = matrixRollPitch(refined_map_from_base);
-    if (vertical_correction > maximum_vertical_correction_ ||
+    if (vertical_correction > limits.vertical ||
       std::abs(roll) > maximum_tilt_ || std::abs(pitch) > maximum_tilt_)
     {
       std::ostringstream message;
       message << "三维配准产生不合理的垂直/倾斜修正（z "
-              << vertical_correction << " m，roll "
+              << vertical_correction << " m，上限 " << limits.vertical << " m，roll "
               << roll * 180.0 / kPi << "°，pitch "
               << pitch * 180.0 / kPi << "°）";
-      abortGoal(context, CODE_VALIDATION_FAILED, message.str());
+      reject(context, CODE_VALIDATION_FAILED, message.str());
       return false;
     }
 
@@ -1701,24 +1953,24 @@ private:
     context.result->fitness = std::isfinite(metrics.rmse) ?
       static_cast<float>(metrics.rmse) : -1.0F;
     context.result->overlap = static_cast<float>(metrics.overlap);
-    if (!std::isfinite(metrics.rmse) || metrics.rmse > maximum_rmse_ ||
+    if (!std::isfinite(metrics.rmse) || metrics.rmse > limits.rmse ||
       metrics.overlap < minimum_overlap_ ||
       metrics.matched_points < minimum_matched_points_ ||
       metrics.planar_eigen_ratio < minimum_planar_eigen_ratio_)
     {
       std::ostringstream message;
       message << "精修质量验证失败：RMSE " << metrics.rmse
-              << " m（上限 " << maximum_rmse_ << "），重叠率 "
+              << " m（上限 " << limits.rmse << "），重叠率 "
               << metrics.overlap * 100.0 << "%（下限 "
               << minimum_overlap_ * 100.0 << "%），匹配点 "
               << metrics.matched_points << "，平面特征比 "
               << metrics.planar_eigen_ratio << "（下限 "
               << minimum_planar_eigen_ratio_ << "）";
-      abortGoal(context, CODE_VALIDATION_FAILED, message.str());
+      reject(context, CODE_VALIDATION_FAILED, message.str());
       return false;
     }
 
-    const double relaxed_rmse = maximum_rmse_ * 1.25;
+    const double relaxed_rmse = limits.rmse * 1.25;
     const double relaxed_overlap = minimum_overlap_ * 0.8;
     int consistent_frames = 0;
     for (const auto & frame : frames) {
@@ -1742,7 +1994,7 @@ private:
     const int required_consistent_frames =
       std::min(minimum_consistent_frames_, static_cast<int>(frames.size()));
     if (consistent_frames < required_consistent_frames) {
-      abortGoal(
+      reject(
         context, CODE_VALIDATION_FAILED,
         "多时间戳一致性验证失败：只有 " +
         std::to_string(consistent_frames) + "/" +
@@ -1774,22 +2026,28 @@ private:
     refined.header.stamp = cloud_stamp;
     refined.pose.pose.position.x = refined_map_from_base(0, 3);
     refined.pose.pose.position.y = refined_map_from_base(1, 3);
-    refined.pose.pose.position.z = 0.0;
     const double yaw = matrixYaw(refined_map_from_base);
-    refined.pose.pose.orientation.x = 0.0;
-    refined.pose.pose.orientation.y = 0.0;
-    refined.pose.pose.orientation.z = std::sin(0.5 * yaw);
-    refined.pose.pose.orientation.w = std::cos(0.5 * yaw);
+    const bool rigid = context.goal_handle->get_goal()->robust_validation;
+    const Eigen::Quaterniond rotation =
+      Eigen::Quaterniond(refined_map_from_base.block<3, 3>(0, 0)).normalized();
+    const auto output = icp::poseOutput(rigid, refined_map_from_base(2, 3),
+      {rotation.x(), rotation.y(), rotation.z(), rotation.w()}, yaw);
+    refined.pose.pose.position.z = output.z;
+    refined.pose.pose.orientation.x = output.rotation[0];
+    refined.pose.pose.orientation.y = output.rotation[1];
+    refined.pose.pose.orientation.z = output.rotation[2];
+    refined.pose.pose.orientation.w = output.rotation[3];
+    context.result->transform_model = rigid ? icp::kRigidTransformModel : "legacy_planar_v1";
 
     refined.pose.covariance.fill(0.0);
     const double xy_stddev = std::clamp(
       std::max(metrics.rmse, minimum_refined_xy_stddev_),
-      minimum_refined_xy_stddev_, maximum_rmse_);
+      minimum_refined_xy_stddev_, validationLimitsFor(context).rmse);
     refined.pose.covariance[0] = xy_stddev * xy_stddev;
     refined.pose.covariance[7] = xy_stddev * xy_stddev;
-    refined.pose.covariance[14] = 1.0e6;
-    refined.pose.covariance[21] = 1.0e6;
-    refined.pose.covariance[28] = 1.0e6;
+    refined.pose.covariance[14] = rigid ? xy_stddev * xy_stddev : 1.0e6;
+    refined.pose.covariance[21] = rigid ? refined_yaw_stddev_ * refined_yaw_stddev_ : 1.0e6;
+    refined.pose.covariance[28] = refined.pose.covariance[21];
     refined.pose.covariance[35] =
       refined_yaw_stddev_ * refined_yaw_stddev_;
   }
@@ -1829,6 +2087,21 @@ private:
       return;
     }
 
+    RCLCPP_INFO(node_.get_logger(),
+      "REGISTRATION_REQUEST map=%s load_id=%s stamp=%ld.%09u rough_xyz=[%.9f,%.9f,%.9f] "
+      "rough_yaw=%.9f robust=%s tracking=%s search_xy=%.3f search_yaw=%.6f timeout=%.3f",
+      goal->map_name.c_str(), goal->map_load_id.c_str(),
+      static_cast<long>(goal->rough_pose.header.stamp.sec), goal->rough_pose.header.stamp.nanosec,
+      rough_map_from_base(0,3), rough_map_from_base(1,3), rough_map_from_base(2,3), matrixYaw(rough_map_from_base),
+      goal->robust_validation ? "true" : "false", goal->tracking ? "true" : "false",
+      context.search_xy, context.search_yaw, context.timeout_sec);
+
+    uint64_t map_generation = 0;
+    if (goal->robust_validation) {
+      std::lock_guard<std::mutex> lock(active_map_mutex_);
+      map_generation = active_map_generation_;
+    }
+
     publishFeedback(
       goal_handle, "loading_map", 0.08F,
       "正在校验并加载地图 '" + goal->map_name + "' 的定位 PCD");
@@ -1858,6 +2131,33 @@ private:
     }
     const Eigen::Matrix4d latest_odom_from_base =
       frames.back().odom_from_base;
+    if (goal->robust_validation) {
+      const double age = (node_.now() - rclcpp::Time(frames.back().message->header.stamp)).seconds();
+      const double span = (rclcpp::Time(frames.back().message->header.stamp) -
+        rclcpp::Time(frames.front().message->header.stamp)).seconds();
+      if (age < -0.1 || age > 0.5 || span <= 0.0 || span > 1.0) {
+        abortGoal(context, CODE_CLOUD_INVALID, "三维定位点云时间戳或帧间隔异常");
+        return;
+      }
+    }
+    if (goal->tracking) {
+      if (!goal->robust_validation || context.search_xy > 0.251 ||
+        context.search_yaw > degreesToRadians(8.1))
+      {
+        abortGoal(context, CODE_INVALID_GOAL, "行进匹配只能使用受限局部搜索");
+        return;
+      }
+      try {
+        const auto reference = tf_buffer_->lookupTransform(
+          odom_frame_, base_frame_, rclcpp::Time(goal->rough_pose.header.stamp));
+        // Predict to the last measured cloud; never compare different-time robot poses.
+        rough_map_from_base = rough_map_from_base *
+          transformToMatrix(reference).inverse() * latest_odom_from_base;
+      } catch (const tf2::TransformException & error) {
+        abortGoal(context, CODE_TF_UNAVAILABLE, error.what());
+        return;
+      }
+    }
 
     PointCloudPtr rough_target;
     PointCloudPtr fine_target;
@@ -1907,41 +2207,135 @@ private:
     publishFeedback(
       goal_handle, "coarse_ndt", 0.48F,
       "开始低分辨率 NDT 粗配准");
+    std::vector<std::pair<double, Eigen::Matrix4f>> alternatives;
     Eigen::Matrix4f coarse_map_from_odom = Eigen::Matrix4f::Identity();
     if (!runNdt(
         context, rough_source, rough_target, rough_map_from_base,
-        latest_odom_from_base, coarse_map_from_odom))
+        latest_odom_from_base, coarse_map_from_odom,
+        goal->robust_validation ? &alternatives : nullptr))
     {
       return;
     }
 
-    publishFeedback(
-      goal_handle, "fine_gicp", 0.64F,
-      "开始 GICP 精配准");
+    publishFeedback(goal_handle, "fine_gicp", 0.64F,
+      "正在执行 GICP，并验证三维候选及实际输出变换");
     Eigen::Matrix4f final_map_from_odom = Eigen::Matrix4f::Identity();
-    if (!runGicp(
-        context, aggregate, fine_target, coarse_map_from_odom,
-        final_map_from_odom))
-    {
-      return;
-    }
-
-    publishFeedback(
-      goal_handle, "validating", 0.84F,
-      "正在验证修正范围、重叠率、退化程度和多时间戳一致性");
     Eigen::Matrix4d refined_map_from_base = Eigen::Matrix4d::Identity();
     RegistrationMetrics metrics;
-    if (!validateRegistration(
-        context, rough_map_from_base, latest_odom_from_base,
-        final_map_from_odom, aggregate, fine_target, frames,
-        refined_map_from_base, metrics))
-    {
-      return;
+    if (goal->robust_validation) {
+      std::stable_sort(alternatives.begin(), alternatives.end(),
+        [](const auto & a, const auto & b) {return a.first < b.first;});
+      struct ValidCandidate {Eigen::Matrix4f transform; Eigen::Matrix4d pose; RegistrationMetrics metrics;};
+      std::vector<ValidCandidate> valid;
+      std::vector<Eigen::Matrix4d> attempted;
+      std::vector<std::string> rejected_reasons;
+      // Bounded work: up to three distinct coarse basins, not three copies of one basin.
+      for (const auto & candidate : alternatives) {
+        if (stopRequested(context)) {return;}
+        const Eigen::Matrix4d coarse_pose = candidate.second.cast<double>() * latest_odom_from_base;
+        const auto [coarse_roll, coarse_pitch] = matrixRollPitch(coarse_pose);
+        bool duplicate = false;
+        for (const auto & previous : attempted) {
+          const auto [previous_roll, previous_pitch] = matrixRollPitch(previous);
+          if (std::hypot(previous(0, 3)-coarse_pose(0, 3), previous(1, 3)-coarse_pose(1, 3)) < 0.15 &&
+            std::abs(previous(2, 3)-coarse_pose(2, 3)) < 0.15 &&
+            std::hypot(normalizeAngle(previous_roll-coarse_roll),
+              normalizeAngle(previous_pitch-coarse_pitch)) < degreesToRadians(3.0) &&
+            std::abs(normalizeAngle(matrixYaw(previous)-matrixYaw(coarse_pose))) < degreesToRadians(5.0))
+          {duplicate = true; break;}
+        }
+        if (duplicate) {continue;}
+        if (attempted.size() >= 3U) {break;}
+        attempted.push_back(coarse_pose);
+        context.last_candidate_error.clear();
+        Eigen::Matrix4f transform;
+        Eigen::Matrix4d pose;
+        RegistrationMetrics candidate_metrics;
+        if (!runGicp(context, aggregate, fine_target, candidate.second, transform, false)) {
+          if (stopRequested(context)) {return;}
+          rejected_reasons.push_back(context.last_candidate_error);
+          continue;
+        }
+        const Eigen::Matrix4d measured_pose = transform.cast<double>() * latest_odom_from_base;
+        const auto [measured_roll, measured_pitch] = matrixRollPitch(measured_pose);
+        RCLCPP_INFO(node_.get_logger(),
+          "REGISTRATION_CANDIDATE index=%zu coarse_xyz=[%.6f,%.6f,%.6f] coarse_yaw=%.9f "
+          "fine_xyz=[%.6f,%.6f,%.6f] fine_rpy=[%.9f,%.9f,%.9f]",
+          attempted.size(), coarse_pose(0,3), coarse_pose(1,3), coarse_pose(2,3), matrixYaw(coarse_pose),
+          measured_pose(0,3), measured_pose(1,3), measured_pose(2,3),
+          measured_roll, measured_pitch, matrixYaw(measured_pose));
+        if (validateRegistration(context, rough_map_from_base, latest_odom_from_base,
+            transform, aggregate, fine_target, frames, pose, candidate_metrics, false))
+        {
+          // The authority publishes this same verified SE(3) map->odom.
+          // Nav2 reads XY/yaw from it; cloud quality must not be evaluated
+          // against a different zero-height/yaw-only transform.
+          valid.push_back({transform, pose, candidate_metrics});
+        }
+        if (!context.last_candidate_error.empty()) {
+          rejected_reasons.push_back(context.last_candidate_error);
+        }
+      }
+      result->candidates_checked = static_cast<uint32_t>(attempted.size());
+      if (stopRequested(context)) {return;}
+      if (valid.empty()) {
+        std::string reason = "全部三维候选均未通过校验";
+        for (std::size_t i = 0; i < rejected_reasons.size(); ++i) {
+          reason += "；候选" + std::to_string(i+1) + ": " + rejected_reasons[i];
+        }
+        abortGoal(context, CODE_VALIDATION_FAILED, reason);
+        return;
+      }
+      std::stable_sort(valid.begin(), valid.end(), [](const auto & a, const auto & b) {
+          return icp::candidateCost(a.metrics.rmse, a.metrics.overlap) <
+                 icp::candidateCost(b.metrics.rmse, b.metrics.overlap);
+        });
+      const auto & best = valid.front();
+      const auto [best_roll, best_pitch] = matrixRollPitch(best.pose);
+      for (std::size_t i = 1; i < valid.size(); ++i) {
+        const auto & other = valid[i];
+        const auto [other_roll, other_pitch] = matrixRollPitch(other.pose);
+        if (icp::ambiguousCandidate(
+            icp::candidateCost(best.metrics.rmse, best.metrics.overlap),
+            icp::candidateCost(other.metrics.rmse, other.metrics.overlap),
+            std::hypot(best.pose(0, 3)-other.pose(0, 3), best.pose(1, 3)-other.pose(1, 3)),
+            std::abs(normalizeAngle(matrixYaw(best.pose)-matrixYaw(other.pose)))) ||
+          icp::ambiguousRigidCandidate(
+            icp::candidateCost(best.metrics.rmse, best.metrics.overlap),
+            icp::candidateCost(other.metrics.rmse, other.metrics.overlap),
+            std::abs(best.pose(2, 3)-other.pose(2, 3)),
+            std::hypot(normalizeAngle(best_roll-other_roll),
+              normalizeAngle(best_pitch-other_pitch))))
+        {
+          abortGoal(context, CODE_VALIDATION_FAILED, "多个空间分离候选质量接近，无法排除重复结构误匹配；请重新选初始点");
+          return;
+        }
+      }
+      final_map_from_odom = best.transform;
+      refined_map_from_base = best.pose;
+      metrics = best.metrics;
+      result->fitness = static_cast<float>(metrics.rmse);
+      result->overlap = static_cast<float>(metrics.overlap);
+      result->candidate_verified = true;
+      result->correction_xy = static_cast<float>(std::hypot(
+        best.pose(0, 3)-rough_map_from_base(0, 3), best.pose(1, 3)-rough_map_from_base(1, 3)));
+      result->correction_yaw = static_cast<float>(std::abs(normalizeAngle(
+        matrixYaw(best.pose)-matrixYaw(rough_map_from_base))));
+      std::lock_guard<std::mutex> lock(active_map_mutex_);
+      if (goal->map_name != active_map_name_ || goal->map_load_id != active_map_load_id_ ||
+        map_generation != active_map_generation_) {
+        abortGoal(context, CODE_VALIDATION_FAILED, "定位期间地图已切换，结果作废");
+        return;
+      }
+    } else {
+      if (!runGicp(context, aggregate, fine_target, coarse_map_from_odom, final_map_from_odom) ||
+        !validateRegistration(context, rough_map_from_base, latest_odom_from_base,
+          final_map_from_odom, aggregate, fine_target, frames, refined_map_from_base, metrics))
+      {return;}
     }
-    if (stopRequested(context)) {
-      return;
-    }
+    if (stopRequested(context)) {return;}
 
+    publishFeedback(goal_handle, "validating", 0.90F, "配准质量与最终输出变换验证通过");
     fillRefinedPose(
       context, frames.back().message->header.stamp,
       refined_map_from_base, metrics);
@@ -1964,20 +2358,37 @@ private:
 
   std::string pointcloud_topic_;
   std::string pcd_directory_;
+  std::string global_map_topic_;
+  double global_map_publish_period_sec_{3.0};
+  std::size_t global_map_maximum_points_{120000U};
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
+    global_map_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
+    global_map_status_publisher_;
+  rclcpp::Subscription<lzp_interface::msg::CurrentMap>::SharedPtr
+    current_map_subscription_;
+  rclcpp::TimerBase::SharedPtr global_map_timer_;
+  std::string active_map_name_;
+  std::string active_map_load_id_;
+  uint64_t active_map_generation_{0};
+  std::mutex active_map_mutex_;
+  std::string published_map_name_;
+  std::mutex published_map_mutex_;
+  std::mutex map_cache_mutex_;
   std::string metadata_schema_;
   int metadata_version_{1};
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
 
-  double default_search_xy_{1.0};
-  double default_search_yaw_{degreesToRadians(30.0)};
-  double hard_max_search_xy_{1.0};
-  double hard_max_search_yaw_{degreesToRadians(30.0)};
-  double default_timeout_sec_{10.0};
-  double maximum_timeout_sec_{10.0};
-  int accumulation_frames_{3};
-  int minimum_consistent_frames_{3};
+  double default_search_xy_{3.0};
+  double default_search_yaw_{degreesToRadians(90.0)};
+  double hard_max_search_xy_{3.0};
+  double hard_max_search_yaw_{degreesToRadians(90.0)};
+  double default_timeout_sec_{30.0};
+  double maximum_timeout_sec_{30.0};
+  int accumulation_frames_{5};
+  int minimum_consistent_frames_{5};
   double cloud_wait_timeout_sec_{3.0};
   double tf_lookup_retry_sec_{0.25};
 
@@ -1989,7 +2400,7 @@ private:
   double source_self_min_z_{-0.5};
   double source_self_max_z_{0.7};
   double rough_leaf_size_{0.45};
-  double fine_leaf_size_{0.18};
+  double fine_leaf_size_{0.15};
   std::size_t minimum_points_per_frame_{300U};
   std::size_t minimum_source_points_{900U};
   std::size_t minimum_rough_source_points_{300U};
@@ -2009,10 +2420,11 @@ private:
   double ndt_step_size_{0.2};
   double ndt_transformation_epsilon_{0.01};
   int ndt_maximum_iterations_{12};
-  int ndt_yaw_hypotheses_{3};
+  int ndt_yaw_hypotheses_{5};
   double ndt_maximum_fitness_{2.0};
   int gicp_maximum_iterations_{15};
   int gicp_maximum_optimizer_iterations_{8};
+  icp::RefinementBudget initial_budget_{20, 40, 12};
   double gicp_maximum_correspondence_distance_{0.6};
   double gicp_transformation_epsilon_{0.001};
   double gicp_fitness_epsilon_{0.0001};
@@ -2024,6 +2436,8 @@ private:
   double minimum_planar_eigen_ratio_{0.01};
   std::size_t minimum_matched_points_{500U};
   double maximum_vertical_correction_{0.35};
+  double tracking_maximum_rmse_{0.22};
+  double tracking_maximum_vertical_correction_{0.45};
   double maximum_tilt_{degreesToRadians(8.0)};
   double refined_yaw_stddev_{degreesToRadians(5.0)};
   double minimum_refined_xy_stddev_{0.05};

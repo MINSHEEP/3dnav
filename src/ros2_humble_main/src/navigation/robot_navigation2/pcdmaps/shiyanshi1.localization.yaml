@@ -1,0 +1,129 @@
+schema: ros2_mid360_localization_map
+version: 1
+map_name: shiyanshi1
+frame_id: map
+pcd_file: shiyanshi1.pcd
+point_count: 80175
+pcd_size_bytes: 962272
+pcd_sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a
+voxel_size: 0.1
+created_at_utc: '2026-10-15T14:26:56.724183+00:00'
+map_geometry:
+  image: shiyanshi1.pgm
+  width: 816
+  height: 958
+  resolution: 0.05000000074505806
+  origin:
+  - -20.8
+  - -34.8
+  - 0.0
+  negate: 0
+  occupied_thresh: 0.65
+  free_thresh: 0.196
+terrain_grid:
+  schema: quadruped_terrain_grid
+  version: 2
+  filename: shiyanshi1.terrain.npz
+  map_name: shiyanshi1
+  frame_id: map
+  source_pcd_sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a
+  size_bytes: 150111
+  sha256: 88ed7fa4fde94e97b6d7e7acfcbe8b39bb986dbb13b696f269067e5d6968f7c3
+  resolution: 0.25
+  width: 173
+  height: 193
+  origin_x: -21.25
+  origin_y: -35.75
+  cell_count: 33389
+  known_cells: 6466
+  blocked_cells: 1961
+  generation:
+    algorithm: clustered_measured_ground_v3
+    parameters:
+      blocked_slope_deg: 28.0
+      blocked_step_m: 0.18
+      caution_slope_deg: 12.0
+      caution_step_m: 0.08
+      maximum_cells: 400000
+      minimum_confidence: 0.35
+      overhead_min_clearance_m: 0.75
+      overhead_search_radius_m: 1.0
+      resolution: 0.25
+      roughness_caution_m: 0.05
+      special_slope_deg: 18.0
+      special_step_m: 0.12
+    quality:
+      blocked_supported_cells: 845
+      component_count: 60
+      coverage_ratio: 0.666434
+      known_supported_cells: 4779
+      largest_component_cells: 3393
+      largest_component_ratio: 0.862481
+      state: ready
+      supported_free_cells: 7171
+      traversable_supported_cells: 3934
+      warnings: []
+    source: complete_localization_pcd
+    source_pcd_sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a
+coordinate_system:
+  map_frame: map
+  pcd_frame: map
+  capture_frame: odom
+  projected_map_frame: odom
+  pcd_to_map: identity
+  compatibility: The saved 2D map and PCD share mapping-session odom coordinates,
+    which become the saved map frame on reload.
+pcd:
+  file: shiyanshi1.pcd
+  point_count: 80175
+  size_bytes: 962272
+  sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a
+localization_pcd:
+  filename: shiyanshi1.pcd
+  point_count: 80175
+  size_bytes: 962272
+  sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a
+  format: binary
+  fields:
+  - x
+  - y
+  - z
+  voxel_size: 0.1
+  filter:
+    type: distinct_frame_voxel_persistence
+    mode: protected
+    min_observations: 6
+    observation_stride: 3
+    received_frames: 2256
+    sampled_frames: 752
+    tracked_voxels: 149583
+    ground_preservation:
+      enabled: true
+      cell_size: 0.2
+      max_height_above_envelope: 0.08
+      max_slope_deg: 30.0
+      min_neighbor_cells: 3
+      min_observations: 3
+      min_stable_span_frames: 6
+      protected_voxels_at_save: 18633
+capture:
+  source_topic: /cloud_registered
+  projected_map_topic: /projected_map
+  projected_map_stamp_ns: 1792074415034146785
+  pcd_capture_unix_ns: 1792074416127704125
+files:
+  map_yaml:
+    filename: shiyanshi1.yaml
+    size_bytes: 149
+  map_image:
+    filename: shiyanshi1.pgm
+    size_bytes_at_creation: 781743
+  localization_pcd:
+    filename: shiyanshi1.pcd
+    size_bytes: 962272
+    sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a
+  terrain_grid:
+    filename: shiyanshi1.terrain.npz
+    size_bytes: 150111
+    sha256: 88ed7fa4fde94e97b6d7e7acfcbe8b39bb986dbb13b696f269067e5d6968f7c3
+    source_pcd_sha256: 3d455c73caf83ed85317257a7ae7913db80cd1653ef84b8af394d3122907268a

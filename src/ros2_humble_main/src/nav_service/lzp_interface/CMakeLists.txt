@@ -12,6 +12,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 
@@ -26,6 +27,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RoutePoint.msg"
   "msg/Route.msg"
   "msg/RouteExecutionStatus.msg"
+  "msg/TerrainObservation.msg"
+  "msg/TerrainAssessment.msg"
+  "msg/TerrainGrid.msg"
+  "msg/CampusRouteSegment.msg"
+  "msg/CampusArea.msg"
+  "msg/CampusTransition.msg"
   "srv/CreateWaypoint.srv"
   "srv/ReadWaypoint.srv"
   "srv/ListWaypoints.srv"
@@ -40,11 +47,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ArmControl.srv"
   "srv/SetInitialPose.srv"
   "srv/MapSave.srv"
+  "srv/RebuildTerrain.srv"
   "srv/GetMapList.srv"
   "srv/GetCurrentMap.srv"
   "srv/DeleteMap.srv"
   "srv/EditMap.srv"
   "srv/GetEditedMap.srv"
+  "srv/EditMapCloud.srv"
   "srv/SetMapPixelIndices.srv"
   "srv/SaveRoute.srv"
   "srv/ListRoutes.srv"
@@ -54,7 +63,39 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ControlRoute.srv"
   "srv/GetRouteExecutionState.srv"
   "srv/DeleteRoutesByMap.srv"
-  DEPENDENCIES action_msgs builtin_interfaces geometry_msgs std_msgs
+  "srv/SaveInspectionTemplate.srv"
+  "srv/GetInspectionTemplate.srv"
+  "srv/StartInspectionTask.srv"
+  "srv/ControlInspectionTask.srv"
+  "srv/GetInspectionState.srv"
+  "srv/ListInspectionHistory.srv"
+  "srv/GetInspectionHistory.srv"
+  "srv/DeleteInspectionHistory.srv"
+  "srv/AcknowledgeInspectionAlert.srv"
+  "srv/QueryInspectionReports.srv"
+  "srv/GetInspectionReport.srv"
+  "srv/ReviewInspectionReport.srv"
+  "srv/SetInspectionEnvironmentConfig.srv"
+  "srv/EvaluateTerrain.srv"
+  "srv/PlanCampusRoute.srv"
+  "srv/GetCampusTopology.srv"
+  "srv/ManageCampusTopology.srv"
+  "srv/SetTraversalMode.srv"
+  "srv/SetNavigationMode.srv"
+  "srv/SetRobotBody.srv"
+  "srv/ConfigureM701.srv"
+  "srv/SetLidarNetwork.srv"
+  "srv/SetInflationRadius.srv"
+  "srv/NavigateManagedGoal.srv"
+  "srv/Preview3DGoal.srv"
+  "srv/Preview3DRoute.srv"
+  "srv/StartPreviewed3DGoal.srv"
+  "srv/Reserve3DInspectionRoute.srv"
+  "srv/Revoke3DInspectionRoute.srv"
+  "srv/Check3DGround.srv"
+  "srv/StartCampusMission.srv"
+  "srv/ControlCampusMission.srv"
+  DEPENDENCIES action_msgs builtin_interfaces geometry_msgs nav_msgs std_msgs
 )
 
 # 导出依赖

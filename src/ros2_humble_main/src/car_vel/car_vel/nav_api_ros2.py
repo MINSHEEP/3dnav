@@ -52,7 +52,7 @@ CORS(app)
 TTS_API_URL = "http://10.0.1.14:10253/tts/generate/v1"
 
 # 数据库路径（可修改）
-DB_PATH = "/home/a/nav_ws/nav.db"
+DB_PATH = "/home/a/3dnav/nav.db"
 
 # ---------- 数据库操作 ----------
 def execute_sql(sql, params=(), fetch=None):

@@ -1,0 +1,8 @@
+# Supported IDs: xingji / gangben_zsl1. Optimistic concurrency avoids stale tabs.
+string body_id
+string profile_json
+uint64 expected_version
+---
+bool success
+string message
+string status_json

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "profile": "yolo_pose_rules_paddle_aux_v1",
+  "storage": "bundled CPU runtime assets",
+  "hash_scope": "Locally verified SHA256; not publisher signatures",
+  "active_models": [
+    "shared_pose",
+    "fight"
+  ],
+  "includes_export_source_weight": false,
+  "files": [
+    {
+      "path": "output_inference/ppTSM/model.pdiparams",
+      "bytes": 94345695,
+      "sha256": "9a72ef1a4de9d480aeb3701e290c7913a9edc9db4add0953c6e6a972b6c6a637",
+      "model_id": "fight"
+    },
+    {
+      "path": "output_inference/ppTSM/model.pdmodel",
+      "bytes": 1960764,
+      "sha256": "05861bd52d349991b9e5998a87178eadd1fa3d875e7e1b71383e8f4bcd7df925",
+      "model_id": "fight"
+    },
+    {
+      "path": "output_inference/ppTSM/model.pdiparams.info",
+      "bytes": 25263,
+      "sha256": "5ca139690ed8ed7ee6a9bd179618e3c26aeb40582c7232eb4f355cdd7956ece5",
+      "model_id": "fight"
+    },
+    {
+      "path": "output_inference/yolov8m_pose_640/contract.json",
+      "bytes": 2949,
+      "sha256": "4d67e067e2187f8bf43d64de4ca744dbc92993dd6b56f924eca05ab0a7696682",
+      "model_id": "shared_pose"
+    },
+    {
+      "path": "output_inference/yolov8m_pose_640/yolov8m-pose.onnx",
+      "bytes": 106128038,
+      "sha256": "f9912166b51d88e4fe356792b491bf1ef845f65da03f3048ec751d61cc0b4377",
+      "model_id": "shared_pose"
+    },
+    {
+      "path": "assets/vendor/PaddleDetection-b25522a0f4bde8c80603f3ba5e3472059972e3b5.tar.gz",
+      "bytes": 44260633,
+      "sha256": "4736ac91fd609bd5b896338e7df72ebd1b6cc32eeec3b8adb1c20198506fd5db",
+      "role": "pinned_vendor_source_archive"
+    }
+  ]
+}

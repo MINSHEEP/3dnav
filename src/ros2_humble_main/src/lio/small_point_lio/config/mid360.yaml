@@ -17,17 +17,44 @@ small_point_lio:
         save_pcd: false                           # Deprecated compatibility alias
         enable_localization_map: false
 
-        # Low-memory localization PCD filter. Each output voxel must be seen in
-        # several distinct sampled scans. Short-lived dynamic returns are
-        # pruned; only the filtered/downsampled cloud is ever written.
-        localization_pcd_voxel_size: 0.20
-        localization_pcd_min_observations: 4
+        # Low-memory localization PCD filter. A 0.10 m voxel provides 4.00x the
+        # surface sampling capacity of the former 0.20 m grid, leaving enough
+        # margin to deliver >=2x real density despite occlusion and sampling
+        # jitter, while remaining bounded by localization_pcd_max_voxels.
+        # Each output voxel must still
+        # be seen in six distinct sampled scans, so one-frame dynamic returns
+        # are never written to the localization map.
+        localization_pcd_voxel_size: 0.10
+        localization_pcd_min_observations: 6
         localization_pcd_observation_stride: 3
+        # Sparse/reappearing returns restart confirmation instead of
+        # accumulating forever. Six sampled observations across at least 15
+        # raw frames keeps walking people and passing vehicles out of the PCD.
+        localization_pcd_max_observation_gap_frames: 6
+        localization_pcd_min_stable_span_frames: 15
+        # protected: ground fast path + strict non-ground confirmation.
+        # bypass: static-scene mapping only; bypass temporal confirmation.
+        # strict: all points use the normal 6-observation/15-frame threshold.
+        localization_pcd_filter_mode: protected
+        # Ground points use a bounded fast path instead of bypassing temporal
+        # filtering. A point must lie on a locally supported lower envelope;
+        # step edges and isolated low returns stay on the normal 6/15 path.
+        localization_pcd_ground_preservation_enabled: true
+        localization_pcd_ground_cell_size: 0.20
+        localization_pcd_ground_max_height_above_envelope: 0.08
+        localization_pcd_ground_max_slope_deg: 30.0
+        localization_pcd_ground_min_neighbor_cells: 3
+        localization_pcd_ground_min_observations: 3
+        localization_pcd_ground_min_stable_span_frames: 6
         localization_pcd_stale_frames: 150
         localization_pcd_prune_interval_frames: 300
         localization_pcd_max_voxels: 750000
         localization_pcd_min_output_points: 2000
         localization_pcd_staging_directory: /tmp/small_point_lio
+        # Publish a bounded preview from the exact same persistent voxel map
+        # used by /lio/save_localization_pcd. The full snapshot is still saved.
+        global_mapping_cloud_publish_period: 2.0
+        global_mapping_cloud_max_points: 120000
 
         # 点云过滤
         point_filter_num: 1                        # 多少个点取一个点
@@ -110,6 +137,7 @@ small_point_lio:
         odometry_guard_max_linear_speed: 0.8       # m/s
         odometry_guard_max_vertical_speed: 0.8     # m/s，单帧超限先软隔离
         odometry_guard_max_angular_speed: 2.0      # rad/s
+        # Legacy门槛不变；活动星玑3D在新鲜授权下按dt补偿，最多0.3m/0.5s。
         odometry_guard_max_position_step: 0.15     # m，仅用于 <= 0.5 s 的间隔
         odometry_guard_max_vertical_step: 0.20     # m，仅用于 <= 0.5 s 的间隔
         odometry_guard_max_yaw_step: 0.80          # rad，仅用于 <= 0.5 s 的间隔

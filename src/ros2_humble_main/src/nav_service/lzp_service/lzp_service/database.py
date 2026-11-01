@@ -18,7 +18,7 @@ class WaypointDatabase:
             db_path: 数据库文件路径，默认为 ~/.ros/waypoints.db
         """
         if db_path is None:
-            self.db_path = "/home/a/nav_ws/src/ros2_humble_main/src/nav_service/lzp_service/db/waypoints.db"
+            self.db_path = "/home/a/3dnav/src/ros2_humble_main/src/nav_service/lzp_service/db/waypoints.db"
         else:
             self.db_path = db_path
             

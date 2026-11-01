@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Atomically save a matched 2D map and filtered localization PCD."""
+"""Atomically save matched 2D, localization-PCD and terrain artifacts."""
 
 from __future__ import annotations
 
@@ -11,18 +11,18 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
 from PIL import Image
 import yaml
 
 import rclpy
-from lzp_interface.srv import MapSave
+from lzp_interface.srv import MapSave, RebuildTerrain
 from nav_msgs.msg import OccupancyGrid
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -34,6 +34,24 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from std_srvs.srv import Trigger
+
+from .occupancy_grid_io import (
+    DEFAULT_MAXIMUM_CELLS,
+    OccupancyGridSnapshotError,
+    write_occupancy_grid_snapshot,
+)
+from .pcd_io import load_pcd_xyz
+from .saved_map_lock import saved_map_lock
+from .terrain_grid import (
+    GroundSupportGrid,
+    build_terrain_grid,
+    summarize_terrain_quality,
+)
+from .terrain_grid_io import (
+    create_terrain_grid_metadata,
+    load_bound_terrain_grid,
+    write_terrain_grid,
+)
 
 
 METADATA_SCHEMA = 'ros2_mid360_localization_map'
@@ -49,7 +67,7 @@ class MapSaveError(RuntimeError):
 
 
 class MapSaveService(Node):
-    """Save PGM/YAML/PCD/metadata as one validated map transaction."""
+    """Save 2-D, localization and terrain artifacts as one transaction."""
 
     def __init__(self) -> None:
         super().__init__('map_save_service')
@@ -59,7 +77,7 @@ class MapSaveService(Node):
         self._latest_projected_map: dict[str, Any] | None = None
 
         default_workspace = Path(
-            '/home/a/nav_ws/src/ros2_humble_main/src/navigation/'
+            '/home/a/3dnav/src/ros2_humble_main/src/navigation/'
             'robot_navigation2'
         )
         self.declare_parameter(
@@ -71,7 +89,20 @@ class MapSaveService(Node):
         self.declare_parameter('mapping_frame', 'odom')
         self.declare_parameter('pcd_service_wait_seconds', 5.0)
         self.declare_parameter('pcd_save_timeout_seconds', 45.0)
-        self.declare_parameter('map_save_timeout_seconds', 30.0)
+        self.declare_parameter(
+            'projected_map_maximum_cells', DEFAULT_MAXIMUM_CELLS)
+        self.declare_parameter('terrain_grid_resolution', 0.25)
+        self.declare_parameter('terrain_grid_maximum_cells', 400_000)
+        self.declare_parameter('terrain_caution_slope_deg', 12.0)
+        self.declare_parameter('terrain_special_slope_deg', 18.0)
+        self.declare_parameter('terrain_blocked_slope_deg', 28.0)
+        self.declare_parameter('terrain_caution_step_m', 0.08)
+        self.declare_parameter('terrain_special_step_m', 0.12)
+        self.declare_parameter('terrain_blocked_step_m', 0.18)
+        self.declare_parameter('terrain_roughness_caution_m', 0.05)
+        self.declare_parameter('terrain_minimum_confidence', 0.35)
+        self.declare_parameter('terrain_overhead_search_radius_m', 1.0)
+        self.declare_parameter('terrain_overhead_min_clearance_m', 0.75)
 
         self.map_directory = Path(
             self.get_parameter('map_directory').value
@@ -88,9 +119,35 @@ class MapSaveService(Node):
         self.pcd_save_timeout_seconds = float(
             self.get_parameter('pcd_save_timeout_seconds').value
         )
-        self.map_save_timeout_seconds = float(
-            self.get_parameter('map_save_timeout_seconds').value
+        self.projected_map_maximum_cells = int(
+            self.get_parameter('projected_map_maximum_cells').value
         )
+        self.terrain_grid_parameters = {
+            'resolution': float(self.get_parameter(
+                'terrain_grid_resolution').value),
+            'maximum_cells': int(self.get_parameter(
+                'terrain_grid_maximum_cells').value),
+            'caution_slope_deg': float(self.get_parameter(
+                'terrain_caution_slope_deg').value),
+            'special_slope_deg': float(self.get_parameter(
+                'terrain_special_slope_deg').value),
+            'blocked_slope_deg': float(self.get_parameter(
+                'terrain_blocked_slope_deg').value),
+            'caution_step_m': float(self.get_parameter(
+                'terrain_caution_step_m').value),
+            'special_step_m': float(self.get_parameter(
+                'terrain_special_step_m').value),
+            'blocked_step_m': float(self.get_parameter(
+                'terrain_blocked_step_m').value),
+            'roughness_caution_m': float(self.get_parameter(
+                'terrain_roughness_caution_m').value),
+            'minimum_confidence': float(self.get_parameter(
+                'terrain_minimum_confidence').value),
+            'overhead_search_radius_m': float(self.get_parameter(
+                'terrain_overhead_search_radius_m').value),
+            'overhead_min_clearance_m': float(self.get_parameter(
+                'terrain_overhead_min_clearance_m').value),
+        }
 
         self.map_directory.mkdir(parents=True, exist_ok=True)
         self.pcd_map_directory.mkdir(parents=True, exist_ok=True)
@@ -119,9 +176,18 @@ class MapSaveService(Node):
             self.map_save_callback,
             callback_group=self.callback_group,
         )
+        self.rebuild_terrain_service = self.create_service(
+            RebuildTerrain,
+            '/rebuild_terrain',
+            self.rebuild_terrain_callback,
+            callback_group=self.callback_group,
+        )
 
         self.get_logger().info(
             'Atomic map save service is ready on /map_save'
+        )
+        self.get_logger().info(
+            'Terrain rebuild service is ready on /rebuild_terrain'
         )
         self.get_logger().info(
             f'2D map directory: {self.map_directory}'
@@ -149,6 +215,10 @@ class MapSaveService(Node):
                     float(info.origin.orientation.w),
                 ),
             ],
+            # Deep-copy the full grid here.  A save must serialize exactly this
+            # message, rather than launch a second subscriber that may receive
+            # a newer grid or time out during DDS discovery.
+            'data': np.asarray(message.data, dtype=np.int8).copy(),
             'received_monotonic': time.monotonic(),
         }
         with self._projected_map_lock:
@@ -170,9 +240,152 @@ class MapSaveService(Node):
             return response
 
         try:
-            return self._save_map(request, response)
+            with saved_map_lock(self.pcd_map_directory):
+                return self._save_map(request, response)
+        except (OSError, ValueError) as error:
+            response.success, response.message = False, str(error)
+            return response
         finally:
             self._save_lock.release()
+
+    def rebuild_terrain_callback(self, request: Any, response: Any) -> Any:
+        """Rebuild only the derived terrain artifact for a saved map."""
+
+        if not self._save_lock.acquire(blocking=False):
+            response.success = False
+            response.message = 'A map save or terrain rebuild is in progress.'
+            response.quality_json = '{}'
+            return response
+        try:
+            with saved_map_lock(self.pcd_map_directory):
+                return self._rebuild_saved_terrain(request, response)
+        except (OSError, ValueError) as error:
+            response.success, response.message, response.quality_json = False, str(error), '{}'
+            return response
+        finally:
+            self._save_lock.release()
+
+    def _rebuild_saved_terrain(self, request: Any, response: Any) -> Any:
+        map_name = str(request.map_name).strip()
+        response.quality_json = '{}'
+        if not MAP_NAME_PATTERN.fullmatch(map_name):
+            response.success = False
+            response.message = '请选择合法的已保存地图名称。'
+            return response
+        paths = self._target_paths(map_name)
+        if (self.pcd_map_directory / f'.{map_name}.cloud-edit-pending').exists():
+            response.success, response.message = False, '三维编辑事务未完成，请先恢复备份'
+            return response
+        required = ('pgm', 'yaml', 'pcd', 'metadata')
+        missing = [paths[key].name for key in required
+                   if not paths[key].is_file()]
+        if missing:
+            response.success = False
+            response.message = '地形重建缺少文件：' + ', '.join(missing)
+            return response
+
+        transaction_directory = None
+        try:
+            with paths['metadata'].open('r', encoding='utf-8') as stream:
+                metadata = yaml.safe_load(stream)
+            if not isinstance(metadata, dict):
+                raise MapSaveError('定位元数据不是有效对象。')
+            if (
+                metadata.get('schema') != METADATA_SCHEMA
+                or metadata.get('version') != METADATA_VERSION
+                or metadata.get('map_name') != map_name
+            ):
+                raise MapSaveError('定位元数据版本或地图名称不匹配。')
+            pcd_sha256 = self._sha256(paths['pcd'])
+            if metadata.get('pcd_sha256') != pcd_sha256:
+                raise MapSaveError('PCD校验和与定位元数据不一致。')
+            pcd_header = self._validate_pcd(paths['pcd'])
+            pcd_size = paths['pcd'].stat().st_size
+            map_geometry = self._validate_and_normalize_2d_map(
+                self.map_directory, map_name, normalize=False)
+            ground_support = self._load_ground_support(
+                self.map_directory, map_name, map_geometry)
+            terrain_grid = build_terrain_grid(
+                load_pcd_xyz(paths['pcd']),
+                ground_support=ground_support,
+                **self.terrain_grid_parameters,
+            )
+            quality = summarize_terrain_quality(
+                terrain_grid, ground_support)
+            generation = {
+                'algorithm': 'clustered_measured_ground_v3',
+                'source': 'saved_localization_pcd_rebuild',
+                'source_pcd_sha256': pcd_sha256,
+                'parameters': dict(self.terrain_grid_parameters),
+                'quality': quality,
+            }
+            transaction_directory = Path(tempfile.mkdtemp(
+                prefix=f'.{map_name}.terrain-rebuild-',
+                dir=str(self.pcd_map_directory),
+            ))
+            transaction_terrain = (
+                transaction_directory / f'{map_name}.terrain.npz')
+            summary = write_terrain_grid(
+                transaction_terrain,
+                map_name=map_name,
+                frame_id='map',
+                grid=terrain_grid,
+                generation=generation,
+            )
+            terrain_metadata = create_terrain_grid_metadata(
+                transaction_terrain,
+                summary=summary,
+                source_pcd_sha256=pcd_sha256,
+            )
+            metadata['terrain_grid'] = terrain_metadata
+            files = metadata.setdefault('files', {})
+            files['terrain_grid'] = {
+                'filename': terrain_metadata['filename'],
+                'size_bytes': terrain_metadata['size_bytes'],
+                'sha256': terrain_metadata['sha256'],
+                'source_pcd_sha256': pcd_sha256,
+            }
+            metadata['terrain_rebuilt_at_utc'] = (
+                datetime.now(timezone.utc).isoformat())
+            transaction_metadata = (
+                transaction_directory / f'{map_name}.localization.yaml')
+            self._write_yaml(transaction_metadata, metadata)
+            self._validate_metadata(
+                transaction_metadata,
+                map_name,
+                map_geometry,
+                pcd_header,
+                pcd_size,
+                pcd_sha256,
+                terrain_metadata,
+            )
+            self._commit_artifacts_transaction(
+                {
+                    'terrain': transaction_terrain,
+                    'metadata': transaction_metadata,
+                },
+                {
+                    'terrain': paths['terrain'],
+                    'metadata': paths['metadata'],
+                },
+                install_order=('terrain', 'metadata'),
+            )
+            response.success = True
+            response.quality_json = json.dumps(
+                quality, ensure_ascii=False, separators=(',', ':'))
+            response.message = (
+                f'地图“{map_name}”地形已按地表算法重建。'
+                + self._quality_message(quality)
+            )
+            self.get_logger().info(response.message)
+        except Exception as error:
+            response.success = False
+            response.message = f'地形重建失败，原文件已保留：{error}'
+            self.get_logger().error(response.message)
+        finally:
+            if transaction_directory is not None:
+                shutil.rmtree(transaction_directory, ignore_errors=True)
+        return response
 
     def _save_map(self, request: Any, response: Any) -> Any:
         map_name = request.map_name.strip()
@@ -194,6 +407,9 @@ class MapSaveService(Node):
             f'Starting atomic map save for "{map_name}".'
         )
         target_paths = self._target_paths(map_name)
+        if (self.pcd_map_directory / f'.{map_name}.cloud-edit-pending').exists():
+            response.success, response.message = False, '三维编辑事务未完成，请先恢复备份'
+            return response
 
         transaction_directory: Path | None = None
         lio_staging_pcd: Path | None = None
@@ -205,7 +421,14 @@ class MapSaveService(Node):
                     dir=str(self.map_directory),
                 )
             )
-            self._run_2d_map_saver(transaction_directory, map_name)
+            write_occupancy_grid_snapshot(
+                projected_map,
+                transaction_directory,
+                map_name,
+                free_threshold=MAP_FREE_THRESHOLD,
+                occupied_threshold=MAP_OCCUPIED_THRESHOLD,
+                maximum_cells=self.projected_map_maximum_cells,
+            )
             map_geometry = self._validate_and_normalize_2d_map(
                 transaction_directory, map_name
             )
@@ -238,6 +461,36 @@ class MapSaveService(Node):
 
             pcd_size = transaction_pcd.stat().st_size
             pcd_sha256 = self._sha256(transaction_pcd)
+            ground_support = self._load_ground_support(
+                transaction_directory, map_name, map_geometry)
+            terrain_generation = {
+                'algorithm': 'clustered_measured_ground_v3',
+                'source': 'complete_localization_pcd',
+                'source_pcd_sha256': pcd_sha256,
+                'parameters': dict(self.terrain_grid_parameters),
+            }
+            terrain_grid = build_terrain_grid(
+                load_pcd_xyz(transaction_pcd),
+                ground_support=ground_support,
+                **self.terrain_grid_parameters,
+            )
+            terrain_generation['quality'] = summarize_terrain_quality(
+                terrain_grid, ground_support)
+            transaction_terrain = (
+                transaction_directory / f'{map_name}.terrain.npz'
+            )
+            terrain_summary = write_terrain_grid(
+                transaction_terrain,
+                map_name=map_name,
+                frame_id='map',
+                grid=terrain_grid,
+                generation=terrain_generation,
+            )
+            terrain_metadata = create_terrain_grid_metadata(
+                transaction_terrain,
+                summary=terrain_summary,
+                source_pcd_sha256=pcd_sha256,
+            )
             metadata = self._build_metadata(
                 map_name=map_name,
                 map_geometry=map_geometry,
@@ -246,6 +499,7 @@ class MapSaveService(Node):
                 pcd_header=pcd_header,
                 pcd_size=pcd_size,
                 pcd_sha256=pcd_sha256,
+                terrain_metadata=terrain_metadata,
                 transaction_directory=transaction_directory,
             )
             transaction_metadata = (
@@ -259,12 +513,14 @@ class MapSaveService(Node):
                 pcd_header,
                 pcd_size,
                 pcd_sha256,
+                terrain_metadata,
             )
 
             source_paths = {
                 'pgm': transaction_directory / f'{map_name}.pgm',
                 'yaml': transaction_directory / f'{map_name}.yaml',
                 'pcd': transaction_pcd,
+                'terrain': transaction_terrain,
                 'metadata': transaction_metadata,
             }
             replaced_existing = any(
@@ -280,19 +536,21 @@ class MapSaveService(Node):
                 f'{"overwritten" if replaced_existing else "saved"} '
                 'successfully: validated PGM/YAML + '
                 f'{pcd_header["point_count"]} filtered localization points + '
-                'versioned metadata.'
+                f'{terrain_metadata["known_cells"]} terrain cells + '
+                'versioned metadata. '
+                + self._quality_message(
+                    terrain_generation['quality'])
             )
             self.get_logger().info(response.message)
             return response
-        except subprocess.TimeoutExpired as error:
-            response.success = False
-            response.message = (
-                '2D map save timed out; no new map artifacts were retained.'
-            )
-            self.get_logger().error(
-                f'{response.message} Command: {error.cmd}'
-            )
-        except (MapSaveError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        except (
+            MapSaveError,
+            OccupancyGridSnapshotError,
+            OSError,
+            ValueError,
+            KeyError,
+            json.JSONDecodeError,
+        ) as error:
             response.success = False
             response.message = f'Map save failed: {error}'
             self.get_logger().error(response.message)
@@ -336,51 +594,8 @@ class MapSaveService(Node):
             raise MapSaveError('/projected_map has invalid geometry.')
         return snapshot
 
-    def _run_2d_map_saver(
-        self, transaction_directory: Path, map_name: str
-    ) -> None:
-        output_prefix = transaction_directory / map_name
-        command = [
-            'ros2',
-            'run',
-            'nav2_map_server',
-            'map_saver_cli',
-            '-t',
-            '/projected_map',
-            '-f',
-            str(output_prefix),
-            '--free',
-            str(MAP_FREE_THRESHOLD),
-            '--occ',
-            str(MAP_OCCUPIED_THRESHOLD),
-        ]
-        self.get_logger().info(
-            f'Executing 2D map save transaction: {" ".join(command)}'
-        )
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=self.map_save_timeout_seconds,
-            check=False,
-        )
-        if result.returncode != 0:
-            self.get_logger().error(
-                'map_saver_cli failed.\n'
-                f'stdout:\n{result.stdout}\n'
-                f'stderr:\n{result.stderr}'
-            )
-            detail = (result.stderr or result.stdout).strip()
-            raise MapSaveError(
-                '2D map_saver_cli failed'
-                + (f': {detail[-600:]}' if detail else '.')
-            )
-        self.get_logger().info(
-            f'map_saver_cli completed: {result.stdout.strip()}'
-        )
-
     def _validate_and_normalize_2d_map(
-        self, transaction_directory: Path, map_name: str
+        self, transaction_directory: Path, map_name: str, *, normalize=True
     ) -> dict[str, Any]:
         yaml_path = transaction_directory / f'{map_name}.yaml'
         pgm_path = transaction_directory / f'{map_name}.pgm'
@@ -447,8 +662,9 @@ class MapSaveService(Node):
             raise MapSaveError('Saved PGM image has an invalid format or size.')
 
         # Keep the YAML relocatable and make its image name match the final file.
-        document['image'] = f'{map_name}.pgm'
-        self._write_yaml(yaml_path, document)
+        if normalize:
+            document['image'] = f'{map_name}.pgm'
+            self._write_yaml(yaml_path, document)
         return {
             'image': f'{map_name}.pgm',
             'width': int(width),
@@ -459,6 +675,52 @@ class MapSaveService(Node):
             'occupied_thresh': occupied_thresh,
             'free_thresh': free_thresh,
         }
+
+    @staticmethod
+    def _load_ground_support(
+        directory: Path,
+        map_name: str,
+        map_geometry: dict[str, Any],
+    ) -> GroundSupportGrid:
+        """Decode PGM pixels into an explicit ROS-row-order free mask."""
+
+        pgm_path = directory / f'{map_name}.pgm'
+        with Image.open(pgm_path) as image:
+            pixels = np.array(
+                image.convert('L'), dtype=np.uint8, copy=True)
+        if pixels.shape != (
+            int(map_geometry['height']), int(map_geometry['width'])
+        ):
+            raise MapSaveError('2D free-space mask geometry is inconsistent.')
+        probability = pixels.astype(np.float32) / 255.0
+        if int(map_geometry['negate']) == 0:
+            probability = 1.0 - probability
+        # Image rows start at the top, while OccupancyGrid rows start at the
+        # saved origin.  Only cells below free_thresh authorize reconstruction.
+        free_mask = np.flipud(
+            probability < float(map_geometry['free_thresh']))
+        origin = map_geometry['origin']
+        return GroundSupportGrid(
+            resolution=float(map_geometry['resolution']),
+            width=int(map_geometry['width']),
+            height=int(map_geometry['height']),
+            origin_x=float(origin[0]),
+            origin_y=float(origin[1]),
+            origin_yaw=float(origin[2]),
+            free_mask=free_mask,
+        )
+
+    @staticmethod
+    def _quality_message(quality: dict[str, Any]) -> str:
+        coverage = 100.0 * float(quality.get('coverage_ratio', 0.0))
+        largest = 100.0 * float(
+            quality.get('largest_component_ratio', 0.0))
+        warnings = quality.get('warnings') or []
+        prefix = 'Terrain quality warning' if warnings else 'Terrain quality'
+        return (
+            f'{prefix}: coverage={coverage:.1f}%, '
+            f'largest traversable component={largest:.1f}%.'
+        )
 
     @staticmethod
     def _validate_projected_map_geometry(
@@ -627,6 +889,7 @@ class MapSaveService(Node):
         pcd_header: dict[str, Any],
         pcd_size: int,
         pcd_sha256: str,
+        terrain_metadata: dict[str, Any],
         transaction_directory: Path,
     ) -> dict[str, Any]:
         yaml_size = (
@@ -651,6 +914,7 @@ class MapSaveService(Node):
             'voxel_size': voxel_size,
             'created_at_utc': datetime.now(timezone.utc).isoformat(),
             'map_geometry': map_geometry,
+            'terrain_grid': terrain_metadata,
             # Rich provenance retained for diagnostics and future migrations.
             'coordinate_system': {
                 'map_frame': 'map',
@@ -679,6 +943,9 @@ class MapSaveService(Node):
                 'voxel_size': voxel_size,
                 'filter': {
                     'type': 'distinct_frame_voxel_persistence',
+                    'mode': str(lio_snapshot.get(
+                        'filter_mode', 'protected'
+                    )),
                     'min_observations': int(
                         lio_snapshot['min_observations']
                     ),
@@ -694,6 +961,34 @@ class MapSaveService(Node):
                     'tracked_voxels': int(
                         lio_snapshot.get('tracked_voxels', point_count)
                     ),
+                    'ground_preservation': {
+                        'enabled': bool(lio_snapshot.get(
+                            'ground_preservation_enabled', False
+                        )),
+                        'cell_size': float(lio_snapshot.get(
+                            'ground_cell_size', 0.0
+                        )),
+                        'max_height_above_envelope': float(
+                            lio_snapshot.get(
+                                'ground_max_height_above_envelope', 0.0
+                            )
+                        ),
+                        'max_slope_deg': float(lio_snapshot.get(
+                            'ground_max_slope_deg', 0.0
+                        )),
+                        'min_neighbor_cells': int(lio_snapshot.get(
+                            'ground_min_neighbor_cells', 0
+                        )),
+                        'min_observations': int(lio_snapshot.get(
+                            'ground_min_observations', 0
+                        )),
+                        'min_stable_span_frames': int(lio_snapshot.get(
+                            'ground_min_stable_span_frames', 0
+                        )),
+                        'protected_voxels_at_save': int(lio_snapshot.get(
+                            'ground_protected_voxels', 0
+                        )),
+                    },
                 },
             },
             'capture': {
@@ -722,6 +1017,12 @@ class MapSaveService(Node):
                     'size_bytes': int(pcd_size),
                     'sha256': pcd_sha256,
                 },
+                'terrain_grid': {
+                    'filename': terrain_metadata['filename'],
+                    'size_bytes': terrain_metadata['size_bytes'],
+                    'sha256': terrain_metadata['sha256'],
+                    'source_pcd_sha256': pcd_sha256,
+                },
             },
         }
 
@@ -733,6 +1034,7 @@ class MapSaveService(Node):
         pcd_header: dict[str, Any],
         pcd_size: int,
         pcd_sha256: str,
+        terrain_metadata: dict[str, Any],
     ) -> None:
         with path.open('r', encoding='utf-8') as stream:
             document = yaml.safe_load(stream)
@@ -762,12 +1064,34 @@ class MapSaveService(Node):
                 raise MapSaveError(
                     f'Generated metadata map_geometry.{key} is inconsistent.'
                 )
+        if document.get('terrain_grid') != terrain_metadata:
+            raise MapSaveError(
+                'Generated terrain metadata is inconsistent.'
+            )
+        try:
+            loaded_terrain = load_bound_terrain_grid(
+                path.parent,
+                map_name=map_name,
+                localization_metadata=document,
+                actual_pcd_sha256=pcd_sha256,
+            )
+        except ValueError as error:
+            raise MapSaveError(
+                f'Generated terrain artifact failed validation: {error}'
+            ) from error
+        if loaded_terrain is None:
+            raise MapSaveError(
+                'Generated metadata omitted the required terrain artifact.'
+            )
 
     def _target_paths(self, map_name: str) -> dict[str, Path]:
         return {
             'pgm': self.map_directory / f'{map_name}.pgm',
             'yaml': self.map_directory / f'{map_name}.yaml',
             'pcd': self.pcd_map_directory / f'{map_name}.pcd',
+            'terrain': (
+                self.pcd_map_directory / f'{map_name}.terrain.npz'
+            ),
             'metadata': (
                 self.pcd_map_directory
                 / f'{map_name}.localization.yaml'
@@ -778,15 +1102,22 @@ class MapSaveService(Node):
         self,
         source_paths: dict[str, Path],
         target_paths: dict[str, Path],
+        *,
+        install_order=None,
     ) -> None:
-        """Replace all four artifacts, restoring every old file on failure.
+        """Replace all five artifacts, restoring every old file on failure.
 
         New files are copied and fsynced beside their final destinations before
         any replacement starts.  Existing files are backed up first (normally
         with cheap same-filesystem hard links).  Metadata is replaced last, so
         strict readers never accept a partially installed map.
         """
-        install_order = ('pgm', 'yaml', 'pcd', 'metadata')
+        if install_order is None:
+            install_order = ('pgm', 'yaml', 'pcd', 'terrain', 'metadata')
+        install_order = tuple(install_order)
+        if set(install_order) != set(source_paths) or set(source_paths) != set(
+                target_paths):
+            raise ValueError('artifact transaction key set is inconsistent')
         backup_directories: dict[Path, Path] = {}
         backups: dict[str, Path] = {}
         staged_targets: dict[str, Path] = {}

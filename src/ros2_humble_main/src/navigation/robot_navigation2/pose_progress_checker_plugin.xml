@@ -1,0 +1,11 @@
+<library path="pose_progress_checker">
+  <class
+    name="robot_navigation2::PoseProgressChecker"
+    type="robot_navigation2::PoseProgressChecker"
+    base_class_type="nav2_core::ProgressChecker">
+    <description>
+      ROS 2 Humble progress checker that treats either translation or rotation
+      as valid navigation progress.
+    </description>
+  </class>
+</library>

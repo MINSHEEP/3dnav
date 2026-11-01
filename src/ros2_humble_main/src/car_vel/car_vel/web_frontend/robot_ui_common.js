@@ -8,11 +8,16 @@
         poseWithCovariance: 'geometry_msgs/PoseWithCovarianceStamped',
         relocalizationRequest: 'lzp_interface/msg/RelocalizationRequest',
         odometry: 'nav_msgs/msg/Odometry',
+        terrainObservation: 'lzp_interface/msg/TerrainObservation',
         empty: 'std_msgs/msg/Empty',
         bool: 'std_msgs/msg/Bool',
         string: 'std_msgs/msg/String',
+        trigger: 'std_srvs/srv/Trigger',
         occupancyGrid: 'nav_msgs/msg/OccupancyGrid',
+        path: 'nav_msgs/msg/Path',
+        pointCloud2: 'sensor_msgs/msg/PointCloud2',
         mapSave: 'lzp_interface/srv/MapSave',
+        rebuildTerrain: 'lzp_interface/srv/RebuildTerrain',
         controlLaunch: 'lzp_interface/srv/ControlLaunch',
         mapList: 'lzp_interface/srv/GetMapList',
         switchMap: 'lzp_interface/srv/SwitchMap',
@@ -29,7 +34,33 @@
         deleteRoute: 'lzp_interface/srv/DeleteRoute',
         startRoute: 'lzp_interface/srv/StartRoute',
         controlRoute: 'lzp_interface/srv/ControlRoute',
-        getRouteExecutionState: 'lzp_interface/srv/GetRouteExecutionState'
+        getRouteExecutionState: 'lzp_interface/srv/GetRouteExecutionState',
+        saveInspectionTemplate: 'lzp_interface/srv/SaveInspectionTemplate',
+        getInspectionTemplate: 'lzp_interface/srv/GetInspectionTemplate',
+        startInspectionTask: 'lzp_interface/srv/StartInspectionTask',
+        controlInspectionTask: 'lzp_interface/srv/ControlInspectionTask',
+        getInspectionState: 'lzp_interface/srv/GetInspectionState',
+        listInspectionHistory: 'lzp_interface/srv/ListInspectionHistory',
+        getInspectionHistory: 'lzp_interface/srv/GetInspectionHistory',
+        deleteInspectionHistory: 'lzp_interface/srv/DeleteInspectionHistory',
+        acknowledgeInspectionAlert: 'lzp_interface/srv/AcknowledgeInspectionAlert',
+        queryInspectionReports: 'lzp_interface/srv/QueryInspectionReports',
+        getInspectionReport: 'lzp_interface/srv/GetInspectionReport',
+        reviewInspectionReport: 'lzp_interface/srv/ReviewInspectionReport',
+        evaluateTerrain: 'lzp_interface/srv/EvaluateTerrain',
+        planCampusRoute: 'lzp_interface/srv/PlanCampusRoute',
+        getCampusTopology: 'lzp_interface/srv/GetCampusTopology',
+        manageCampusTopology: 'lzp_interface/srv/ManageCampusTopology',
+        startCampusMission: 'lzp_interface/srv/StartCampusMission',
+        controlCampusMission: 'lzp_interface/srv/ControlCampusMission',
+        setNavigationMode: 'lzp_interface/srv/SetNavigationMode',
+        check3dGround: 'lzp_interface/srv/Check3DGround',
+        preview3dGoal: 'lzp_interface/srv/Preview3DGoal',
+        startPreviewed3dGoal: 'lzp_interface/srv/StartPreviewed3DGoal',
+        preview3dRoute: 'lzp_interface/srv/Preview3DRoute',
+        setInflationRadius: 'lzp_interface/srv/SetInflationRadius',
+        setInspectionEnvironmentConfig:
+            'lzp_interface/srv/SetInspectionEnvironmentConfig'
     });
 
     function getRosbridgeUrl() {
@@ -54,6 +85,170 @@
         };
     }
 
+    const PREVIEW_KEY = 'robot.webPreview.profile';
+    let previewSelection = null;
+    const DISPLAY_CLOUDS = new Set(['/global_mapping_cloud', '/global_localization_map',
+        '/cloud_mapping_dynamic', '/octomap_point_cloud_centers']);
+    function previewProfile() {
+        try { return window.localStorage.getItem(PREVIEW_KEY) === 'lan' ? 'lan' : 'remote'; }
+        catch (_error) { return 'remote'; }
+    }
+    function previewAllowed(source) {
+        if (document.hidden) return false;
+        let selection = previewProfile() === 'lan' ? 'both' : 'ordinary';
+        try { selection = window.sessionStorage.getItem('robot.webPreview.streams') || selection; }
+        catch (_error) { /* Storage may be disabled. */ }
+        selection = previewSelection || selection;
+        return selection === 'both' || selection === source;
+    }
+    function previewUrl(value) {
+        const url = new URL(value, window.location.href);
+        const source = {'/api/stream': 'raw', '/api/yolo/stream.mjpg': 'yolo',
+                        '/api/thermal/stream.mjpg': 'thermal'}[url.pathname];
+        if (!source) return value;
+        url.pathname = '/api/preview/stream';
+        url.searchParams.set('source', source);
+        url.searchParams.set('profile', previewProfile());
+        return url.href;
+    }
+    function previewControls({thermal = true} = {}) {
+        const parent = document.querySelector('.topbar-statuses');
+        if (!parent || document.getElementById('web-preview-streams')) return;
+        const label = document.createElement('label');
+        label.className = 'web-preview-controls';
+        label.textContent = `${previewProfile() === 'remote' ? '5G低带宽' : '局域网高清'} · 预览 `;
+        const select = document.createElement('select');
+        select.id = 'web-preview-streams';
+        for (const [value, title] of [['ordinary', '普通画面'], ['thermal', '热成像'],
+                                      ['both', '双路（流量增加）'], ['off', '全部关闭']]) {
+            if (!thermal && (value === 'thermal' || value === 'both')) continue;
+            const option = document.createElement('option');
+            option.value = value; option.textContent = title; select.appendChild(option);
+        }
+        try { select.value = window.sessionStorage.getItem('robot.webPreview.streams')
+            || (previewProfile() === 'lan' ? 'both' : 'ordinary'); }
+        catch (_error) { select.value = 'ordinary'; }
+        if (!select.value) { select.value = 'ordinary'; previewSelection = 'ordinary'; }
+        select.addEventListener('change', () => {
+            previewSelection = select.value;
+            try { window.sessionStorage.setItem('robot.webPreview.streams', select.value); }
+            catch (_error) { /* Keep page controls functional without storage. */ }
+            window.dispatchEvent(new Event('robot-preview-change'));
+        });
+        label.appendChild(select); parent.appendChild(label);
+    }
+
+    class PreviewCloudSubscription {
+        constructor(session, name, type, callback, options) {
+            this.session = session; this.callbacks = new Set([callback]);
+            this.name = '/web_preview/' + previewProfile() + name;
+            this.type = type; this.options = options || {}; this.closed = false;
+            this.connect();
+        }
+        connect() {
+            if (this.closed || document.hidden || !this.session.cloudPreviewVisible
+                || !this.session.connected || this.ros) return;
+            const ros = new ROSLIB.Ros({url: this.session.url});
+            this.ros = ros;
+            ros.on('connection', () => {
+                if (this.ros !== ros || this.closed) return;
+                this.topic = new ROSLIB.Topic({...this.options, ros, name: this.name,
+                    messageType: this.type, queueLength: 1});
+                this.callbacks.forEach(callback => this.topic.subscribe(callback));
+            });
+            ros.on('error', () => {});
+            ros.on('close', () => {
+                if (this.ros !== ros) return;
+                this.ros = null; this.topic = null;
+                if (!this.closed && this.session.connected && !document.hidden) {
+                    this.timer = window.setTimeout(() => this.connect(), 3000);
+                }
+            });
+        }
+        suspend() {
+            window.clearTimeout(this.timer);
+            const ros = this.ros; this.ros = null; this.topic = null;
+            if (ros) ros.close();
+        }
+        unsubscribe(callback) {
+            if (callback) {
+                this.callbacks.delete(callback);
+                if (this.topic) this.topic.unsubscribe(callback);
+            } else this.callbacks.clear();
+            if (!this.callbacks.size) {
+                this.closed = true; this.suspend();
+                this.session.cloudPreviews.delete(this);
+            }
+        }
+    }
+
+    // Map topics can have been sent before rosbridge discovered map_server.
+    // GetMap uses reliable request/response QoS without relying on version-
+    // specific rosbridge subscription extensions. The owner supplies a load
+    // identity predicate; a cancelled/obsolete response never reaches the UI.
+    class MapSnapshotRecovery {
+        constructor(session, accept, log) {
+            this.session = session; this.accept = accept; this.log = log || (() => {});
+            this.generation = 0; this.key = ''; this.pending = null; this.timer = null;
+        }
+        cancel() {
+            this.generation += 1; this.key = ''; this.pending = null;
+            window.clearTimeout(this.timer); this.timer = null;
+        }
+        request(key, isCurrent) {
+            if (!key || !isCurrent() || !this.session.connected) return Promise.resolve();
+            if (this.key === key) return this.pending || Promise.resolve();
+            this.cancel(); this.key = key;
+            const generation = this.generation;
+            const active = () => generation === this.generation && this.session.connected
+                && !this.session.stopped && isCurrent();
+            let attempts = 0;
+            const run = async () => {
+                if (!active()) return;
+                attempts += 1;
+                try {
+                    const result = await this.session.call('/map_server/map', 'nav_msgs/srv/GetMap', {}, 20000);
+                    if (!active()) return;
+                    const message = result && result.map;
+                    const info = message && message.info;
+                    const cells = info && Number(info.width) * Number(info.height);
+                    if (!info || !Number.isInteger(info.width) || !Number.isInteger(info.height)
+                        || info.width < 1 || info.height < 1 || cells > 20000000
+                        || !Number.isFinite(info.resolution) || info.resolution <= 0
+                        || !message.header || message.header.frame_id !== 'map'
+                        || !message.data || message.data.length !== cells) {
+                        throw new Error('地图快照为空、尺寸不完整或坐标系无效');
+                    }
+                    if (this.accept(message) === false) throw new Error('地图栅格渲染未完成');
+                    this.log(`已通过可靠地图快照补收二维栅格：${info.width} × ${info.height}。`);
+                } catch (error) {
+                    if (!active()) return;
+                    this.log(`地图快照补收失败（${attempts}/3）：${error.message || error}`);
+                    if (attempts < 3) this.timer = window.setTimeout(run, attempts * 1000);
+                }
+            };
+            this.pending = run();
+            return this.pending;
+        }
+    }
+
+    function subscribePreviewHealth(session, log) {
+        let previous = '';
+        return session.subscribe('/web_preview/status', TYPES.string, message => {
+            try {
+                const state = JSON.parse(message.data);
+                const cloud = state.topics && state.topics['/global_localization_map'];
+                if (!cloud) return;
+                const viewing = Object.values(cloud.viewers || {}).some(count => count > 0);
+                const text = cloud.error ? `三维预览处理失败：${cloud.error}`
+                    : !viewing ? '' : !cloud.input_subscribed ? '三维预览未连接源地图，请检查预览服务状态。'
+                    : !cloud.has_frame ? '三维预览已订阅源地图，正在等待可靠地图缓存。' : '三维预览已收到源地图，可检查地图身份匹配和网页接收。';
+                if (text && text !== previous) log(text);
+                previous = text;
+            } catch (_error) { /* Invalid diagnostic data cannot change navigation readiness. */ }
+        }, {queueLength: 1, throttleRate: 2000});
+    }
+
     class RosSession {
         constructor(options) {
             this.log = options.log || (() => {});
@@ -66,6 +261,11 @@
             this.serviceCache = new Map();
             this.topicCache = new Map();
             this.stopped = false;
+            this.cloudPreviews = new Set();
+            this.cloudPreviewVisible = true;
+            this.previewVisibility = () => this.cloudPreviews.forEach(topic =>
+                document.hidden || !this.cloudPreviewVisible ? topic.suspend() : topic.connect());
+            document.addEventListener?.('visibilitychange', this.previewVisibility);
         }
 
         connect() {
@@ -79,6 +279,7 @@
             const ros = new ROSLIB.Ros({ url: this.url });
             this.ros = ros;
             ros.on('connection', () => {
+                if (this.stopped || this.ros !== ros) return;
                 this.connected = true;
                 this.serviceCache.clear();
                 this.topicCache.clear();
@@ -93,6 +294,7 @@
             ros.on('close', () => {
                 const wasConnected = this.connected;
                 this.connected = false;
+                this.cloudPreviews.forEach(topic => topic.unsubscribe());
                 this.ros = null;
                 this.serviceCache.clear();
                 this.topicCache.clear();
@@ -107,10 +309,17 @@
 
         stop() {
             this.stopped = true;
+            this.cloudPreviews.forEach(topic => topic.unsubscribe());
+            document.removeEventListener?.('visibilitychange', this.previewVisibility);
             window.clearTimeout(this.reconnectTimer);
             if (this.ros) this.ros.close();
             this.ros = null;
             this.connected = false;
+        }
+
+        setCloudPreviewVisible(visible) {
+            this.cloudPreviewVisible = Boolean(visible);
+            this.previewVisibility();
         }
 
         topic(name, messageType, options) {
@@ -128,6 +337,11 @@
         }
 
         subscribe(name, messageType, callback, options) {
+            if (messageType === TYPES.pointCloud2 && DISPLAY_CLOUDS.has(name)) {
+                const topic = new PreviewCloudSubscription(this, name, messageType, callback, options);
+                this.cloudPreviews.add(topic);
+                return topic;
+            }
             const topic = this.topic(name, messageType, options);
             topic.subscribe(callback);
             return topic;
@@ -148,13 +362,28 @@
             return this.serviceCache.get(key);
         }
 
-        call(name, serviceType, request) {
+        call(name, serviceType, request, timeoutMs = 15000) {
             if (!this.connected) return Promise.reject(new Error('ROS2 未连接'));
             return new Promise((resolve, reject) => {
+                let settled = false;
+                const deadline = Math.max(1000, Number(timeoutMs) || 15000);
+                const finish = (callback) => (value) => {
+                    if (settled) return;
+                    settled = true;
+                    window.clearTimeout(timer);
+                    callback(value);
+                };
+                const timer = window.setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    reject(new Error(`ROS2 服务 ${name} 调用超时（${Math.round(deadline / 1000)} 秒）`));
+                }, deadline);
                 try {
-                    this.service(name, serviceType).callService(new ROSLIB.ServiceRequest(request), resolve, reject);
+                    this.service(name, serviceType).callService(
+                        new ROSLIB.ServiceRequest(request),
+                        finish(resolve), finish(reject));
                 } catch (error) {
-                    reject(error);
+                    finish(reject)(error);
                 }
             });
         }
@@ -204,6 +433,7 @@
             this.onSpeed = options.onSpeed || (() => {});
             this.onReset = options.onReset || (() => {});
             this.onEmergencyStop = options.onEmergencyStop || (() => {});
+            this.onNeutral = options.onNeutral || (() => {});
             this.cmdVelTopic = options.cmdVelTopic || '/cmd_vel';
             this.maxLinear = options.maxLinear || 0.35;
             this.maxAngular = options.maxAngular || 0.8;
@@ -249,7 +479,10 @@
                 if (!Object.prototype.hasOwnProperty.call(this.keys, key)) return;
                 event.preventDefault();
                 this.keys[key] = false;
-                if (!Object.values(this.keys).some(Boolean)) this.publishZero();
+                if (!Object.values(this.keys).some(Boolean)) {
+                    this.publishZero();
+                    if (this.enabled && this.session.connected) this.onNeutral();
+                }
             });
             window.addEventListener('blur', () => this.stopAndZero());
             document.addEventListener('visibilitychange', () => { if (document.hidden) this.stopAndZero(); });
@@ -327,6 +560,8 @@
             this.maxZoomRatio = 24;
             this.robotPose = null;
             this.goalPose = null;
+            this.globalPath = [];
+            this.globalPathWarning = false;
             this.routePoints = [];
             this.activeRoutePointIndex = -1;
             this.routeExecutionState = 'idle';
@@ -636,12 +871,34 @@
         clearRobotPose() { this.robotPose = null; }
         setGoalPose(x, y, yaw) { this.goalPose = { x, y, yaw }; }
         clearGoalPose() { this.goalPose = null; }
+        setGlobalPath(points) {
+            const options = arguments[1] || {};
+            this.globalPath = (points || []).map((point) => ({
+                x: Number(point && point.x),
+                y: Number(point && point.y),
+                z: Number(point && point.z)
+            })).filter((point) => (
+                Number.isFinite(point.x)
+                && Number.isFinite(point.y)
+                && Number.isFinite(point.z)
+            ));
+            this.globalPathWarning = Boolean(options.warning);
+        }
+        clearGlobalPath() {
+            this.globalPath = [];
+            this.globalPathWarning = false;
+        }
         setRoutePoints(points, activeIndex, executionState) {
             this.routePoints = (points || []).map((point) => ({
                 x: Number(point.x),
                 y: Number(point.y),
                 yaw: Number(point.yaw),
-                name: String(point.name || '')
+                name: String(point.name || ''),
+                id: Number(point.id) || 0,
+                sequence: Number(point.sequence) || 0,
+                inspection: Boolean(point.inspection),
+                inspectionStatus: String(point.inspectionStatus || ''),
+                alerted: Boolean(point.alerted)
             })).filter((point) => (
                 Number.isFinite(point.x)
                 && Number.isFinite(point.y)
@@ -694,7 +951,9 @@
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(this.offscreen, this.offsetX, this.offsetY,
                 info.width * info.resolution * this.zoom, info.height * info.resolution * this.zoom);
+            this.drawGlobalPath(ctx);
             this.drawPoseDrag(ctx);
+            this.drawEditSelection(ctx);
             this.drawEditRectangle(ctx);
             this.drawRoute(ctx);
             this.drawRobot(ctx);
@@ -726,10 +985,23 @@
             ctx.restore();
         }
 
+        drawEditSelection(ctx) {
+            if (!this.selectionCells?.length || !this.mapInfo) return;
+            const info=this.mapInfo, r=info.resolution, size=r*this.zoom;
+            ctx.save(); ctx.fillStyle='rgba(255, 202, 98, .48)';
+            for (const cell of this.selectionCells) {
+                const x=cell.dataIndex%info.width, y=Math.floor(cell.dataIndex/info.width);
+                const p=this.mapToCanvas(info.origin.position.x+x*r,info.origin.position.y+y*r);
+                if (p) ctx.fillRect(p.x,p.y-size,size,size);
+            }
+            ctx.restore();
+        }
+
         drawEditRectangle(ctx) {
-            if (!this.editRect) return;
-            const a = this.mapToCanvas(this.editRect.start.x, this.editRect.start.y);
-            const b = this.mapToCanvas(this.editRect.end.x, this.editRect.end.y);
+            const rectangle = this.editRect || this.selectionRect;
+            if (!rectangle) return;
+            const a = this.mapToCanvas(rectangle.start.x, rectangle.start.y);
+            const b = this.mapToCanvas(rectangle.end.x, rectangle.end.y);
             if (!a || !b) return;
             ctx.save();
             ctx.setLineDash([7, 4]);
@@ -764,6 +1036,51 @@
             ctx.restore();
         }
 
+        drawGlobalPath(ctx) {
+            if (this.globalPath.length < 2) return;
+            const color = this.globalPathWarning ? '#ffb454' : '#45e39b';
+            const drawSegments = (strokeStyle, lineWidth) => {
+                let segmentOpen = false;
+                ctx.strokeStyle = strokeStyle;
+                ctx.lineWidth = lineWidth;
+                ctx.beginPath();
+                this.globalPath.forEach((point) => {
+                    // Do not bridge across an invalid/out-of-map section. A
+                    // straight chord there would falsely look like a valid
+                    // planner shortcut through unknown space.
+                    if (!this.mapToGrid(point.x, point.y)) {
+                        if (segmentOpen) ctx.stroke();
+                        ctx.beginPath();
+                        segmentOpen = false;
+                        return;
+                    }
+                    const screen = this.mapToCanvas(point.x, point.y);
+                    if (!screen) return;
+                    if (!segmentOpen) {
+                        ctx.moveTo(screen.x, screen.y);
+                        segmentOpen = true;
+                    } else {
+                        ctx.lineTo(screen.x, screen.y);
+                    }
+                });
+                if (segmentOpen) ctx.stroke();
+            };
+
+            ctx.save();
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.setLineDash([]);
+            // A dark underlay keeps the actual Nav2 plan readable over both
+            // white free-space cells and dark occupied/unknown cells.
+            ctx.strokeStyle = 'rgba(4, 14, 22, .86)';
+            ctx.lineWidth = 6.4;
+            drawSegments(ctx.strokeStyle, ctx.lineWidth);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3.4;
+            drawSegments(ctx.strokeStyle, ctx.lineWidth);
+            ctx.restore();
+        }
+
         drawRoute(ctx) {
             if (!this.routePoints.length) return;
             const screenPoints = this.routePoints.map((point) => ({
@@ -787,9 +1104,17 @@
             screenPoints.forEach((entry, screenIndex) => {
                 const routeIndex = this.routePoints.indexOf(entry.point);
                 const active = routeIndex === this.activeRoutePointIndex;
-                const paused = active && String(this.routeExecutionState).startsWith('paused');
                 const radius = active ? 15 : 13;
-                const color = active ? (paused ? '#ffca62' : '#45e39b') : '#4dc5ff';
+                const status = entry.point.inspectionStatus;
+                const color = active
+                    ? '#ffca62'
+                    : (entry.point.alerted
+                        ? '#ff9f43'
+                        : (status === 'completed'
+                            ? '#45e39b'
+                            : (status === 'failed' || status === 'skipped'
+                                ? '#e85b73'
+                                : (entry.point.inspection ? '#b98cff' : '#4dc5ff'))));
                 ctx.save();
                 ctx.translate(entry.screen.x, entry.screen.y);
                 ctx.rotate(-entry.point.yaw);
@@ -809,7 +1134,15 @@
                 ctx.rotate(entry.point.yaw);
                 ctx.fillStyle = active ? 'rgba(10, 25, 34, .96)' : 'rgba(12, 31, 50, .94)';
                 ctx.beginPath();
-                ctx.arc(0, 0, radius, 0, Math.PI * 2);
+                if (entry.point.inspection) {
+                    ctx.moveTo(0, -radius);
+                    ctx.lineTo(radius, 0);
+                    ctx.lineTo(0, radius);
+                    ctx.lineTo(-radius, 0);
+                    ctx.closePath();
+                } else {
+                    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+                }
                 ctx.fill();
                 ctx.strokeStyle = color;
                 ctx.stroke();
@@ -888,6 +1221,9 @@
                 return;
             }
             updateBatteryStatus(batteryElement, status);
+            if (batteryElement && status.body_id) {
+                batteryElement.title = '当前本体：' + (status.body_id === 'gangben_zsl1' ? '钢镚 ZSL-1 点足' : '星玑');
+            }
             if (onStatus) onStatus(status);
         });
     }
@@ -901,11 +1237,20 @@
         if (resetButton) resetButton.addEventListener('click', () => mapCanvas.resetView());
     }
 
+    function escapeText(value) {
+        const span = document.createElement('span');
+        span.textContent = String(value ?? '');
+        return span.innerHTML;
+    }
+
     window.RobotUi = Object.freeze({
         TYPES,
         getRosbridgeUrl,
+        previewProfile, previewUrl, previewAllowed, previewControls,
         createLogger,
         RosSession,
+        MapSnapshotRecovery,
+        subscribePreviewHealth,
         KeyboardTeleop,
         MapCanvas,
         quaternionFromYaw,
@@ -916,6 +1261,7 @@
         setBatteryDisconnected,
         updateBatteryStatus,
         subscribeDogStatus,
-        bindZoomButtons
+        bindZoomButtons,
+        escapeText
     });
 }());

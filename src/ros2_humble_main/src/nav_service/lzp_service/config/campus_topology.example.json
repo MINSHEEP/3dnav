@@ -1,0 +1,70 @@
+{
+  "areas": [
+    {
+      "area_id": "campus_south_road",
+      "map_name": "campus_outdoor",
+      "floor_id": "ground",
+      "environment": "outdoor"
+    },
+    {
+      "area_id": "building_a_entrance",
+      "map_name": "building_a_ground",
+      "floor_id": "F1",
+      "environment": "indoor"
+    },
+    {
+      "area_id": "building_a_floor_2",
+      "map_name": "building_a_floor_2",
+      "floor_id": "F2",
+      "environment": "indoor"
+    }
+  ],
+  "transitions": [
+    {
+      "transition_id": "south_road_to_a_ramp",
+      "source_area": "campus_south_road",
+      "target_area": "building_a_entrance",
+      "distance_m": 8.0,
+      "elevation_change_m": 0.7,
+      "calibrated": false,
+      "bidirectional": true,
+      "source_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0},
+      "target_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0},
+      "terrain": {
+        "terrain_type": "ramp",
+        "slope_deg": 8.0,
+        "cross_slope_deg": 1.0,
+        "step_height_m": 0.0,
+        "gap_width_m": 0.0,
+        "roughness_m": 0.01,
+        "clearance_width_m": 1.2,
+        "confidence": 0.95,
+        "negative_obstacle": false,
+        "slippery": false
+      }
+    },
+    {
+      "transition_id": "building_a_stairs_f1_f2",
+      "source_area": "building_a_entrance",
+      "target_area": "building_a_floor_2",
+      "distance_m": 12.0,
+      "elevation_change_m": 3.2,
+      "calibrated": false,
+      "bidirectional": true,
+      "source_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0},
+      "target_pose": {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0},
+      "terrain": {
+        "terrain_type": "stairs_up",
+        "slope_deg": 0.0,
+        "cross_slope_deg": 0.0,
+        "step_height_m": 0.15,
+        "gap_width_m": 0.0,
+        "roughness_m": 0.01,
+        "clearance_width_m": 1.1,
+        "confidence": 0.98,
+        "negative_obstacle": false,
+        "slippery": false
+      }
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 /*
  * Minimal, dependency-free ROSLIB-compatible client for this project.
  *
- * It implements only the rosbridge operations used by the four web pages:
+ * It implements only the rosbridge operations used by the project web pages:
  * topic publish/subscribe and service calls.  Keeping this file beside the
  * pages makes the UI work when the robot Wi-Fi has no Internet access.
  */
@@ -9,7 +9,7 @@
     'use strict';
 
     let nextId = 1;
-    const FRAGMENT_TIMEOUT_MS = 10000;
+    const FRAGMENT_IDLE_TIMEOUT_MS = 30000;
     const MAX_FRAGMENT_COUNT = 256;
     const MAX_FRAGMENTED_MESSAGE_CHARACTERS = 32 * 1024 * 1024;
 
@@ -154,14 +154,7 @@
                     parts: new Array(total),
                     received: 0,
                     characters: 0,
-                    timer: window.setTimeout(() => {
-                        if (!this.fragmentBuffers.has(id)) return;
-                        this.discardFragmentBuffer(id);
-                        this.emit(
-                            'error',
-                            new Error(`Timed out waiting for rosbridge fragments: ${id}`)
-                        );
-                    }, FRAGMENT_TIMEOUT_MS)
+                    timer: null
                 };
                 this.fragmentBuffers.set(id, buffer);
             } else if (buffer.total !== total) {
@@ -196,11 +189,26 @@
                 );
                 return;
             }
-            if (buffer.received !== buffer.total) return;
+            if (buffer.received !== buffer.total) {
+                this.armFragmentIdleTimeout(id, buffer);
+                return;
+            }
 
             const serializedMessage = buffer.parts.join('');
             this.discardFragmentBuffer(id);
             this.handleMessage(serializedMessage);
+        }
+
+        armFragmentIdleTimeout(id, buffer) {
+            window.clearTimeout(buffer.timer);
+            buffer.timer = window.setTimeout(() => {
+                if (this.fragmentBuffers.get(id) !== buffer) return;
+                this.discardFragmentBuffer(id);
+                this.emit(
+                    'error',
+                    new Error(`Timed out waiting for rosbridge fragments: ${id}`)
+                );
+            }, FRAGMENT_IDLE_TIMEOUT_MS);
         }
 
         discardFragmentBuffer(id) {

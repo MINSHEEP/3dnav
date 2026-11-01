@@ -4,8 +4,8 @@
 The browser deliberately uses only rosbridge topics.  This node is the ROS 2
 side of that small API: it forwards a rough map pose to the ``/relocalize``
 Action, publishes the accepted pose to AMCL, and owns the bounded fallback
-sequence.  It never publishes ``map -> odom``; AMCL remains the only owner of
-that transform.
+sequence. It never publishes ``map -> odom``. In Xingji 3D the verified
+candidate is handed to global_pose_authority; legacy scopes retain AMCL.
 """
 
 import copy
@@ -32,7 +32,7 @@ from std_srvs.srv import Empty as EmptyService
 
 
 class RelocalizationCoordinator(Node):
-    """Run NDT/GICP once, then confirm AMCL or retry the rough pose once."""
+    """Confirm the scoped authority, or use the original legacy AMCL sequence."""
 
     MAP_FAILURE_CODES = {
         Relocalize.Result.CODE_MAP_NAME_INVALID,
@@ -46,9 +46,9 @@ class RelocalizationCoordinator(Node):
     def __init__(self):
         super().__init__('relocalization_coordinator')
 
-        self.declare_parameter('search_xy', 1.0)
-        self.declare_parameter('search_yaw_deg', 30.0)
-        self.declare_parameter('relocalize_timeout_sec', 10.0)
+        self.declare_parameter('search_xy', 3.0)
+        self.declare_parameter('search_yaw_deg', 90.0)
+        self.declare_parameter('relocalize_timeout_sec', 30.0)
         # PCL's align() calls cannot be interrupted from another thread.  The
         # Action deadline is therefore a soft server-side limit.  Keep a
         # separate client-side deadline so AMCL fallback can start even if an
@@ -71,11 +71,11 @@ class RelocalizationCoordinator(Node):
         self.declare_parameter('nomotion_update_count', 8)
         self.declare_parameter('nomotion_update_interval_sec', 0.35)
 
-        self.search_xy = self._positive_float('search_xy', 1.0)
+        self.search_xy = self._positive_float('search_xy', 3.0)
         self.search_yaw = math.radians(
-            self._positive_float('search_yaw_deg', 30.0))
+            self._positive_float('search_yaw_deg', 90.0))
         self.relocalize_timeout = self._positive_float(
-            'relocalize_timeout_sec', 10.0)
+            'relocalize_timeout_sec', 30.0)
         self.action_result_grace = self._positive_float(
             'action_result_grace_sec', 1.5)
         self.action_server_wait = self._positive_float(
@@ -168,6 +168,18 @@ class RelocalizationCoordinator(Node):
         self.nomotion_client = self.create_client(
             EmptyService, '/request_nomotion_update')
 
+        self.current_map_load_id = ''
+        self._global_mode = ''
+        self._global_body = ''
+        self._global_body_generation = None
+        self._strict_identity = None
+        self._await_authority = None
+        self._global_status = {}
+        self._global_status_at = 0.
+        self._global_mode_at = self._global_body_at = 0.
+        self.create_subscription(String, '/navigation/mode', self._global_mode_callback, status_qos)
+        self.create_subscription(String, '/robot_body/status', self._global_body_callback, status_qos)
+        self.create_subscription(String, '/localization/status', self._authority_callback, status_qos)
         self.current_map_name = ''
         self.active_request_map_name = ''
         self.active_request_id = ''
@@ -238,6 +250,9 @@ class RelocalizationCoordinator(Node):
         return {
             'x': round(float(pose.pose.pose.position.x), 4),
             'y': round(float(pose.pose.pose.position.y), 4),
+            'z': float(pose.pose.pose.position.z),
+            'orientation': {key: float(getattr(pose.pose.pose.orientation, key))
+                            for key in ('x', 'y', 'z', 'w')},
             'yaw': round(RelocalizationCoordinator._yaw(
                 pose.pose.pose), 5),
         }
@@ -295,6 +310,12 @@ class RelocalizationCoordinator(Node):
                 self.get_logger().error(
                     'Failed to encode pose in relocalization status: '
                     f'{type(error).__name__}: {error}')
+        if pose is not None:
+            payload['pose_stamp'] = dict(sec=int(pose.header.stamp.sec),
+                                         nanosec=int(pose.header.stamp.nanosec))
+        payload['map_load_id'] = getattr(self, 'current_map_load_id', '')
+        payload['candidate_verified'] = bool(getattr(self, '_publishing_verified', False))
+        payload['body_generation'] = getattr(self, '_global_body_generation', None)
         if metrics:
             payload['metrics'] = metrics
         encoded = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
@@ -317,6 +338,52 @@ class RelocalizationCoordinator(Node):
     def _current_map_callback(self, message):
         if message.success and message.map_name:
             self.current_map_name = str(message.map_name).strip()
+            self.current_map_load_id = str(message.load_id).strip()
+
+    def _global_mode_callback(self, message):
+        try:
+            self._global_mode = json.loads(message.data).get('mode', '')
+        except (ValueError, TypeError):
+            self._global_mode = ''
+        self._global_mode_at = time.monotonic()
+
+    def _global_body_callback(self, message):
+        try:
+            data = json.loads(message.data)
+            self._global_body = data.get('config', {}).get('selected', '')
+            self._global_body_generation = data.get('generation')
+        except (ValueError, TypeError):
+            self._global_body = ''
+        self._global_body_at = time.monotonic()
+
+    def _global_identity(self):
+        return (self.current_map_name, self.current_map_load_id,
+                self._global_body, self._global_body_generation, self._global_mode)
+
+    def _authority_callback(self, message):
+        waiting = getattr(self, '_await_authority', None)
+        try:
+            data = json.loads(message.data)
+            if not isinstance(data, dict):
+                return
+            self._global_status = data
+            self._global_status_at = time.monotonic()
+            if not waiting:
+                return
+            if (waiting['generation'] != self.generation
+                    or self._strict_identity != self._global_identity()):
+                self._await_authority = None
+                return
+            if (data.get('scope') == 'xingji_3d' and data.get('ready') is True
+                    and data.get('seed_request_id') == self.active_request_id
+                    and data.get('map_load_id') == self.current_map_load_id):
+                self._await_authority = None
+                self._publish_status('ready', 'complete', 1.,
+                    '三维精修和统一定位输出已确认；请预览路线后单独启动导航。',
+                    terminal=True, success=True, source_pose='refined',
+                    pose=waiting['pose'], metrics=waiting['metrics'], force=True)
+        except (ValueError, TypeError):
+            return
 
     def _request_callback(self, request):
         message = request.rough_pose
@@ -381,6 +448,10 @@ class RelocalizationCoordinator(Node):
                 request_id=requested_id, force=True)
             return
 
+        strict = (getattr(self, '_global_mode', '') == 'terrain_3d'
+                  and getattr(self, '_global_body', '') == 'xingji')
+        self._strict_identity = self._global_identity() if strict else None
+        self._await_authority = None
         self.active_request_map_name = requested_map_name
         self.active_request_id = requested_id
         self.active_request_is_automatic = requested_id.startswith(
@@ -540,6 +611,24 @@ class RelocalizationCoordinator(Node):
             or generation != self.generation
         ):
             return
+        if getattr(self, '_strict_identity', None) is not None:
+            status = getattr(self, '_global_status', {})
+            idle_ack = (status.get('initial_request_id') == self.active_request_id
+                        and status.get('matching') is False
+                        and status.get('scope') == 'xingji_3d'
+                        and status.get('map_load_id') == self.current_map_load_id
+                        and time.monotonic()-getattr(self, '_global_status_at', 0.) < .5)
+            if not idle_ack:
+                now = time.monotonic()
+                if self.server_wait_deadline is None:
+                    self.server_wait_deadline = now+self.action_server_wait
+                if now >= self.server_wait_deadline:
+                    self._fallback_or_fail(Relocalize.Result.CODE_TIMEOUT,
+                        '局部匹配未确认让出配准线程，未启动重叠精修；请检查统一定位状态')
+                else:
+                    self._publish_status('waiting', 'wait_local_tracker', .04,
+                        '正在等待局部三维匹配退出，再执行初始定位精修。', source_pose='rough')
+                return
         if not self.action_client.server_is_ready():
             if self.server_wait_deadline is None:
                 self.server_wait_deadline = (
@@ -557,6 +646,12 @@ class RelocalizationCoordinator(Node):
         goal.search_xy = float(self.search_xy)
         goal.search_yaw = float(self.search_yaw)
         goal.timeout_sec = float(self.relocalize_timeout)
+        strict = (getattr(self, '_global_mode', '') == 'terrain_3d'
+                  and getattr(self, '_global_body', '') == 'xingji')
+        self._strict_identity = self._global_identity() if strict else None
+        self._await_authority = None
+        goal.robust_validation = strict
+        goal.map_load_id = self.current_map_load_id if strict else ''
         # Consume this request before dispatch.  A replacement request may be
         # queued while send_goal_async is in flight, but this generation must
         # never be sent twice.
@@ -570,7 +665,9 @@ class RelocalizationCoordinator(Node):
         )
         self._publish_status(
             'refining', 'send_goal', 0.05,
-            f'正在对地图“{goal.map_name}”执行 NDT/GICP 自动精修。',
+            f'正在对地图“{goal.map_name}”执行 NDT/GICP 自动精修'
+            f'（位置 {self.search_xy:g} 米，朝向 ±{math.degrees(self.search_yaw):g}°，'
+            f'计算预算 {self.relocalize_timeout:g} 秒）。',
             source_pose='rough')
         try:
             future = self.action_client.send_goal_async(
@@ -743,6 +840,28 @@ class RelocalizationCoordinator(Node):
                 'correction_yaw_deg': round(
                     math.degrees(float(result.correction_yaw)), 2),
             }
+            if self._strict_identity is not None:
+                if (self._strict_identity != self._global_identity()
+                        or not result.candidate_verified
+                        or time.monotonic()-self._global_mode_at > 2.
+                        or time.monotonic()-self._global_body_at > 2.):
+                    self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
+                        '三维定位候选未确认或地图/本体身份已变化')
+                    return
+                if getattr(result, 'transform_model', '') != 'se3_map_odom_v1':
+                    self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
+                        '三维配准模型版本不匹配，请重建接口和icp_registration并重启后台')
+                    return
+                metrics['transform_model'] = result.transform_model
+                self._await_authority = dict(generation=self.generation,
+                    pose=copy.deepcopy(result.refined_pose), metrics=metrics,
+                    deadline=time.monotonic()+3.)
+                self._publishing_verified = True
+                self._publish_status('refined', 'validation_passed', .9,
+                    '多个三维候选已验证，正在确认唯一全局定位输出。',
+                    source_pose='refined', pose=result.refined_pose, metrics=metrics, force=True)
+                self._publishing_verified = False
+                return
             rough_pose = self._active_rough_pose()
             if rough_pose is None:
                 rough_pose = copy.deepcopy(result.refined_pose)
@@ -778,10 +897,10 @@ class RelocalizationCoordinator(Node):
         self.server_wait_deadline = None
         self._clear_action_deadline(self.generation)
         rough_pose = self._active_rough_pose()
-        if self.active_request_is_automatic:
+        if self.active_request_is_automatic or getattr(self, '_strict_identity', None) is not None:
             self._publish_status(
                 'failed', 'automatic_refinement_failed', 1.0,
-                f'自动三维重定位未通过，未采用异常前的旧位姿降级：{message}',
+                f'三维重定位未通过，未采用粗定位降级启动导航：{message}',
                 terminal=True, level='error', code=code, force=True)
             return
         if code in self.MAP_FAILURE_CODES or rough_pose is None:
@@ -968,6 +1087,11 @@ class RelocalizationCoordinator(Node):
 
     def _timer_callback(self):
         now = time.monotonic()
+        awaiting = getattr(self, '_await_authority', None)
+        if awaiting and now > awaiting['deadline']:
+            self._await_authority = None
+            self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
+                '统一三维定位输出未确认，请检查/localization/status，重新确认初始点')
         if (
             self.cancel_requested
             and self.cancel_wait_deadline is not None

@@ -3,20 +3,26 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>遥控 · 四足机器人导航</title>
-    <link rel="stylesheet" href="robot_ui.css?v=20260727-remote">
-    <script src="rosbridge_client.js?v=20260727-fragments"></script>
-    <script src="robot_ui_common.js?v=20260727-dog-status"></script>
+    <title>遥控 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260804-report-nav">
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <script src="robot_ui_common.js?v=20261022-web-preview"></script>
+    <script src="air_quality_widget.js?v=20260818-m701"></script>
 </head>
 <body>
 <div class="app-shell">
     <header class="topbar">
-        <div class="brand">四足机器人导航</div>
+        <div class="brand">四足机器人巡检</div>
         <nav class="page-nav" aria-label="功能页面">
             <a href="mapping.html">建图</a>
             <a href="map_editor.html">修图</a>
-            <a href="navigation.html">导航</a>
+            <a href="navigation.html">地形导航</a>
+            <a href="campus_navigation.html">园区导航</a>
+            <a href="inspection.html">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
             <a class="active" href="remote_control.html" aria-current="page">遥控</a>
+            <a href="camera.html">USB相机</a>
+            <a href="settings.html">设置</a>
         </nav>
         <div class="topbar-statuses">
             <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
@@ -26,12 +32,24 @@
 
     <main id="remote-workspace" class="remote-workspace remote-locked" data-lock-message="正在连接 ROS2…">
         <section class="remote-stage" aria-label="实时图像和移动控制">
-            <div class="video-card">
-                <img id="camera-stream"
-                     alt="机械狗实时摄像头图像">
-                <div id="video-status" class="video-badge">● 正在通过机器人主机连接相机</div>
+            <div class="remote-video-grid">
+                <div class="remote-video-panel">
+                    <h2>普通摄像头</h2>
+                    <div class="video-card">
+                        <img id="camera-stream" alt="普通摄像头实时图像（按设置页选择）">
+                        <div id="video-status" class="video-badge">● 正在连接普通摄像头</div>
+                    </div>
+                </div>
+                <div class="remote-video-panel">
+                    <h2>热成像</h2>
+                    <div class="video-card">
+                        <img id="thermal-stream" alt="USB热成像实时图像">
+                        <div id="thermal-video-status" class="video-badge">● 正在连接热成像</div>
+                    </div>
+                </div>
             </div>
 
+            <div class="remote-control-row">
             <section class="drive-panel">
                 <div class="drive-header">
                     <div>
@@ -58,6 +76,7 @@
                     <span aria-hidden="true"></span>
                 </div>
             </section>
+            </div>
         </section>
 
         <aside class="remote-panel">
@@ -75,6 +94,11 @@
                     <div id="card-hardware" class="status-card"><span class="label">硬件故障</span><span id="hardware-value" class="value">等待</span></div>
                 </div>
                 <div id="hardware-detail" class="hardware-detail">尚未收到硬件状态。</div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">环境传感器（M701）</div>
+                <div id="remote-air-quality" data-air-quality-widget aria-live="polite"></div>
             </section>
 
             <section class="section">
@@ -142,13 +166,16 @@
     'use strict';
 
     const UI = window.RobotUi;
-    function cameraProxyUrl() {
+    function cameraServiceOrigin() {
         let host = window.location.hostname || '192.168.66.103';
         if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
-        return `http://${host}:8081/camera`;
+        return `http://${host}:8766`;
     }
 
-    const VIDEO_URL = cameraProxyUrl();
+    const CAMERA_SERVICE_ORIGIN = cameraServiceOrigin();
+    const cameraApiUrl = path => `${CAMERA_SERVICE_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+    const VIDEO_URL = cameraApiUrl('/api/stream');
+    const THERMAL_VIDEO_URL = cameraApiUrl('/api/thermal/stream.mjpg');
     const MOVEMENT_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e']);
     const CUSTOM_KEYS = Object.freeze({ '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8 });
     const OFFICIAL_KEYS = Object.freeze({ b: 2, c: 5, f: 11, g: 13, j: 14, k: 15 });
@@ -170,13 +197,17 @@
     const speedLabel = document.getElementById('speed-label');
     const cameraStream = document.getElementById('camera-stream');
     const videoStatus = document.getElementById('video-status');
+    const thermalStream = document.getElementById('thermal-stream');
+    const thermalVideoStatus = document.getElementById('thermal-video-status');
 
     let session;
     let controlReady = false;
+    let specialActionsSupported = true;
     let speed = 0.5;
     let heartbeatTimer = null;
     let motionTimer = null;
     let videoRetryTimer = null;
+    let thermalVideoRetryTimer = null;
     let activationGeneration = 0;
     const movementKeys = new Set();
 
@@ -244,6 +275,11 @@
     }
 
     function sendCommand(command, extra) {
+        if (!specialActionsSupported && ['toggle_model', 'toggle_obstacle_stop',
+            'toggle_idle', 'custom_action', 'official_action'].includes(command)) {
+            log('当前钢镚本体尚未开放此功能。');
+            return false;
+        }
         if (!session || !session.connected) {
             log('ROS2 未连接，命令未发送。');
             return false;
@@ -355,8 +391,15 @@
     }
 
     function updateDogStatus(status) {
+        specialActionsSupported = status.capabilities?.special_actions !== false;
+        document.querySelectorAll('[data-custom-action], [data-official-action], #btn-model, #btn-obstacle, #btn-idle')
+            .forEach(button => {
+                button.disabled = !specialActionsSupported;
+                button.title = specialActionsSupported ? '' : '钢镚 ZSL-1 首版不支持此功能';
+            });
         const fresh = status.connected === true && status.stale !== true;
-        document.getElementById('dog-link').textContent = fresh ? '在线' : '状态失联';
+        const bodyName = status.body_id === 'gangben_zsl1' ? '钢镚 ZSL-1' : '星玑';
+        document.getElementById('dog-link').textContent = `${bodyName} · ${fresh ? '在线' : '状态失联'}`;
         updateCardState('card-dog-link', fresh ? 'good' : 'stale');
 
         const hasBattery = status.battery !== null
@@ -377,15 +420,19 @@
         let obstacleText = '未知';
         if (status.obstacle_stop_enabled === true) obstacleText = '已开启';
         if (status.obstacle_stop_enabled === false) obstacleText = '已关闭';
+        if (status.capabilities?.obstacle_stop === false) obstacleText = '不支持厂商停障开关';
         document.getElementById('obstacle-value').textContent = obstacleText;
         updateCardState('card-obstacle', !fresh ? 'stale' : status.obstacle_stop_enabled === false ? 'alert' : 'good');
 
         const hasFault = status.hardware_error === true;
-        document.getElementById('hardware-value').textContent = hasFault ? '有故障' : fresh ? '正常' : '状态未知';
+        const faultKnown = typeof status.hardware_error === 'boolean';
+        document.getElementById('hardware-value').textContent = hasFault ? '有故障' : fresh && faultKnown ? '正常' : '状态未知';
         updateCardState('card-hardware', hasFault ? 'alert' : fresh ? 'good' : 'stale');
         const failures = Array.isArray(status.hw_failures) ? status.hw_failures : [];
         document.getElementById('hardware-detail').textContent = hasFault
             ? `硬件错误值：${formatFailure(status.hardware_error_value)}\n${failures.map(formatFailure).join('\n') || '未返回细分故障项'}`
+            : fresh && !faultKnown
+                ? 'SDK 未提供完整硬件故障汇总；连接正常不代表已完成硬件自检。'
             : fresh
                 ? '未检测到硬件故障。'
                 : `状态链路已失联。UDP 查询已发送 ${status.queries_sent || 0} 次，`
@@ -396,7 +443,11 @@
         document.getElementById('btn-obstacle').classList.toggle('active', status.obstacle_stop_enabled === true);
         document.getElementById('btn-idle').classList.toggle('active', status.idle_mode_enabled === true);
         if (status.emergency_latched === true) {
-            document.getElementById('hardware-detail').textContent += '\n遥控急停已锁定：请确认安全后按 R 复位。';
+            const stopLabel = status.hardware_emergency_latched === true
+                ? '人工硬急停已锁定'
+                : status.hardware_emergency_latched === false
+                    ? '零速停车已锁定（未发送硬急停）' : '停车已锁定（停止类型未报告）';
+            document.getElementById('hardware-detail').textContent += `\n${stopLabel}：请确认安全后按 R 复位。`;
         }
         if (status.active_action) {
             document.getElementById('hardware-detail').textContent += `\n正在执行：${status.active_action}`;
@@ -418,11 +469,16 @@
             UI.setConnectionStatus(connectionStatus, connected, text);
             if (!connected) {
                 UI.setBatteryDisconnected(batteryStatus);
+                window.RobotAirQuality.setDisconnected(
+                    document.getElementById('remote-air-quality'),
+                    'ROS2 连接已断开，环境读数已清空。');
                 releaseRemoteSession('ROS2 已断开');
             }
         },
         onReady: async (activeSession) => {
             UI.subscribeDogStatus(activeSession, batteryStatus, updateDogStatus);
+            window.RobotAirQuality.bind(
+                activeSession, document.getElementById('remote-air-quality'));
             activeSession.subscribe('/dog_remote/events', UI.TYPES.string, handleRemoteEvent);
             await activateRemoteSession(activeSession);
         }
@@ -520,13 +576,38 @@
     window.addEventListener('blur', () => stopMotion(false));
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
+            stopVideoStreams();
             releaseRemoteSession('页面已转入后台');
-        } else if (session && session.connected) {
-            activateRemoteSession(session);
+        } else {
+            startVideoStreams();
+            if (session && session.connected) activateRemoteSession(session);
         }
     });
-    window.addEventListener('beforeunload', () => releaseRemoteSession('页面即将关闭'));
-    window.addEventListener('pagehide', () => releaseRemoteSession('页面已离开'));
+    window.addEventListener('beforeunload', () => {
+        stopVideoStreams();
+        releaseRemoteSession('页面即将关闭');
+    });
+    window.addEventListener('pagehide', () => {
+        stopVideoStreams();
+        releaseRemoteSession('页面已离开');
+    });
+
+    function stopVideoStreams() {
+        window.clearTimeout(videoRetryTimer);
+        window.clearTimeout(thermalVideoRetryTimer);
+        cameraStream.removeAttribute('src');
+        thermalStream.removeAttribute('src');
+    }
+
+    function startVideoStreams() {
+        if (!UI.previewAllowed('ordinary')) videoStatus.textContent = '普通预览已暂停；右上角可切换';
+        if (!UI.previewAllowed('thermal')) thermalVideoStatus.textContent = '热图预览已暂停（5G默认单路）；测温仍运行';
+        if (UI.previewAllowed('ordinary') && !cameraStream.getAttribute('src')) cameraStream.src = UI.previewUrl(`${VIDEO_URL}?t=${Date.now()}`);
+        if (UI.previewAllowed('thermal') && !thermalStream.getAttribute('src')) thermalStream.src = UI.previewUrl(`${THERMAL_VIDEO_URL}?t=${Date.now()}`);
+    }
+
+    UI.previewControls();
+    window.addEventListener('robot-preview-change', () => { stopVideoStreams(); startVideoStreams(); });
 
     cameraStream.addEventListener('load', () => {
         videoStatus.textContent = '● 实时图像已连接';
@@ -534,16 +615,47 @@
         if (videoRetryTimer) window.clearTimeout(videoRetryTimer);
     });
     cameraStream.addEventListener('error', () => {
-        videoStatus.textContent = '○ 图像连接失败，正在重试…';
+        videoStatus.textContent = '○ 图像连接失败，正在重试；请关闭多余视频页面';
         videoStatus.classList.add('error');
         if (videoRetryTimer) window.clearTimeout(videoRetryTimer);
         videoRetryTimer = window.setTimeout(() => {
-            cameraStream.src = `${VIDEO_URL}?retry=${Date.now()}`;
+            if (UI.previewAllowed('ordinary')) cameraStream.src = UI.previewUrl(`${VIDEO_URL}?retry=${Date.now()}`);
         }, 2000);
     });
+    thermalStream.addEventListener('load', () => {
+        thermalVideoStatus.textContent = '● 热成像已连接';
+        thermalVideoStatus.classList.remove('error');
+        window.clearTimeout(thermalVideoRetryTimer);
+    });
+    thermalStream.addEventListener('error', () => {
+        thermalVideoStatus.textContent = '○ 热成像暂不可用；普通摄像头和遥控不受影响，正在重试';
+        thermalVideoStatus.classList.add('error');
+        window.clearTimeout(thermalVideoRetryTimer);
+        thermalVideoRetryTimer = window.setTimeout(() => {
+            if (UI.previewAllowed('thermal')) thermalStream.src = UI.previewUrl(`${THERMAL_VIDEO_URL}?retry=${Date.now()}`);
+        }, 2200);
+    });
+
+    async function refreshThermalBadge() {
+        if (document.hidden) return;
+        try {
+            const response = await fetch(cameraApiUrl('/api/thermal/status'), {cache:'no-store'});
+            const thermal = await response.json();
+            if (!response.ok) throw new Error(thermal.error || `HTTP ${response.status}`);
+            thermalVideoStatus.textContent = Number.isFinite(Number(thermal.max_temperature_c))
+                ? `● 最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃ · ${thermal.alarm_active ? '高温报警' : '监测正常'}`
+                : '● 热成像已连接，等待有效温度';
+            thermalVideoStatus.classList.toggle('error', Boolean(thermal.alarm_active));
+        } catch (error) {
+            thermalVideoStatus.textContent = `○ 热成像状态不可用：${error.message}`;
+            thermalVideoStatus.classList.add('error');
+        }
+    }
 
     setSpeed(0.5);
-    cameraStream.src = VIDEO_URL;
+    startVideoStreams();
+    refreshThermalBadge();
+    window.setInterval(refreshThermalBadge, 2000);
     log('遥控页面已加载，正在连接 ROS2，并准备停止建图/导航核心节点。');
     log('遥控控制与状态桥接采用纯 UDP/JSON 协议。');
     session.connect();

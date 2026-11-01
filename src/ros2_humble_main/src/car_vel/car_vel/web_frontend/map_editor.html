@@ -3,20 +3,42 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>修图 · 四足机器人导航</title>
-    <link rel="stylesheet" href="robot_ui.css">
-    <script src="rosbridge_client.js?v=20260727-fragments"></script>
-    <script src="robot_ui_common.js?v=20260727-dog-status"></script>
+    <title>修图 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20260804-report-nav">
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <script src="robot_ui_common.js?v=20261023-cloud-brush"></script>
+    <script src="pointcloud_viewer.js?v=20261023-edit-colors"></script>
+    <script src="map_cloud_edit_ui.js?v=20261023-linked-brush"></script>
+    <style>
+        .cloud-edit-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .cloud-edit-fields input { min-width:0; width:100%; }
+        .cloud-preview-frame { height:200px; position:relative; background:#070c17; margin:6px 0 12px; overflow:hidden; }
+        .cloud-preview-frame canvas { width:100%; height:100%; display:block; touch-action:none; }
+        #cloud-edit-preview[hidden] { display:none; }
+        .cloud-edit-confirmation { display:flex; gap:8px; font-size:12px; line-height:1.6; }
+        .cloud-edit-confirmation input { flex:0 0 auto; width:auto; }
+        @media (min-width:901px) {
+            .map-editor-app { height:100dvh; min-height:0; overflow:hidden; }
+            .map-editor-app .workspace { overflow:hidden; }
+            .map-editor-app .map-wrapper { min-height:0; }
+            .map-editor-app .panel { height:100%; max-height:100%; }
+        }
+    </style>
 </head>
 <body>
-<div class="app-shell">
+<div class="app-shell map-editor-app">
     <header class="topbar">
-        <div class="brand">四足机器人导航</div>
+        <div class="brand">四足机器人巡检</div>
         <nav class="page-nav" aria-label="功能页面">
             <a href="mapping.html">建图</a>
             <a class="active" href="map_editor.html" aria-current="page">修图</a>
-            <a href="navigation.html">导航</a>
+            <a href="navigation.html">地形导航</a>
+            <a href="campus_navigation.html">园区导航</a>
+            <a href="inspection.html">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
             <a href="remote_control.html">遥控</a>
+            <a href="camera.html">USB相机</a>
+            <a href="settings.html">设置</a>
         </nav>
         <div class="topbar-statuses">
             <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
@@ -37,7 +59,7 @@
 
         <aside class="panel">
             <h1>修图</h1>
-            <p class="subtitle">此页面仅编辑 <code>maps/</code> 中已保存地图的 PGM 文件。进入页面会停止建图/导航核心节点，避免编辑过程影响机器人。</p>
+            <p class="subtitle">普通画笔只改二维 PGM；可选联动擦除三维误障碍并保留地面。进入页面会停止建图/导航核心节点。</p>
 
             <section class="section">
                 <div class="section-title">选择地图</div>
@@ -84,6 +106,31 @@
                 <p class="hint">覆盖保存会直接更新所选地图的 PGM；YAML 中的分辨率和原点参数保持不变。</p>
             </section>
 
+            <section class="section" aria-label="三维误障碍清理">
+                <div class="section-title">二维＋三维联动擦除（可选）</div>
+                <label class="cloud-edit-confirmation"><input id="cloud-edit-enabled" type="checkbox">开启联动擦除，使用上方画笔/矩形累积选区</label>
+                <label class="hint">清理范围<select id="cloud-edit-scope" aria-label="三维清理范围"><option value="black">联动擦除：仅原二维黑格（推荐）</option><option value="region">原三维工具：整个选区</option></select></label>
+                <p class="hint">联动模式仅原二维黑格参与，原三维工具按整个选区处理。均只删可信平缓实测地面上指定相对高度点；地面不明、明显台阶/陡坡保护。联动模式下只有地面的误黑格可只改二维，地面点保留。不是同一XY整列清空，未知格不强制变白。</p>
+                <div class="row"><button id="btn-cloud-undo" class="flex" type="button" disabled>撤销一笔选区</button><button id="btn-cloud-clear" class="flex" type="button" disabled>清空联动选区</button></div>
+                <div class="cloud-edit-fields">
+                    <label>相对地面下限（m）<input id="cloud-edit-min" type="number" min="0.15" max="2.99" step="0.05" value="0.15"></label>
+                    <label>相对地面上限（m）<input id="cloud-edit-max" type="number" min="0.2" max="3" step="0.05" value="0.8"></label>
+                </div>
+                <button id="btn-cloud-preview" type="button" class="primary" style="margin-top:10px" disabled>预览待删除点（不保存）</button>
+                <p id="cloud-edit-summary" class="hint" aria-live="polite">开启联动后，用画笔或矩形累积选区；预览确认前不修改地图。</p>
+                <p id="cloud-edit-reasons" class="hint" aria-live="polite"></p>
+                <div id="cloud-edit-preview" hidden>
+                    <strong style="color:#ff6377">待删除点（红色）</strong>
+                    <div id="cloud-removed-wrapper" class="cloud-preview-frame"><canvas id="cloud-removed-canvas" aria-label="待删除点预览"></canvas></div>
+                    <strong style="color:#52cfff">全部保留点（含地面及高度范围外，蓝色）</strong>
+                    <div id="cloud-kept-wrapper" class="cloud-preview-frame"><canvas id="cloud-kept-canvas" aria-label="保留点预览"></canvas></div>
+                </div>
+                <label class="cloud-edit-confirmation"><input id="cloud-edit-confirm" type="checkbox">已核对待删点及二维黑格确为误障碍；理解修改会影响定位，保存后重新加载地图、定位并预览路线。</label>
+                <div class="row" style="margin-top:10px">
+                    <button id="btn-cloud-commit" type="button" class="warning flex" disabled>确认清理并备份</button>
+                    <button id="btn-cloud-restore" type="button" class="flex" disabled>恢复最近三维清理</button>
+                </div>
+            </section>
             <section class="section">
                 <div class="section-title">运行日志</div>
                 <div id="log-area" class="log-area" aria-live="polite"></div>
@@ -114,31 +161,46 @@
     let activeTool = 'obstacle';
     let activeShape = 'brush';
     let serviceBusy = false;
+    let coreStopped = false;
+    const cloudEdit = new window.MapCloudEditUi({
+        canvas:mapCanvas, log, session:()=>session,
+        mapName:()=>selectedMap() === editingMapName ? editingMapName : '',
+        dirty:()=>editDirty, busy:()=>serviceBusy, stopped:()=>coreStopped,
+        setBusy:value=>{serviceBusy=value;configureCanvasEditor();},
+        configure:()=>configureCanvasEditor(), refresh:()=>openSelectedMap(),
+        selectionChanged:()=>updateEditorUi()
+    });
 
     function selectedMap() { return document.getElementById('map-selector').value; }
     function activeToolInfo() { return tools[activeTool]; }
 
     function updateEditorUi() {
+        document.getElementById('map-selector').disabled = serviceBusy;
         document.getElementById('editing-map-display').textContent = editingMapName || '未打开';
-        document.getElementById('edit-status-display').textContent = editingMapName ? (editDirty ? '未保存' : '已保存') : '等待';
+        document.getElementById('edit-status-display').textContent = editingMapName ? (editDirty ? '未保存' : cloudEdit.cells.length ? '联动待预览/保存' : '已保存') : '等待';
         document.getElementById('btn-open-map').disabled = serviceBusy;
         document.getElementById('btn-refresh-maps').disabled = serviceBusy;
         document.getElementById('map-selector').disabled = serviceBusy;
-        document.getElementById('btn-undo').disabled = !editingMapName || serviceBusy;
-        document.getElementById('btn-save-edits').disabled = !editingMapName || serviceBusy;
-        document.getElementById('btn-tool-obstacle').classList.toggle('tool-active', activeTool === 'obstacle');
-        document.getElementById('btn-tool-free').classList.toggle('tool-active', activeTool === 'free');
-        document.getElementById('btn-tool-unknown').classList.toggle('tool-active', activeTool === 'unknown');
+        document.getElementById('btn-undo').disabled = !editingMapName || serviceBusy || cloudEdit.enabled;
+        document.getElementById('btn-save-edits').disabled = !editingMapName || serviceBusy || cloudEdit.enabled;
+        document.getElementById('btn-tool-obstacle').classList.toggle('tool-active', !cloudEdit.enabled && activeTool === 'obstacle');
+        document.getElementById('btn-tool-free').classList.toggle('tool-active', cloudEdit.enabled || activeTool === 'free');
+        document.getElementById('btn-tool-unknown').classList.toggle('tool-active', !cloudEdit.enabled && activeTool === 'unknown');
         document.getElementById('btn-shape-brush').classList.toggle('choice-active', activeShape === 'brush');
         document.getElementById('btn-shape-rectangle').classList.toggle('choice-active', activeShape === 'rectangle');
-        overlay.textContent = editingMapName
+        for (const id of ['btn-tool-obstacle','btn-tool-free','btn-tool-unknown']) {
+            document.getElementById(id).disabled = serviceBusy || cloudEdit.enabled;
+        }
+        for (const id of ['btn-shape-brush','btn-shape-rectangle','brush-radius']) document.getElementById(id).disabled = serviceBusy;
+        overlay.textContent = cloudEdit.enabled ? '联动擦除：画笔/矩形累积选区（黄色格），预览确认后才保存；地面保留。' : editingMapName
             ? `当前工具：${activeToolInfo().label} / ${activeShape === 'brush' ? '画笔拖拽' : '矩形框选'}。左键编辑，右键拖拽平移，滚轮缩放。`
             : '请先在右侧选择并打开一张已保存的 PGM + YAML 地图。';
         overlay.classList.toggle('blocked', !editingMapName);
     }
 
     function configureCanvasEditor() {
-        if (!editingMapName || serviceBusy) {
+        cloudEdit.update();
+        if (!editingMapName || serviceBusy || (cloudEdit.enabled && !coreStopped)) {
             mapCanvas.setEditorInteraction(null);
             updateEditorUi();
             return;
@@ -146,8 +208,8 @@
         mapCanvas.setEditorInteraction({
             shape: activeShape,
             brushRadius: Number(document.getElementById('brush-radius').value),
-            onPreview: (cells) => mapCanvas.applyOccupancyCells(cells, activeToolInfo().occupancyValue),
-            onCommit: commitEditOperation
+            onPreview: (cells) => {if (!cloudEdit.enabled) mapCanvas.applyOccupancyCells(cells, activeToolInfo().occupancyValue);},
+            onCommit: (cells) => {if (cloudEdit.enabled) {cloudEdit.select(cells);updateEditorUi();} else commitEditOperation(cells);}
         });
         updateEditorUi();
     }
@@ -166,13 +228,15 @@
     }
 
     async function stopRobotModes() {
+        coreStopped = false;
         if (!session || !session.connected) return;
         document.getElementById('system-status-display').textContent = '停止中';
         try {
             const result = await session.call('/control_launch', UI.TYPES.controlLaunch, {
                 action: 'stop', package_name: 'car_vel', launch_type: 'all'
-            });
+            }, 120000);
             if (!result.success) throw new Error(result.message || '停止请求未成功');
+            coreStopped = true;
             document.getElementById('system-status-display').textContent = '已停止';
             log(`建图/导航核心节点已停止：${result.message || '成功'}`);
         } catch (error) {
@@ -209,13 +273,17 @@
         }
         const mapName = selectedMap();
         if (!mapName) { log('请先选择一张已保存地图。'); return; }
+        if (cloudEdit.cells.length && !window.confirm('重新打开地图会清空未保存的联动选区，是否继续？')) return;
         if (editDirty && mapName !== editingMapName && !window.confirm('当前修图尚未保存，确定放弃这些修改并打开另一张地图吗？')) return;
         serviceBusy = true;
         configureCanvasEditor();
         try {
-            const result = await session.call('/get_edited_map', UI.TYPES.editedMap, { map_name: mapName });
+            const result = await session.call(
+                '/get_edited_map', UI.TYPES.editedMap,
+                { map_name: mapName }, 60000);
             if (!result.success) throw new Error(result.message || '读取修图地图失败');
             editingMapName = mapName;
+            cloudEdit.reset();
             editDirty = Boolean(result.has_changes);
             mapCanvas.setMap(mapInfoFromResponse(result), result.image_data, { reset: true });
             log(`已打开地图“${mapName}”${result.has_changes ? '（恢复了未保存编辑）' : ''}。`);
@@ -261,7 +329,9 @@
             const result = await session.call('/undo_map_edits', UI.TYPES.switchMap, { map_name: editingMapName });
             if (!result.success) throw new Error(result.message || '没有可撤销的修改');
             log(`已撤销上一步：${result.message || '成功'}`);
-            const refreshed = await session.call('/get_edited_map', UI.TYPES.editedMap, { map_name: editingMapName });
+            const refreshed = await session.call(
+                '/get_edited_map', UI.TYPES.editedMap,
+                { map_name: editingMapName }, 60000);
             if (!refreshed.success) throw new Error(refreshed.message || '刷新编辑图失败');
             editDirty = Boolean(refreshed.has_changes);
             mapCanvas.setMap(mapInfoFromResponse(refreshed), refreshed.image_data, { reset: false });
@@ -278,7 +348,9 @@
         serviceBusy = true;
         configureCanvasEditor();
         try {
-            const result = await session.call('/save_edited_maps', UI.TYPES.switchMap, { map_name: editingMapName });
+            const result = await session.call(
+                '/save_edited_maps', UI.TYPES.switchMap,
+                { map_name: editingMapName }, 60000);
             if (!result.success) throw new Error(result.message || '保存修图失败');
             editDirty = false;
             log(`地图“${editingMapName}”已覆盖保存：${result.message || '成功'}`);
@@ -294,7 +366,7 @@
         log,
         onState: (connected, text) => {
             UI.setConnectionStatus(connectionStatus, connected, text);
-            if (!connected) UI.setBatteryDisconnected(batteryStatus);
+            if (!connected) {coreStopped=false;cloudEdit.invalidate();UI.setBatteryDisconnected(batteryStatus);}
         },
         onReady: async (activeSession) => {
             UI.subscribeDogStatus(activeSession, batteryStatus);
@@ -305,6 +377,12 @@
 
     document.getElementById('btn-refresh-maps').addEventListener('click', () => refreshMaps());
     document.getElementById('btn-open-map').addEventListener('click', openSelectedMap);
+    document.getElementById('map-selector').addEventListener('change',()=>{
+        if (cloudEdit.cells.length && !window.confirm('切换地图会清空未保存的联动选区，是否继续？')) {
+            document.getElementById('map-selector').value=editingMapName; return;
+        }
+        cloudEdit.reset();cloudEdit.update();
+    });
     document.getElementById('btn-tool-obstacle').addEventListener('click', () => { activeTool = 'obstacle'; configureCanvasEditor(); });
     document.getElementById('btn-tool-free').addEventListener('click', () => { activeTool = 'free'; configureCanvasEditor(); });
     document.getElementById('btn-tool-unknown').addEventListener('click', () => { activeTool = 'unknown'; configureCanvasEditor(); });
@@ -317,7 +395,7 @@
     document.getElementById('btn-undo').addEventListener('click', undoLastEdit);
     document.getElementById('btn-save-edits').addEventListener('click', saveEdits);
     window.addEventListener('beforeunload', (event) => {
-        if (editDirty) {
+        if (editDirty || cloudEdit.cells.length) {
             event.preventDefault();
             event.returnValue = '';
         }

@@ -42,7 +42,7 @@ def generate_launch_description():
     container_name_full = (namespace, '/', container_name)
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
-    map_yaml_path = LaunchConfiguration('map')  # 添加这行
+    map_yaml_path = LaunchConfiguration('map')
     lifecycle_nodes = [
                        'map_server',
                        'controller_server',
@@ -66,13 +66,16 @@ def generate_launch_description():
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
         'map',
-        default_value=os.path.join(bringup_dir, 'maps', 'map.yaml'),
-        description='Full path to map yaml file to load')
+        default_value='',
+        description=(
+            'Optional full path to a map yaml file. Leave empty to start '
+            'map_server without a map and load one later through /switch_map.'))
 
     # Create our own temporary YAML files that include substitutions
     param_substitutions = {
         'use_sim_time': use_sim_time,
-        'autostart': autostart}
+        'autostart': autostart,
+        'yaml_filename': map_yaml_path}
 
     configured_params = ParameterFile(
         RewrittenYaml(
@@ -130,8 +133,7 @@ def generate_launch_description():
                 output='screen',
                 respawn=use_respawn,
                 respawn_delay=2.0,
-                # map_file_path=LaunchConfiguration('map_yaml_path'),
-                parameters=[ configured_params],
+                parameters=[configured_params],
                 arguments=['--ros-args', '--log-level', log_level],
                 remappings=remappings),
             Node(
@@ -208,8 +210,8 @@ def generate_launch_description():
                 respawn_delay=2.0,
                 parameters=[configured_params],
                 arguments=['--ros-args', '--log-level', log_level],
-                # remappings=remappings +[('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'cmd_vel')]
-                ),  
+                remappings=remappings + [('cmd_vel_smoothed', 'cmd_vel_nav')]
+                ),
             Node(
                 package='nav2_lifecycle_manager',
                 executable='lifecycle_manager',
@@ -350,7 +352,7 @@ def generate_launch_description():
     ld.add_action(declare_container_name_cmd)
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
-    ld.add_action(declare_map_yaml_cmd)  # Ensure the 'map' launch argument is declared
+    ld.add_action(declare_map_yaml_cmd)
     # add terrain analysis
     # ld.add_action(start_terrain_analysis)
     # ld.add_action(start_terrain_analysis_ext)

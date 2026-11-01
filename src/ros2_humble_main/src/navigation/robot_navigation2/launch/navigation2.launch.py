@@ -1,150 +1,47 @@
 import os
-import launch
-import launch_ros
-import yaml
+
 from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 
 
-
-
-
-def get_map_path_from_yaml():
-    """从nav2_params.yaml中读取地图路径"""
-    fishbot_navigation2_dir = get_package_share_directory('robot_navigation2')
-    params_file = os.path.join(fishbot_navigation2_dir, 'config', 'nav2_params.yaml')
-    
-    try:
-        with open(params_file, 'r') as file:
-            config = yaml.safe_load(file)
-            # 从map_server配置中获取yaml_filename
-            map_path = config.get('map_server', {}).get('ros__parameters', {}).get('yaml_filename', '')
-            return map_path
-    except Exception as e:
-        print(f"读取YAML配置文件失败: {e}")
-        # 返回默认路径
-        return os.path.join(fishbot_navigation2_dir, 'maps', 'map.yaml')
-#因为
 def generate_launch_description():
-    fishbot_navigation2_dir = get_package_share_directory('robot_navigation2')
+    robot_navigation_dir = get_package_share_directory('robot_navigation2')
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
-    rviz_config_dir = os.path.join(nav2_bringup_dir, 'rviz', 'nav2_default_view.rviz')
 
-    use_sim_time = launch.substitutions.LaunchConfiguration('use_sim_time', default='False')
-    nav2_param_path = launch.substitutions.LaunchConfiguration(
-        'params_file',
-        default=os.path.join(fishbot_navigation2_dir, 'config', 'nav2_params.yaml'))
-    map_yaml_path = launch.substitutions.LaunchConfiguration(
-        'map',
-        default=get_map_path_from_yaml())
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    params_file = LaunchConfiguration('params_file')
+    map_yaml_path = LaunchConfiguration('map')
 
-    return launch.LaunchDescription([
-        launch.actions.DeclareLaunchArgument(
+    return LaunchDescription([
+        DeclareLaunchArgument(
             'use_sim_time',
-            default_value=use_sim_time,
-            description='Use simulation (Gazebo) clock if true'
+            default_value='false',
+            description='Use simulation clock if true',
         ),
-        launch.actions.DeclareLaunchArgument(
+        DeclareLaunchArgument(
             'params_file',
-            default_value=nav2_param_path,
-            description='Full path to param file to load'
+            default_value=os.path.join(
+                robot_navigation_dir, 'config', 'nav2_params.yaml'),
+            description='Full path to the Nav2 parameter file',
         ),
-        launch.actions.DeclareLaunchArgument(
+        DeclareLaunchArgument(
             'map',
-            default_value=map_yaml_path,
-            description='Full path to map yaml file to load'
+            default_value='',
+            description=(
+                'Optional map yaml path. Leave empty until /switch_map '
+                'loads a user-selected map.'),
         ),
-
-
-        launch.actions.IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                [nav2_bringup_dir, '/launch', '/bringup_launch.py']),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                nav2_bringup_dir, 'launch', 'bringup_launch.py')),
             launch_arguments={
                 'use_sim_time': use_sim_time,
-                'params_file': nav2_param_path,
-                'map': map_yaml_path,                  
-                'use_map_topic': 'false'     
+                'params_file': params_file,
+                'map': map_yaml_path,
+                'use_map_topic': 'false',
             }.items(),
         ),
-
-
-    #     launch.actions.IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(os.path.join(
-    #         fishbot_navigation2_dir,'launch','navigation.launch.py'
-    #         ),
-    #     ),        
-    #     launch_arguments={
-    #             'use_sim_time': use_sim_time,
-    #             'params_file': nav2_param_path,
-    #             'map': map_yaml_path,                  
-    #             'use_map_topic': 'false'     
-    #         }.items(),
-    # )
-
-        # launch_ros.actions.Node(
-        #     package='rviz2',
-        #     executable='rviz2',
-        #     name='rviz2',
-        #     arguments=['-d', rviz_config_dir],
-        #     parameters=[{'use_sim_time': use_sim_time}],
-        #     output='screen'),
-
-        # launch_ros.actions.Node(
-        #     package='car_vel',
-        #     executable='car_vel',
-        #     name='car_vel',
-        #     parameters=[{'use_sim_time': use_sim_time}],
-        #     output='screen'),
-
     ])
-
-
-# import os
-# import launch
-# import launch_ros
-# from ament_index_python.packages import get_package_share_directory
-# from launch.launch_description_sources import PythonLaunchDescriptionSource
-
-
-# def generate_launch_description():
-#     # 获取与拼接默认路径
-#     fishbot_navigation2_dir = get_package_share_directory(
-#         'robot_navigation2')
-#     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
-#     rviz_config_dir = os.path.join(
-#         nav2_bringup_dir, 'rviz', 'nav2_default_view.rviz')
-    
-#     # 创建 Launch 配置
-#     use_sim_time = launch.substitutions.LaunchConfiguration(
-#         'use_sim_time', default='False')
-#     map_yaml_path = launch.substitutions.LaunchConfiguration(
-#         'map', default=os.path.join(fishbot_navigation2_dir, 'maps', 'map.yaml'))
-#     nav2_param_path = launch.substitutions.LaunchConfiguration(
-#         'params_file', default=os.path.join(fishbot_navigation2_dir, 'config', 'nav2_params.yaml'))
-
-#     return launch.LaunchDescription([
-#         # 声明新的 Launch 参数
-#         launch.actions.DeclareLaunchArgument('use_sim_time', default_value=use_sim_time,
-#                                              description='Use simulation (Gazebo) clock if true'),
-#         launch.actions.DeclareLaunchArgument('map', default_value=map_yaml_path,
-#                                              description='Full path to map file to load'),
-#         launch.actions.DeclareLaunchArgument('params_file', default_value=nav2_param_path,
-#                                              description='Full path to param file to load'),
-
-#         launch.actions.IncludeLaunchDescription(
-#             PythonLaunchDescriptionSource(
-#                 [nav2_bringup_dir, '/launch', '/bringup_launch.py']),
-#             # 使用 Launch 参数替换原有参数
-#             launch_arguments={
-#                 'map': map_yaml_path,
-#                 'use_sim_time': use_sim_time,
-#                 'params_file': nav2_param_path}.items(),
-#         ),
-#         launch_ros.actions.Node(
-#             package='rviz2',
-#             executable='rviz2',
-#             name='rviz2',
-#             arguments=['-d', rviz_config_dir],
-#             parameters=[{'use_sim_time': use_sim_time}],
-#             output='screen'),
-#     ])

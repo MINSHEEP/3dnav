@@ -62,8 +62,15 @@ class RouteDatabase:
                     name TEXT NOT NULL,
                     x REAL NOT NULL,
                     y REAL NOT NULL,
+                    z REAL NOT NULL DEFAULT 0.0,
                     yaw REAL NOT NULL,
                     dwell_seconds REAL NOT NULL DEFAULT 0.0,
+                    area_id TEXT NOT NULL DEFAULT '',
+                    floor_id TEXT NOT NULL DEFAULT '',
+                    terrain_type TEXT NOT NULL DEFAULT 'flat',
+                    traversal_mode TEXT NOT NULL DEFAULT 'normal',
+                    transition_id TEXT NOT NULL DEFAULT '',
+                    speed_limit_mps REAL NOT NULL DEFAULT 0.0,
                     FOREIGN KEY(route_id) REFERENCES routes(id)
                         ON DELETE CASCADE,
                     UNIQUE(route_id, sequence)
@@ -74,6 +81,28 @@ class RouteDatabase:
                 CREATE INDEX IF NOT EXISTS idx_route_points_route
                     ON route_points(route_id, sequence);
                 ''')
+            # Existing installations predate campus/floor/terrain fields.
+            # Additive migration preserves every saved route and lets old Web
+            # clients continue to provide only x/y/yaw/dwell.
+            columns = {
+                str(row['name'])
+                for row in connection.execute(
+                    'PRAGMA table_info(route_points)').fetchall()
+            }
+            additions = {
+                'z': "REAL NOT NULL DEFAULT 0.0",
+                'area_id': "TEXT NOT NULL DEFAULT ''",
+                'floor_id': "TEXT NOT NULL DEFAULT ''",
+                'terrain_type': "TEXT NOT NULL DEFAULT 'flat'",
+                'traversal_mode': "TEXT NOT NULL DEFAULT 'normal'",
+                'transition_id': "TEXT NOT NULL DEFAULT ''",
+                'speed_limit_mps': "REAL NOT NULL DEFAULT 0.0",
+            }
+            for name, declaration in additions.items():
+                if name not in columns:
+                    connection.execute(
+                        f'ALTER TABLE route_points ADD COLUMN '
+                        f'{name} {declaration}')
 
     @staticmethod
     def _point_from_row(row: sqlite3.Row) -> Dict:
@@ -83,15 +112,24 @@ class RouteDatabase:
             'name': str(row['name']),
             'x': float(row['x']),
             'y': float(row['y']),
+            'z': float(row['z']),
             'yaw': float(row['yaw']),
             'dwell_seconds': float(row['dwell_seconds']),
+            'area_id': str(row['area_id']),
+            'floor_id': str(row['floor_id']),
+            'terrain_type': str(row['terrain_type']),
+            'traversal_mode': str(row['traversal_mode']),
+            'transition_id': str(row['transition_id']),
+            'speed_limit_mps': float(row['speed_limit_mps']),
         }
 
     def _points_for_route(
             self, connection: sqlite3.Connection, route_id: int) -> List[Dict]:
         rows = connection.execute(
             '''
-            SELECT id, sequence, name, x, y, yaw, dwell_seconds
+            SELECT id, sequence, name, x, y, z, yaw, dwell_seconds,
+                   area_id, floor_id, terrain_type, traversal_mode,
+                   transition_id, speed_limit_mps
             FROM route_points
             WHERE route_id = ?
             ORDER BY sequence
@@ -170,8 +208,10 @@ class RouteDatabase:
                 connection.executemany(
                     '''
                     INSERT INTO route_points(
-                        route_id, sequence, name, x, y, yaw, dwell_seconds)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        route_id, sequence, name, x, y, z, yaw, dwell_seconds,
+                        area_id, floor_id, terrain_type, traversal_mode,
+                        transition_id, speed_limit_mps)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     [
                         (
@@ -180,8 +220,15 @@ class RouteDatabase:
                             point['name'],
                             point['x'],
                             point['y'],
+                            point.get('z', 0.0),
                             point['yaw'],
                             point['dwell_seconds'],
+                            point.get('area_id', ''),
+                            point.get('floor_id', ''),
+                            point.get('terrain_type', 'flat'),
+                            point.get('traversal_mode', 'normal'),
+                            point.get('transition_id', ''),
+                            point.get('speed_limit_mps', 0.0),
                         )
                         for index, point in enumerate(points)
                     ],

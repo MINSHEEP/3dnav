@@ -1,0 +1,9 @@
+string filters_json
+int32 limit
+int32 offset
+---
+bool success
+string message
+string reports_json
+string summary_json
+int32 total

@@ -18,6 +18,7 @@
 #include <rclcpp/subscription.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -39,11 +40,24 @@ namespace small_point_lio {
         std::shared_ptr<rclcpp::Subscription<sensor_msgs::msg::Imu>> imu_subsciber;
         std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odometry_publisher;
         std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_publisher;
+        std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>>
+            global_mapping_cloud_publisher;
         std::shared_ptr<rclcpp::Publisher<std_msgs::msg::String>> lio_health_publisher;
-        std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>> emergency_stop_publisher;
+        rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr interval_policy_subscription;
+        IntervalCompensationLease interval_policy;
+        std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>> motion_stop_publisher;
         std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>>
             clear_emergency_stop_publisher;
+        std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>>
+            recoverable_stop_publisher;
+        std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>>
+            recoverable_resume_publisher;
+        std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Bool>>
+            motion_pause_publisher;
+        std::mutex motion_pause_mutex;
+        bool motion_paused{true};
         rclcpp::TimerBase::SharedPtr lio_health_timer;
+        rclcpp::TimerBase::SharedPtr global_mapping_cloud_timer;
         std::string lio_health_payload;
         std::mutex lio_health_mutex;
         std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
@@ -97,6 +111,8 @@ namespace small_point_lio {
         ScanQualityRecoveryPolicy odometry_guard_scan_quality_policy{5.0};
 
         void publish_lio_health(const std::string &payload);
+        void set_motion_paused(bool paused);
+        void repeat_motion_pause_state();
         void publish_quarantined_sample_warning(
             const std::string &reason,
             int64_t consecutive_samples,

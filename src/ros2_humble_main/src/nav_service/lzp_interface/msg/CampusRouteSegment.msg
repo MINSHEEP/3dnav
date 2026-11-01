@@ -1,0 +1,13 @@
+string transition_id
+string source_area
+string target_area
+string map_name
+string floor_id
+lzp_interface/TerrainObservation observation
+lzp_interface/TerrainAssessment assessment
+float64 cost
+bool executable
+geometry_msgs/Pose source_pose
+geometry_msgs/Pose target_pose
+bool has_elevation_change
+float64 elevation_change_m

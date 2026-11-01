@@ -7,7 +7,7 @@
     <meta http-equiv="refresh" content="0; url=navigation.html" />
     <script>window.location.replace('navigation.html');</script>
     <title>机器人远程控制 - ROS2</title>
-    <script src="rosbridge_client.js?v=20260727-fragments"></script>
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family:'Segoe UI','Microsoft YaHei',sans-serif; background:#1a1a2e; color:#eee; height:100vh; overflow:hidden; }
@@ -172,7 +172,7 @@
         // ============================================================
         const ROSBRIDGE_URL = 'ws://localhost:9090';
         const MAP_TOPIC = '/map';
-        const AMCL_POSE_TOPIC = '/amcl_pose';
+        const AMCL_POSE_TOPIC = '/localization/navigation_pose';
         const GOAL_TOPIC = '/web_goal_pose';
         const CMD_VEL_TOPIC = '/cmd_vel';
         const MAX_LINEAR = 0.35;

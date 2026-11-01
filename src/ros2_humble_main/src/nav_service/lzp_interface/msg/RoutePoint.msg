@@ -3,5 +3,12 @@ int32 sequence
 string name
 float64 x
 float64 y
+float64 z
 float64 yaw
 float64 dwell_seconds
+string area_id
+string floor_id
+string terrain_type
+string traversal_mode
+string transition_id
+float64 speed_limit_mps

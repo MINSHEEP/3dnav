@@ -105,7 +105,7 @@ def done_cb(state, result):
                 "running": False,
                 "message": f"导航失败：{waypoints[current_index]['point_name']}"
             })
-            play(AudioSegment.from_file("/home/b2w/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/daohangshibai.wav"))
+            play(AudioSegment.from_file("/home/a/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/daohangshibai.wav"))
             return
 
         # 导航下一个点
@@ -121,7 +121,7 @@ def done_cb(state, result):
                 "message": "任务完成"
             })
             rospy.loginfo("任务完成")
-            play(AudioSegment.from_file("/home/b2w/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/renwuwancheng.wav"))
+            play(AudioSegment.from_file("/home/a/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/renwuwancheng.wav"))
 
 # 发送导航目标点
 def send_nav_goal_cb(point):
@@ -174,7 +174,7 @@ def stop_robot():
         })
 
     rospy.loginfo("机器人已停止。")
-    play(AudioSegment.from_file("/home/b2w/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/yiquxiaodaohang.wav"))
+    play(AudioSegment.from_file("/home/a/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/yiquxiaodaohang.wav"))
     return True
 
 
@@ -263,7 +263,7 @@ def send_point():
 
     # 启动第一个点
     send_nav_goal_cb(waypoints[0])
-    play(AudioSegment.from_file("/home/b2w/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/kaishidaohang.wav"))
+    play(AudioSegment.from_file("/home/a/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/audio/kaishidaohang.wav"))
 
     return jsonify({"success": True, "msg": "导航已开始", "points": points})
 
@@ -360,7 +360,7 @@ def speak_api():
 
 
 # 数据库地址
-DB_PATH = "/home/b2w/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/nav.db"
+DB_PATH = "/home/a/ws_livox/src/NEXTE_Sentry_Nav/sentry_nav/nav.db"
 
 '''
     数据库操作工具函数

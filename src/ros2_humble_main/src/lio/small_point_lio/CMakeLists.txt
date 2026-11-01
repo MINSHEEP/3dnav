@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.10)
 project(small_point_lio)
 
+# Installed deployment marker consumed by the launch manager.  This catches a
+# source tree that was updated without rebuilding the Small Point-LIO binary.
+set(SMALL_POINT_LIO_GLOBAL_MAPPING_CONTRACT
+    "global_mapping_cloud_filter_modes_v4")
+file(WRITE
+    "${CMAKE_CURRENT_BINARY_DIR}/global_mapping_contract.txt"
+    "${SMALL_POINT_LIO_GLOBAL_MAPPING_CONTRACT}\n")
+
 ## use c++20
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -115,6 +123,11 @@ rclcpp_components_register_node(${PROJECT_NAME}
     EXECUTABLE ${PROJECT_NAME}_node
 )
 
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/global_mapping_contract.txt"
+    DESTINATION share/${PROJECT_NAME}
+)
+
 #############
 ## Testing ##
 #############
@@ -136,6 +149,25 @@ if(BUILD_TESTING)
         test_odometry_guard_policy
         PRIVATE
         src
+    )
+
+    add_executable(test_interval_guard test/test_interval_guard.cpp)
+    target_include_directories(test_interval_guard PRIVATE src)
+    add_test(NAME test_interval_guard COMMAND test_interval_guard)
+
+    ament_add_gtest(
+        test_pointcloud_mapping
+        test/test_pointcloud_mapping.cpp
+    )
+    target_include_directories(
+        test_pointcloud_mapping
+        PRIVATE
+        src
+    )
+    target_link_libraries(
+        test_pointcloud_mapping
+        ${PROJECT_NAME}
+        Eigen3::Eigen
     )
 endif()
 

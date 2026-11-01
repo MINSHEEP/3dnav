@@ -1,0 +1,8 @@
+# list: no device I/O; test: one confirmed device; save: persist and reconnect.
+string operation
+string config_json
+uint64 expected_version
+---
+bool success
+string message
+string status_json
