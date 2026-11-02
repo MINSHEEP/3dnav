@@ -87,7 +87,7 @@ class BehaviorProcessTests(unittest.TestCase):
         self.assertTrue(status['ready'])
         self.assertEqual(status['branches']['fall']['label'], 'no_person')
         self.assertEqual(status['result']['environment'], {'PYTHONPATH':None,'PYTHONHOME':None,'LD_LIBRARY_PATH':None,'OMP_NUM_THREADS':'2'})
-        self.assertEqual(status['result']['enabled_branches'], {'fall':True, 'fight':True})
+        self.assertEqual(status['result']['enabled_branches'], {'fall':True, 'fight':True, 'smoking':True})
         self.assertEqual(self.service.frame()[0], b'annotated')
         self.service.stop()
         self.assertIsNotNone(process.poll())

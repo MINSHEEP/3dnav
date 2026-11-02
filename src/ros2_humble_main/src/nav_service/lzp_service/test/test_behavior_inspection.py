@@ -28,6 +28,26 @@ def sample(**changes):
 
 
 class BehaviorInspectionTests(unittest.TestCase):
+    def test_smoking_continuation_score_is_not_an_action_probability(self):
+        item = sample()
+        item.update(category='smoking', label='smoking', confidence=.4, scope='person', track_id=4,
+                    score_kind='temporally_associated_detection_score', measurement_type='associated_detection_score',
+                    prediction_stamp_ns=123456,
+                    evidence_details={'head_observable': True, 'hand_to_mouth': {
+                        'confirmed': True, 'detection': {'score': .4}, 'detection_stamp_ns': 123456,
+                        'strong_detection': {'score': .8}, 'short_occlusion': False}},
+                    evidence={'raw_image': 'smoking-raw.jpg', 'annotated_image': 'smoking-box.jpg'})
+        self.assertEqual(namespace['_confirmed_detections']([item]), [item])
+        fields = namespace['_alert_storage_fields'](item, {'raw_image': 'unrelated-yolo.jpg'})
+        self.assertEqual(fields['raw_image'], 'smoking-raw.jpg')
+        self.assertEqual(fields['measurement']['prediction_stamp_ns'], 123456)
+        self.assertEqual(fields['measurement']['evidence_details']['hand_to_mouth']['strong_detection']['score'], .8)
+        self.assertIn('非行为概率', namespace['_detection_summary'](item))
+        for changes in ({'scope': 'scene'}, {'score_kind': 'model_probability'},
+                        {'updated': False}, {'fresh': False}, {'evidence_details': {}},
+                        {'category': 'cigarettes'}):
+            self.assertEqual(namespace['_confirmed_detections']([dict(item, **changes)]), [])
+
     def test_fall_is_valid_without_probability(self):
         item = sample()
         self.assertEqual(namespace['_confirmed_detections']([item]), [item])

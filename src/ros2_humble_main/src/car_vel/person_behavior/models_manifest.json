@@ -76,8 +76,41 @@
           "sha256": "dbe539ea268db2534390942cfdf206e521f376f19e5415967a57f6a2ddfa3c90"
         }
       ]
+    },
+    {
+      "id": "smoking",
+      "url": "https://bj.bcebos.com/v1/paddledet/models/pipeline/ppyoloe_crn_s_80e_smoking_visdrone.zip",
+      "archive": "\u6a21\u578b\u4e0b\u8f7d/ppyoloe_crn_s_80e_smoking_visdrone.zip",
+      "archive_bytes": 27846181,
+      "archive_sha256": "81919c2730d77be8eaf845d43fadf2b252eaabc77fb0bea0c52b1d678c929fff",
+      "model_dir": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone",
+      "model_dirs": [
+        "output_inference/ppyoloe_crn_s_80e_smoking_visdrone"
+      ],
+      "files": [
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/infer_cfg.yml",
+          "bytes": 1117,
+          "sha256": "16577ec5a93a1f92cd6daea652cbb9597955b438cf0061d9e907d8de0bb34a81"
+        },
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdiparams.info",
+          "bytes": 29260,
+          "sha256": "9250995bbaae69053d7e7c37c0541da6c1b3d1a7c5b85c481a948c20ec84f158"
+        },
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdiparams",
+          "bytes": 29968179,
+          "sha256": "3136b301bc46098aa7fbe3511a6919cb885ca1c8f8070ec73ad573c05eac4db9"
+        },
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdmodel",
+          "bytes": 2406689,
+          "sha256": "e58d54a287d78a9fccd3d832853a6f778c3109a88abbc7d910c92002c7fc5428"
+        }
+      ]
     }
   ],
   "optimization_updated_at_utc": "2026-10-15T12:49:34.525110+00:00",
-  "bundled_scope": "Only the exported shared pose ONNX and fight model are deployed; source PT weight is provenance only."
+  "bundled_scope": "CPU shared pose, smoking PPYOLOE and fight ppTSM; no legacy MOT/HRNet/STGCN loaded."
 }

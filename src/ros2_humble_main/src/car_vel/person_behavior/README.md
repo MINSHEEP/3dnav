@@ -1,11 +1,18 @@
-# CPU fall/lying and scene fight runtime
+# CPU fall/lying, smoking and scene fight runtime
 
-The gateway owns the camera and feeds two independent CPU processes: one
-YOLOv8m pose ONNX session for person-level fall/lying rules and one PaddleVideo
-ppTSM model for scene-level fighting. Neither worker opens a camera or ROS node.
-Each process defaults to two CPU threads and loads only its own model. Smoking
-is not loaded, inferred or emitted. The combined direct CLI/self-check remains
-available; the gateway uses `--branch fall` and `--branch fight`.
+The gateway owns the camera and feeds two independent CPU processes. The pose
+worker shares one YOLOv8m-pose ONNX session between fall/lying rules and v4 smoking
+association, with a CPU PPYOLOE cigarette predictor. The independent fight worker
+loads ppTSM only. Neither opens a camera or ROS node; each defaults to two threads.
+Use `--branch pose` and `--branch fight`, with `--branches` selecting enabled
+models within that scope. Disabled predictors are not constructed. Switch changes
+restart only the affected owned worker. Existing two-switch settings migrate to
+smoking enabled. UI/inspection speech, reports and evidence use category `smoking`.
+
+Smoking uses the supplied v4 mouth/hand/near-face evidence with real source
+timestamps. Its score is an associated cigarette detector score, never an action
+probability. Short-occlusion/cached results may be shown but never issue new alarms.
+The old primary YOLO cigarette class is suppressed; shared fire/smoke weights stay.
 
 The gateway samples eight REAL frames on the capture clock for fighting, rather
 than sampling only frames surviving slow pose inference. A bounded ring retains
@@ -21,7 +28,7 @@ capture/window counts, model timings, expired-result counts and `preview_branch`
 The preview always belongs to ONE worker's exact inference frame. Scene results
 are never drawn on a different worker's pose frame. Inspection saves each
 branch's original/annotated evidence pair separately. Model failures are isolated
-to their branch and logged with the `[行为识别]` prefix.
+to their worker (fall/smoking share one worker) and logged with the `[行为识别]` prefix.
 
 ## Deployment
 
@@ -40,7 +47,7 @@ network access. `BEHAVIOR_HOME` may select another installation location; set
 the gateway's behavior Python path to its `venv/bin/python` afterward.
 
 The installer checks CPU dependency imports, then starts an owned worker with a
-90-second deadline to load both models and validate its CPU ready response. It
+90-second deadline to load all three models and validate its CPU ready response. It
 does not run a frame forward or measure inference throughput during installation.
 It prints optional `espeak-ng` (Chinese offline voice) and `ffmpeg` installation
 commands; neither is installed with automatic sudo.
@@ -63,7 +70,7 @@ followed by UTF-8 JSON. An `infer` request immediately appends exactly
 `payload_bytes` raw tightly packed uint8 BGR bytes:
 
 ```json
-{"op":"infer","request_id":1,"source_epoch":1,"stamp_ns":1000000000,"shape":[480,640,3],"payload_bytes":921600,"enabled_branches":{"fall":true,"fight":true}}
+{"op":"infer","request_id":1,"source_epoch":1,"stamp_ns":1000000000,"shape":[480,640,3],"payload_bytes":921600,"enabled_branches":{"fall":true,"fight":true,"smoking":true}}
 ```
 
 `enabled_branches` is optional. Configuration can disable a branch permanently;
@@ -130,7 +137,7 @@ return a nonzero status and retain partial measurements.
 ## Verification scope
 
 The local Windows integration tests use a fake model backend to verify protocol,
-CPU-only two-model construction, branch gating, time gaps, source reset, pose
+CPU-only selective model construction, branch gating, time gaps, source reset, pose
 visibility and score semantics. Asset integrity was verified locally. Linux
 CPU model loading, throughput, labeled-video effectiveness and coexistence
 with the full robot workload still need the bounded benchmark on the target
@@ -139,18 +146,19 @@ machine. No camera or robot motion validation is performed by these tests.
 ## Deploying the capture-starvation fix
 
 Sync the entire updated `car_vel` source (gateway AND `person_behavior` worker)
-to the small PC. No model replacement or dependency reinstall is required for
-an environment that already loads both models successfully. Stop the backend,
+to the small PC, including the newly bundled PPYOLOE smoking model. Existing
+CPU dependencies can be reused; load-check all three models using
+`../BEHAVIOR_RECOGNITION.md`. Stop the backend,
 then rebuild and restart using the usual launcher:
 
 ```bash
 cd /home/a/3dnav
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select car_vel
+colcon build --symlink-install --packages-select car_vel lzp_service
 source /home/a/3dnav/install/setup.bash
 ```
 
-Refresh the recognition page, enable both branches and start recognition.
+Refresh the recognition page, enable the required branches and start recognition.
 With real camera video, inspect the following while keeping the robot stopped:
 
 ```bash

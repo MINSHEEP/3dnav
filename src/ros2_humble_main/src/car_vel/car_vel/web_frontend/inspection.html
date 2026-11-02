@@ -11,8 +11,8 @@
     <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
     <script src="pointcloud_viewer.js?v=20261022-complete-pcd"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
-    <script src="air_quality_widget.js?v=20260818-m701"></script>
-    <script src="behavior_widget.js?v=20261027"></script>
+    <script src="air_quality_widget.js?v=20261102-detection"></script>
+    <script src="behavior_widget.js?v=20261102-detection"></script>
     <script src="inspection_draft_state.js?v=20260811-page-reentry"></script>
 </head>
 <body>
@@ -1995,13 +1995,14 @@
         const status = latestCameraStatus || {};
         const thermal = status.thermal || {};
         const behavior = behaviorWidget.status;
-        const behaviorEnabled = behavior && ['fall', 'fight'].some(key => behavior.enabled?.[key]);
+        const behaviorEnabled = behavior && ['fall', 'fight', 'smoking'].some(key => behavior.enabled?.[key]);
         const behaviorReady = behavior && (!behaviorEnabled || (behavior.running && behavior.ready && behavior.fresh));
         const visualReady = Boolean(status.running && status.ready === true && !status.error);
-        const fullyReady = Boolean(visualReady && thermal.ready && behaviorReady);
+        const required = status.requirements || {yolo: true, thermal: true};
+        const fullyReady = Boolean((!required.yolo || visualReady) && (!required.thermal || thermal.ready) && behaviorReady);
         const available = visualReady || thermal.ready || (behavior?.running && behavior?.fresh);
         document.getElementById('camera-top-status').textContent = fullyReady
-            ? '● 巡检识别已就绪'
+            ? (!required.yolo && !required.thermal && !behaviorEnabled ? '○ 检测项目已关闭' : '● 巡检识别已就绪')
             : (available ? '◐ 巡检识别部分可用' : '○ 巡检识别未就绪');
         document.getElementById('camera-top-status').className = `page-status ${fullyReady ? 'connected' : (available ? '' : 'error')}`;
     }

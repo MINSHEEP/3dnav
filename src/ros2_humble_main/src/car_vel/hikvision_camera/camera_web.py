@@ -44,7 +44,9 @@ from web_preview import PreviewCache, PROFILES as PREVIEW_PROFILES
 from ordinary_camera import (CameraSourceStore, HttpCameraSource, DEFAULT_BODY_URL,
                              validate_config, discover_usb_cameras, check_usb_device)
 from behavior_parallel import ParallelBehaviorSupervisor
+from behavior_supervisor import BehaviorSupervisor
 from behavior_speech import BehaviorSpeechService
+from detection_switches import DetectionSettings, DetectionSettingsConflict, VISUAL, BEHAVIOR
 
 
 ROOT = Path(__file__).resolve().parent
@@ -1058,12 +1060,17 @@ class CameraGateway:
         # JPEG 回退模式只被命令线程使用，因而固定缓冲区不会发生并发写入。
         self._jpeg_buffer = create_string_buffer(16 * 1024 * 1024)
         self._behavior_speech = BehaviorSpeechService()
+        self._detection_settings = DetectionSettings(legacy_behavior_path=getattr(args, 'behavior_config', None))
+        self._detection_settings_lock = threading.RLock()
+        self._applied_detection_settings = None
+        self._manual_detection_requested = False
         self._behavior = ParallelBehaviorSupervisor(
             runtime_dir=getattr(args, 'behavior_runtime_dir', ROOT.parent / 'person_behavior'),
             python=getattr(args, 'behavior_python', None),
             config_path=getattr(args, 'behavior_config', Path.home() / '.ros/robot_navigation/behavior.json'),
             speech=self._behavior_speech.announce,
             log=lambda message: print('[行为识别] ' + message, flush=True))
+        self._sync_detection_settings()
         self._behavior_feeder = threading.Thread(
             target=self._behavior_feed_loop, name='behavior-shared-camera', daemon=True)
         self._behavior_feeder.start()
@@ -1071,6 +1078,11 @@ class CameraGateway:
     def _behavior_feed_loop(self):
         source, version = None, 0
         while not self._closed.is_set():
+            try:
+                self._sync_detection_settings()
+            except (ValueError, RuntimeError, OSError):
+                self._closed.wait(.2)
+                continue
             current = self._video_source()
             if current is not source:
                 source, version = current, 0
@@ -1098,11 +1110,13 @@ class CameraGateway:
                 self._closed.wait(.2)
 
     def behavior_status(self):
+        settings = self._sync_detection_settings()
         behavior = getattr(self, '_behavior', None)
         if behavior is None:
-            return dict(success=True, running=False, ready=False, enabled={'fall': False, 'fight': False},
+            return dict(success=True, running=False, ready=False, enabled={'fall': False, 'fight': False, 'smoking': False},
                         branches={}, partial=False, fresh=False, error='行为识别未初始化')
         result = behavior.status()
+        result['settings_version'] = settings['version']
         speaker = getattr(self, '_behavior_speech', None)
         result['speech'] = speaker.status() if speaker else {}
         return result
@@ -1115,8 +1129,66 @@ class CameraGateway:
 
     @ordinary_camera_operation
     def configure_behavior(self, payload):
-        self._behavior_speech.reset()
-        return self._behavior.configure(payload)
+        if not isinstance(payload, dict):
+            raise ValueError('行为开关格式无效')
+        value = dict(payload)
+        expected = value.pop('expected_version', None)
+        enabled = BehaviorSupervisor._validate_config(value)
+        self.configure_detection_settings({'changes': enabled, 'expected_version': expected})
+        return self.behavior_status()
+
+    def _settings(self):
+        if not hasattr(self, '_detection_settings'):
+            self._detection_settings = DetectionSettings()
+            self._detection_settings_lock = threading.RLock()
+            self._applied_detection_settings = None
+        return self._detection_settings
+
+    def _sync_detection_settings(self):
+        policy = self._settings()
+        with self._detection_settings_lock:
+            state = policy.snapshot()
+            signature = (state['version'], tuple(state['enabled'].items()), state['error'])
+            if signature == self._applied_detection_settings:
+                return state
+            behavior = getattr(self, '_behavior', None)
+            if behavior is not None:
+                speaker = getattr(self, '_behavior_speech', None)
+                if speaker is not None:
+                    speaker.reset()
+                behavior.configure({key + '_enabled': state['effective'][key] for key in BEHAVIOR})
+            self._applied_detection_settings = signature
+            return state
+
+    def detection_settings_status(self):
+        state = self._sync_detection_settings()
+        return dict(success=True, **state, message='开关保存在小电脑，识别与巡检统一使用；关闭不删除历史记录。')
+
+    def configure_detection_settings(self, payload):
+        if not isinstance(payload, dict) or not set(payload) <= {'changes', 'expected_version'} or 'changes' not in payload:
+            raise ValueError('检测开关请求格式无效')
+        policy = self._settings()
+        with self._detection_settings_lock:
+            policy.update(payload['changes'], expected_version=payload.get('expected_version'))
+            self._sync_detection_settings()
+        result = self.detection_settings_status()
+        inspection_active = getattr(self, '_inspection_mode', 'manual') in ('transit', 'inspection')
+        if ((getattr(self, '_manual_detection_requested', False) or inspection_active)
+                and any(result['effective'][key] for key in VISUAL)
+                and not self._yolo.status().get('running')):
+            try:
+                if inspection_active:
+                    applied = self.set_inspection_mode({'mode': self._inspection_mode, 'task_id': self._inspection_task_id})
+                    if applied.get('errors'):
+                        result['apply_warning'] = '开关已保存；识别启动状态：' + str(applied['errors'])
+                else:
+                    self._yolo.start()
+            except (ValueError, RuntimeError, OSError) as error:
+                result['apply_warning'] = '开关已保存，普通视觉识别启动失败：' + str(error)
+        return result
+
+    def _filter_detections(self, items):
+        return self._settings().filter_detections(items)
 
     def _recognition_store(self) -> RecognitionDatabase:
         with self._recognition_lock:
@@ -2105,15 +2177,18 @@ class CameraGateway:
         return self._thermal.update_config(payload)
 
     def detection_status(self) -> dict[str, Any]:
+        settings = self._sync_detection_settings()
         yolo = self._yolo.status()
         thermal = self._thermal.status()
         behavior = self.behavior_status()
         behavior_required = any(behavior.get('enabled', {}).values())
-        visual_running = bool(yolo.get("running"))
-        thermal_running = bool(thermal.get("manual_detection_enabled"))
-        active = visual_running or thermal_running or bool(behavior.get('running'))
-        ready_count = int(bool(yolo.get("ready"))) + int(bool(thermal.get("ready"))) + int(bool(behavior.get('ready')) and behavior_required)
-        required_count = 2 + int(behavior_required)
+        visual_required = any(settings['effective'][key] for key in VISUAL)
+        thermal_required = settings['effective']['thermal']
+        visual_running = visual_required and bool(yolo.get("running"))
+        thermal_running = thermal_required and bool(thermal.get("manual_detection_enabled"))
+        active = visual_running or thermal_running or bool(behavior.get('running')) or getattr(self, '_manual_detection_requested', False)
+        ready_count = int(visual_required and bool(yolo.get("ready"))) + int(thermal_required and bool(thermal.get("ready"))) + int(bool(behavior.get('ready')) and behavior_required)
+        required_count = int(visual_required) + int(thermal_required) + int(behavior_required)
         return {
             "success": True,
             "running": active,
@@ -2122,10 +2197,14 @@ class CameraGateway:
             "yolo": yolo,
             "thermal": thermal,
             "behavior": behavior,
+            'enabled': settings['effective'],
+            'requirements': dict(yolo=visual_required, thermal=thermal_required, behavior=behavior_required),
         }
 
     @ordinary_camera_operation
     def start_detection(self) -> dict[str, Any]:
+        self._manual_detection_requested = True
+        settings = self._sync_detection_settings()
         errors: dict[str, str] = {}
         if getattr(self, '_behavior', None) is not None:
             try:
@@ -2133,13 +2212,17 @@ class CameraGateway:
             except (ValueError, RuntimeError, OSError) as error:
                 errors['behavior'] = str(error)
         try:
-            self._yolo.start()
+            if any(settings['effective'][key] for key in VISUAL):
+                self._yolo.start()
         except (ValueError, RuntimeError, OSError) as error:
             errors["yolo"] = str(error)
         try:
+            # Preserve manual intent while the persistent thermal switch is
+            # off, so re-enabling it during recognition takes effect next frame.
             self._thermal.set_detection(True)
         except (ValueError, RuntimeError, OSError) as error:
-            errors["thermal"] = str(error)
+            if settings['effective']['thermal']:
+                errors["thermal"] = str(error)
         result = self.detection_status()
         result["errors"] = errors
         result["success"] = not errors
@@ -2148,6 +2231,7 @@ class CameraGateway:
 
     @ordinary_camera_operation
     def stop_detection(self) -> dict[str, Any]:
+        self._manual_detection_requested = False
         errors: dict[str, str] = {}
         if getattr(self, '_behavior', None) is not None:
             try:
@@ -2241,7 +2325,7 @@ class CameraGateway:
         return result
 
     def _store_behavior_pair(self, result, directory, prefix):
-        if result.get('worker_branch') in ('fall', 'fight'):
+        if result.get('worker_branch') in ('pose', 'fall', 'fight', 'smoking'):
             prefix += '_' + result['worker_branch']
         result = self._store_inspection_pair(result, directory, prefix + '_behavior')
         for detection in result.get('detections', []):
@@ -2272,6 +2356,8 @@ class CameraGateway:
 
     @ordinary_camera_operation
     def set_inspection_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = self._sync_detection_settings()
+        visual_required = any(settings['effective'][key] for key in VISUAL)
         mode = str(payload.get("mode", "")).strip().lower()
         if mode not in {"manual", "paused", "transit", "inspection"}:
             raise ValueError("YOLO 巡检模式无效")
@@ -2289,7 +2375,7 @@ class CameraGateway:
                 "available": False, "ready": False, "error": str(error),
                 "mode": mode, "task_id": task_id,
             }
-        if bool(payload.get("thermal_required")) and not thermal.get("ready"):
+        if bool(payload.get("thermal_required")) and self._settings().enabled('thermal') and not thermal.get("ready"):
             raise RuntimeError(
                 f"本次巡检要求热成像可用：{thermal.get('error') or '尚未获得有效热成像帧'}")
         errors = {}
@@ -2299,13 +2385,14 @@ class CameraGateway:
             behavior.set_mode(mode, effective_task_id)
         result = {'ready': False, 'running': False}
         try:
-            if not self._yolo.status()["running"] and mode not in ('paused', 'manual'):
+            if visual_required and not self._yolo.status()["running"] and mode not in ('paused', 'manual'):
                 self._yolo.start()
             if self._yolo.status()['running']:
                 result = self._yolo.inspection_request(
                     "mode", {"mode": mode, "task_id": effective_task_id}, timeout=30.0)
         except (ValueError, RuntimeError, OSError) as error:
-            errors['yolo'] = str(error)
+            if visual_required:
+                errors['yolo'] = str(error)
         self._inspection_mode = mode
         self._inspection_task_id = effective_task_id
         behavior_status = self.behavior_status()
@@ -2314,10 +2401,13 @@ class CameraGateway:
             "thermal": thermal, 'behavior': behavior_status, 'errors': errors,
             'partial': bool(errors) or behavior_status.get('partial', False),
             'running': bool(result.get('running') or behavior_status.get('running')),
-            'ready': bool(result.get('ready')) and (not any(behavior_status.get('enabled', {}).values()) or behavior_status.get('ready', False)),
+            'ready': (not visual_required or bool(result.get('ready'))) and (not any(behavior_status.get('enabled', {}).values()) or behavior_status.get('ready', False)),
+            'requirements': dict(yolo=visual_required, thermal=settings['effective']['thermal']),
         }
 
     def inspection_state(self) -> dict[str, Any]:
+        settings = self._sync_detection_settings()
+        visual_required = any(settings['effective'][key] for key in VISUAL)
         yolo_status = self._yolo.status()
         inner = {}
         if yolo_status["running"]:
@@ -2353,8 +2443,10 @@ class CameraGateway:
             "success": True, "mode": self._inspection_mode,
             "task_id": self._inspection_task_id,
             "running": bool(yolo_status["running"] or behavior.get('running')),
-            "ready": bool(inner.get("ready", False)) and (not any(behavior.get('enabled', {}).values()) or behavior.get('ready', False)),
-            "partial": bool(behavior.get('partial')) or not bool(inner.get('ready')),
+            "ready": (not visual_required or bool(inner.get("ready", False))) and (not any(behavior.get('enabled', {}).values()) or behavior.get('ready', False)),
+            "partial": bool(behavior.get('partial')) or (visual_required and not bool(inner.get('ready'))),
+            'requirements': dict(yolo=visual_required, thermal=settings['effective']['thermal']),
+            'detection_enabled': settings['effective'],
             "sequence": int(inner.get("sequence", 0) or 0),
             "frame_age_seconds": inner.get("frame_age_seconds"),
             "recognition": inner.get("recognition") or {},
@@ -2370,13 +2462,20 @@ class CameraGateway:
         key = str(payload.get("key", "")).strip()
         if key not in {"thermal_high", "co2_high"}:
             raise ValueError("环境语音告警类型无效")
+        if not self._settings().allows(key):
+            return dict(success=True, key=key, queued=False, disabled=True)
         if not self._yolo.status()["running"]:
-            raise RuntimeError("识别进程未运行，语音输出不可用")
+            speaker = getattr(self, '_behavior_speech', None)
+            if speaker is None:
+                raise RuntimeError("本地环境告警语音不可用")
+            return dict(success=True, key=key, queued=bool(speaker.announce(key)), voice_backend='local')
         result = self._yolo.inspection_request(
             "speech", {"key": key}, timeout=5.0)
         return {"success": True, **result, "key": key}
 
     def inspection_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = self._sync_detection_settings()
+        visual_required = any(settings['effective'][key] for key in VISUAL)
         task_id = self._safe_component(
             payload.get("task_id") or self._inspection_task_id, "任务 ID")
         loop_number = max(1, int(payload.get("loop_number", 1)))
@@ -2390,17 +2489,17 @@ class CameraGateway:
             yolo_future = executor.submit(
                 self._yolo.inspection_request,
                 "capture", {"duration_seconds": duration},
-                timeout=max(5.0, duration + 3.0))
-            thermal_future = executor.submit(self._thermal.capture, duration)
+                timeout=max(5.0, duration + 3.0)) if visual_required else None
+            thermal_future = executor.submit(self._thermal.capture, duration) if settings['effective']['thermal'] else None
             behavior_future = executor.submit(behavior.capture, duration, task_id) if behavior is not None else None
             try:
-                result = yolo_future.result()
+                result = yolo_future.result() if yolo_future is not None else {'detections': [], 'disabled': True}
                 visual_error = ''
             except (ValueError, RuntimeError, OSError) as error:
                 result = {'detections': []}
                 visual_error = str(error)
             try:
-                thermal_result = thermal_future.result()
+                thermal_result = thermal_future.result() if thermal_future is not None else {'detections': [], 'disabled': True}
                 thermal_error = ""
             except (ValueError, RuntimeError, OSError) as error:
                 thermal_result = {"detections": []}
@@ -2412,8 +2511,8 @@ class CameraGateway:
         # A completed request cannot transfer an old task's result to a new one.
         if task_id != self._inspection_task_id:
             behavior_result = dict(detections=[], error='行为巡检任务已变化', partial=True, behavior=self.behavior_status())
-        visual_detections = list(result.get("detections") or [])
-        thermal_detections = list(thermal_result.get("detections") or [])
+        visual_detections = self._filter_detections(result.get("detections"))
+        thermal_detections = self._filter_detections(thermal_result.get("detections"))
         should_save = bool(payload.get("save_images")) or bool(visual_detections)
         if should_save and result.get('raw_jpeg_base64') and result.get('annotated_jpeg_base64'):
             directory = self._evidence_path(
@@ -2437,7 +2536,8 @@ class CameraGateway:
             thermal_result["thermal_raw_image"] = ""
             thermal_result["thermal_annotated_image"] = ""
         branch_captures = behavior_result.pop('branch_captures', [])
-        behavior_detections = list(behavior_result.get('detections') or [])
+        behavior_detections = self._filter_detections(behavior_result.get('detections'))
+        behavior_result['detections'] = behavior_detections
         if (behavior_result.get('raw_jpeg_base64') and behavior_result.get('annotated_jpeg_base64')
                 and (payload.get('save_images') or behavior_detections)):
             directory = self._evidence_path(task_id, f'loop_{loop_number:04d}', f'point_{point_id}')
@@ -2446,7 +2546,8 @@ class CameraGateway:
             behavior_result.pop('raw_jpeg_base64', None)
             behavior_result.pop('annotated_jpeg_base64', None)
         for capture in branch_captures:
-            detections = capture.get('detections') or []
+            detections = self._filter_detections(capture.get('detections'))
+            capture['detections'] = detections
             if (capture.get('raw_jpeg_base64') and capture.get('annotated_jpeg_base64')
                     and (payload.get('save_images') or detections)):
                 directory = self._evidence_path(task_id, f'loop_{loop_number:04d}', f'point_{point_id}')
@@ -2482,6 +2583,9 @@ class CameraGateway:
         events = []
         for event in result.get("events", []):
             event = dict(event)
+            event['detections'] = self._filter_detections(event.get('detections'))
+            if not event['detections']:
+                continue
             if event.get("detections") and task_id:
                 directory = self._evidence_path(task_id, "transit")
                 event = self._store_inspection_pair(event, directory, "transit")
@@ -2496,6 +2600,9 @@ class CameraGateway:
             for event in behavior.events(task_id):
                 if task_id != self._inspection_task_id or event.get('task_id') != task_id:
                     continue
+                event['detections'] = self._filter_detections(event.get('detections'))
+                if not event['detections']:
+                    continue
                 directory = self._evidence_path(task_id, 'transit')
                 event = self._store_behavior_pair(event, directory, 'transit')
                 event['behavior'] = dict(source_epoch=event['source_epoch'], stamp_ns=event['stamp_ns'], fresh=True)
@@ -2507,6 +2614,8 @@ class CameraGateway:
         except (ValueError, RuntimeError, OSError):
             thermal_result = {"events": []}
         for thermal_event in thermal_result.get("events", []):
+            if not self._settings().enabled('thermal'):
+                continue
             thermal_event = dict(thermal_event)
             detection = {
                 key: value for key, value in thermal_event.items()
@@ -3051,6 +3160,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, self.gateway.get_yolo_status())
             elif path == "/api/detection":
                 self.send_json(HTTPStatus.OK, self.gateway.detection_status())
+            elif path == '/api/detection/settings':
+                self.send_json(HTTPStatus.OK, self.gateway.detection_settings_status())
             elif path == '/api/behavior/status':
                 self.send_json(HTTPStatus.OK, self.gateway.behavior_status())
             elif path == '/api/behavior/frame.jpg':
@@ -3115,7 +3226,9 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 if path == "/api/recognition/person/upsert"
                 else 16 * 1024)
             payload = self._read_json(max_bytes)
-            if path == '/api/behavior/config':
+            if path == '/api/detection/settings':
+                result = self.gateway.configure_detection_settings(payload)
+            elif path == '/api/behavior/config':
                 result = self.gateway.configure_behavior(payload)
             elif path == "/api/camera/source":
                 result = self.gateway.configure_camera_source(payload)
@@ -3186,6 +3299,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.OK, result)
         except IsapiRequestError as error:
             self.send_json(HTTPStatus.BAD_GATEWAY, {"error": str(error), "upstream_status": error.status})
+        except DetectionSettingsConflict as error:
+            self.send_json(HTTPStatus.CONFLICT, {"error": str(error)})
         except TimeoutError as error:
             self.send_json(HTTPStatus.GATEWAY_TIMEOUT, {"error": str(error)})
         except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as error:

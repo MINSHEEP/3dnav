@@ -72,9 +72,10 @@ function status(overrides = {}) {
     return { success: true, running: true, ready: true, fresh: true, error: null,
         source_epoch: 4, stamp_ns: 1793111111000000000, frame_stamp_ns: '1793111111000000123',
         max_result_age_seconds: 5, frame_age_seconds: 0.5,
-        enabled: { fall: true, fight: true },
+        enabled: { fall: true, fight: true, smoking: true },
         branches: { fall: { enabled: true, state: 'valid', ready: true, label: 'fall' },
-            fight: { enabled: true, state: 'valid', ready: true, label: 'normal' } }, ...overrides };
+            fight: { enabled: true, state: 'valid', ready: true, label: 'normal' },
+            smoking: { enabled: true, state: 'valid', ready: true, label: 'smoking' } }, ...overrides };
 }
 function headers(value) { return { 'X-Behavior-Source-Epoch': String(value.source_epoch),
     'X-Behavior-Stamp-Ns': value.frame_stamp_ns }; }
@@ -107,7 +108,7 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     const fallToggle = h.root.querySelector('[data-behavior-toggle="fall"]');
     fallToggle.checked = false; fallToggle.emit('change'); await flush();
     const config = h.pending('/config')[0];
-    assert.deepStrictEqual(JSON.parse(config.options.body), { fall_enabled: false, fight_enabled: true }, 'one switch preserves the other branch');
+    assert.deepStrictEqual(JSON.parse(config.options.body), { fall_enabled: false, fight_enabled: true, smoking_enabled: true }, 'one switch preserves the other branch');
     assert.strictEqual(h.image.src, '', 'config clears previous temporal evidence immediately');
     const stoppedFall = status({ source_epoch: 5, fresh: false, ready: false,
         enabled: {fall: false, fight: true}, branches: {fall: {enabled: false, state:'disabled'}, fight:{enabled:true,state:'warming'}} });
@@ -189,6 +190,9 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     assert.ok(!branch(split,'fall').startsWith('就绪'), 'preview expiration cannot keep a cached branch ready');
     widget.dispose();
     assert.strictEqual(labels.categoryLabel('lying'), '躺卧姿态（未确认跌倒）');
+    assert.strictEqual(labels.categoryLabel('smoking'), '疑似吸烟');
+    assert.strictEqual(labels.evidenceLabel({category:'smoking', confidence:.4}), '人物关联检测分数 40%（非行为概率）');
+    assert.ok(source.includes('data-behavior-toggle="smoking"'));
     assert.strictEqual(labels.evidenceLabel({category:'fall', confidence:null}), '连续姿态规则证据');
     assert.strictEqual(labels.evidenceLabel({category:'fight',confidence:0.89}), '模型分数 89%');
     const ready = {running:true, yolo:{running:true,ready:true}, thermal:{ready:true},behavior:status()};

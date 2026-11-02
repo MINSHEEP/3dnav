@@ -48,9 +48,9 @@ def read_request(stream, max_header_bytes=65536, max_payload_bytes=25165824,
         raise ProtocolError("stamp_ns must be a nonnegative integer")
     branches = header.get("enabled_branches")
     if branches is not None and (not isinstance(branches, dict)
-            or not set(branches).issubset({"fall", "fight"})
+            or not set(branches).issubset({"fall", "fight", "smoking"})
             or any(type(value) is not bool for value in branches.values())):
-        raise ProtocolError("enabled_branches accepts only boolean fall/fight switches")
+        raise ProtocolError("enabled_branches accepts only boolean fall/fight/smoking switches")
     shape = header.get("shape")
     if (not isinstance(shape, list) or len(shape) != 3
             or any(type(v) is not int for v in shape)
@@ -63,7 +63,8 @@ def read_request(stream, max_header_bytes=65536, max_payload_bytes=25165824,
                 or any(type(v) is not int or v < 0 for v in stamps)
                 or any(a >= b for a, b in zip(stamps, stamps[1:]))
                 or stamps[-1] != header["stamp_ns"]
-                or branches != {"fall": False, "fight": True}):
+                or not isinstance(branches, dict) or branches.get("fall", False)
+                or branches.get("smoking", False) or branches.get("fight") is not True):
             raise ProtocolError("Expected bounded, ordered fight-only capture clip")
         count = len(stamps)
     if length != count * shape[0] * shape[1] * 3:

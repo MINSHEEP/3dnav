@@ -1,53 +1,52 @@
-# 跌倒与打架识别（M9 Pro CPU）
+# 跌倒、打架与吸烟行为识别（M9 Pro CPU）
 
-本次接入只使用附件中的人体姿态模型、连续姿态跌倒规则和场景级打架模型。原有火焰、烟雾、香烟、人脸、车牌、高温和气体功能保持原有入口。附件中的吸烟模型没有加载。
+当前版本接入附件 `v4-smoking-near-face-conservative-20261030` 的吸烟模型与人物关联规则，替代旧的香烟/烟头物体告警。火焰、烟雾、人脸、车牌、高温和气体功能保留。`cigarette_multiclass_best.pt` 是共用多类别权重，仍用于火焰和烟雾；其香烟框已从画面、识别输出、语音和新巡检告警中移除。历史报告不删除。
 
-## 使用方式
+## 使用与结果
 
-- USB 相机页面及巡检任务页面增加“跌倒”“打架”独立开关，设置保存在小电脑 `~/.ros/robot_navigation/behavior.json`。初始为两项开启。
-- “启动识别”启动原有视觉、高温及已勾选的行为分支。模型加载与连续采样需要时间；页面分别显示启动、积累样本、有效、过期或错误，不把启动进程当作识别已成功。
-- 普通摄像头区域可切换到“行为画面”。这里显示实际参与该次推理的帧及标注；热成像仍在右侧。它不一定与原始视频同一时刻，页面显示帧龄；过期帧会清空。
-- 巡检进入途中/检测模式时启用行为识别；暂停、切换相机/任务、分辨率变化或重新启动后重新积累证据。行为模块异常只影响自身识别状态，不触发机器人运动或急停。
-- 疑似跌倒和疑似打架可通过小电脑本地音响播报，同一类别至少间隔 20 秒。使用独立语音队列，不依赖原 YOLO 进程是否可用。
-- 巡检告警保存该次行为推理的原图、标注图及来源时间戳，不借用另一帧 YOLO 图片。报告中保留分支不可判断的状态。
-
-## 结果的含义
+- 设置页统一管理检测开关，USB 相机和巡检任务页面的“疑似跌倒”“疑似打架”“疑似吸烟”与它同步，保存在 `~/.ros/robot_navigation/detection_settings.json`。首次迁移保留旧 `behavior.json` 的选择，详见 [检测开关说明](DETECTION_SETTINGS.md)。
+- “启动识别”启用已勾选项目；巡检途中和检测阶段同样启用。跌倒与吸烟共用一个 CPU 人物姿态进程，打架保留独立进程及真实 8 帧采样。默认每进程两线程。开关改变仅重建受影响进程以加载/释放模型。
+- “查看行为画面”优先显示实际推理帧的人物姿态与吸烟标注；人物分支没有新鲜画面时可显示独立打架结果。右侧热成像独立显示。
+- 有效吸烟结果播报“检测到疑似人员吸烟”，同类别至少间隔 20 秒。巡检记录人物、检测分数、关联证据、来源时间戳和对应原图/标注图。过期、缓存及短暂遮挡结果不会产生新告警。
+- 暂停、来源/任务/分辨率变化和重新启用清理历史。行为识别不控制机器人运动或急停。
 
 | 显示 | 含义 |
 | --- | --- |
-| 疑似跌倒 | 连续姿态规则观察到跌倒过程；没有概率分数 |
-| 躺卧姿态（未确认跌倒） | 看到躺卧，但没有足够动作过程证明跌倒；不按跌倒播报 |
-| 疑似打架 | 整段场景的打架模型达到阈值；不认定具体某个人为参与者 |
-| 样本不足/过期/不可用 | 不能判断，不能解读为“没有异常” |
+| 疑似跌倒 | 连续姿态规则观察到跌倒过程，无概率分数 |
+| 躺卧姿态（未确认跌倒） | 看到躺卧但缺少跌倒过程，不按跌倒播报 |
+| 疑似打架 | ppTSM 场景级判断，不认定具体参与人员 |
+| 疑似吸烟 | PPYOLOE 候选与人物嘴部/手腕关联；分数为检测分数，非吸烟行为概率 |
+| 等待连续观测/不可用 | 无法判断，不代表没有异常 |
 
-当前阈值沿用附件：跌倒要求相邻有效观测间隔不超过 0.3 秒；打架使用 8 帧、约 1.63 秒窗口，采样断裂会重新积累。没有为了适配 CPU 而伪造帧时间、重复补帧或放宽动作规则。结果为辅助巡检线索，需要人工复核。
+吸烟保留附件的嘴部空间关联、持烟手靠近嘴部和近脸连续检测规则：基础阈值 0.5，近脸强证据 0.65、后续关联 0.30。后者必须有真实强证据及同一人物/手腕的连续关联，单个低分框不能触发。可选侧脸头部补检默认不启用。
 
-## 在小电脑部署
+吸烟最多按 2 Hz 公平轮询每轮 8 个人物区域，实际频率取决于 CPU。姿态跟踪仍要求不超过 0.3 秒的有效观测间隔；遮挡、小目标和低帧率可能使动作无法确认。跌倒/打架模型、阈值和时间要求没有放宽，也不重复补帧。准确率和 M9 Pro 速度需用已有授权视频实测。
 
-先把更新后的项目同步到 `/home/a/3dnav`，包括 `car_vel/person_behavior/` 下约 247 MB 模型及厂商源码归档。不要只复制 Python 文件。先停止现有后台，再执行下面各组命令。
+## 更新小电脑
 
-首次准备 Python 的独立运行环境和本地语音：
+正常停止后台，完整同步源码到 `/home/a/3dnav`，包括整个 `person_behavior/` 和新增约 32 MB 的 `output_inference/ppyoloe_crn_s_80e_smoking_visdrone/`。不要只复制页面或 Python 文件。
 
-```bash
-sudo apt-get install python3-venv libgl1 libglib2.0-0 espeak-ng ffmpeg
-```
-
-安装行为模块专用依赖：
+此前跌倒、打架环境已安装时，依赖版本不变，无需重装整个环境。校验模型：
 
 ```bash
-cd /home/a/3dnav/src/ros2_humble_main/src/car_vel
-bash scripts/install_behavior_deps.sh
+cd /home/a/3dnav/src/ros2_humble_main/src/car_vel/person_behavior
+/usr/bin/python3 -s -m pphuman_runtime.assets
 ```
 
-此脚本仅适用于 Ubuntu 22.04 x86_64、Python 3.10。安装位置是 `~/.local/share/robot-behavior/venv`，与现有 `~/.local/share/hikvision-camera/python` 分离。行为模块需要 NumPy 1.26/Paddle 2.6；不要把这份 requirements 安装到系统 Python、ROS 或原相机依赖目录。脚本校验模型 SHA256，并仅安装 CPU 版运行库，不安装 CUDA。最后会在 90 秒期限内启动模型加载自检，失败时会直接显示底层错误；该自检不访问相机，也不测试机器人运动。
-
-若 PyPI 下载慢，可在同一次安装命令前设置已有可信镜像，例如：
+用已有独立环境检查三个模型加载，不打开相机：
 
 ```bash
-PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple bash scripts/install_behavior_deps.sh
+cd /home/a/3dnav/src/ros2_humble_main/src/car_vel/person_behavior
+env -u PYTHONPATH -u PYTHONHOME -u LD_LIBRARY_PATH -u LD_PRELOAD \
+  PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES='' \
+  OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2 \
+  "$HOME/.local/share/robot-behavior/venv/bin/python" -s \
+  -m pphuman_runtime.self_check --timeout 90
 ```
 
-重新构建更新的两个 ROS 包：
+应列出 `yolo_pose`、`fight`、`smoking`。自定义 `BEHAVIOR_HOME` 时换成实际解释器。自检只验证加载，不验证速度或准确率。
+
+重建并按原方法启动后台，浏览器强制刷新：
 
 ```bash
 cd /home/a/3dnav
@@ -56,37 +55,34 @@ colcon build --packages-select car_vel lzp_service --symlink-install
 source install/setup.bash
 ```
 
-随后按原有方式启动后台，在浏览器强制刷新页面。无需改机器人 SDK、导航模式或普通相机配置。
+若独立环境尚未安装，先执行以下命令，再构建：
 
-## 验证顺序
+```bash
+sudo apt-get install python3-venv libgl1 libglib2.0-0 espeak-ng ffmpeg
+cd /home/a/3dnav/src/ros2_humble_main/src/car_vel
+bash scripts/install_behavior_deps.sh
+```
 
-1. 打开 USB 相机页面，确认普通摄像头原图正常，再勾选两项行为功能并点击“启动识别”。
-2. 等待各分支加载完成，查看具体状态与错误；切到行为画面，确认帧龄会更新。没有人时不能用它验证跌倒动作。
-3. 使用已有、授权的录制视频验证，先不启动机器人导航，不让人员为了测试真实摔倒。可将相机对准测试视频画面做界面联调，但准确率应以原视频回放评估。
-4. 停止识别、切换本体/USB 视频源，再重新启动。旧画面与旧告警不应串入新来源。
-5. 巡检报告中分别查看告警类别和行为专属证据图片；准备好识别后再单独验证巡检流程。
+不要把行为 requirements 装到系统 Python、ROS 或普通相机依赖目录。行为仍使用独立的 NumPy 1.26/Paddle 2.6 CPU 环境。
 
-只读检查行为服务：
+## 检查与回放
+
+先在 USB 相机页面启动识别、验证三个开关、行为画面和语音，无需启动导航。
 
 ```bash
 curl -sS --max-time 5 http://127.0.0.1:8766/api/behavior/status | python3 -m json.tool --no-ensure-ascii
 ```
 
-关注 `running`、`branches.fall`、`branches.fight`、`fresh`、`frame_age_seconds`、`error` 和 `speech`。普通 YOLO 或热成像可用，不代表行为分支已可用。
+查看 `enabled.smoking`、`branches.smoking`、`workers.pose`、`workers.fight`、`fresh`、耗时与 `speech`。没有人物时的就绪状态不能验证吸烟效果。
 
-## 在 M9 Pro 上测量实际性能
-
-本地开发已做协议、状态、证据与页面回归；未在 M9 Pro 上实测真实模型速度和识别准确率。i5-13500H 没有 NVIDIA 显卡，不能套用附件中 GPU 的帧率。
-
-停止行为识别后，使用本地视频进行有界回放，避免与线上识别同时占用 CPU：
+停止线上行为识别后，用已有本地视频回放（修改为实际视频路径）：
 
 ```bash
 cd /home/a/3dnav/src/ros2_humble_main/src/car_vel
-bash scripts/benchmark_behavior.sh --video /home/a/behavior-test.mp4 --output /home/a/behavior-benchmark.json
+bash scripts/benchmark_behavior.sh --branches smoking \
+  --video /home/a/behavior-test.mp4 --output /home/a/smoking-benchmark.json
 ```
 
-把实际视频放在命令所写位置，或修改为真实绝对路径。脚本保留视频采样时间、按实际处理能力跳过来不及处理的帧，报告推理耗时和有效/不可判断的覆盖情况。CPU 来不及时应先只开一项降低负载，再测量；不可通过改时间戳或忽略断帧把结果强行变为有效。如果仍达不到连续观测要求，需要更轻模型/经验证的加速后端，不能承诺当前 CPU 上稳定实时。
+`--branches all` 检查三分支；`--branches both` 保留仅跌倒/打架的旧含义。统计时间、丢帧和有效/不可判断覆盖，不输出未经标注验证的准确率。先用已有授权视频，不要求人员真实摔倒或打架来验证。
 
-## 模型与代码来源
-
-来源、模型摘要和第三方许可随 `person_behavior/THIRD_PARTY_NOTICES.md`、`person_behavior/assets/runtime_assets.json` 及 `person_behavior/licenses/` 一起交付。运行时只使用必要资产，未执行原附件部署脚本。现有相机、热成像、ROS 环境不导入 Paddle；专用子进程清理继承的 Python/CUDA 库路径，默认两线程，退出只回收自身进程。
+模型来源和许可见 `person_behavior/THIRD_PARTY_NOTICES.md`、`assets/runtime_assets.json` 和 `environment/smoking_source_provenance.json`。Windows 的规则/协议/页面回归与完整性校验不能代替小电脑的原生模型加载、视频推理和运行负载验证。

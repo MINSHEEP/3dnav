@@ -152,8 +152,10 @@ class RecognitionRuntime:
             plate_color_classifier: Callable[[Any, Sequence[Any]], str] = classify_plate_color,
             evidence_writer: Callable[..., str] | None = None,
             evidence_dir: str | Path = DEFAULT_EVIDENCE_DIR,
-            stable_frames: int = 2, retention_seconds: float = 120.0) -> None:
+            stable_frames: int = 2, retention_seconds: float = 120.0, detection_settings=None) -> None:
         self.database = database
+        self._detection_settings = detection_settings
+        self._settings_version = None
         self.face_extractor = face_extractor
         self.plate_recognizer = plate_recognizer
         self.plate_color_classifier = plate_color_classifier
@@ -191,6 +193,13 @@ class RecognitionRuntime:
         if scope != self._task_id:
             self.tracker.start_task(scope)
             self._task_id = scope
+            self._task_generation += 1
+
+    def reset_observations(self):
+        """A switch change cannot reuse pre-disable person/vehicle observations."""
+        with self._lock:
+            self.tracker.start_task('detection-settings-' + uuid.uuid4().hex)
+            self._task_id = ''
             self._task_generation += 1
 
     @staticmethod
@@ -248,11 +257,18 @@ class RecognitionRuntime:
             self, frame: Any, detections: Iterable[dict[str, Any]], *,
             task_id: str = '', now: float | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            if self._detection_settings is not None:
+                version = self._detection_settings.snapshot()['version']
+                if version != self._settings_version:
+                    self.reset_observations()
+                    self._settings_version = version
             self._switch_task(task_id)
             enriched = []
             for raw in detections:
                 detection = dict(raw)
                 category = str(detection.get('category') or '')
+                if self._detection_settings is not None and not self._detection_settings.allows(category):
+                    continue
                 if category not in {'face', 'plate'}:
                     enriched.append(detection)
                     continue
@@ -265,7 +281,7 @@ class RecognitionRuntime:
                 track_id = self.tracker.observe(
                     category, detection.get('bbox') or [],
                     identity_key=self._identity_key(result), now=now)
-                if track_id and task_id:
+                if track_id and task_id and (self._detection_settings is None or self._detection_settings.allows(category)):
                     database_track_id = (
                         f'{self._session_id}:{self._task_generation}:{track_id}')
                     evidence_path = ''

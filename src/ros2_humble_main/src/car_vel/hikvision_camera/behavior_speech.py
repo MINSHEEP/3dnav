@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 
 
-PHRASES = {'fall': '检测到疑似人员跌倒', 'fight': '检测到疑似打架'}
+PHRASES = {'fall': '检测到疑似人员跌倒', 'fight': '检测到疑似打架', 'smoking': '检测到疑似人员吸烟'}
+ENVIRONMENT_PHRASES = {'thermal_high': '环境温度异常', 'co2_high': '二氧化碳浓度异常'}
 
 
 class BehaviorSpeechService:
@@ -30,7 +31,7 @@ class BehaviorSpeechService:
         self._thread.start()
 
     def _command(self, key):
-        if key not in PHRASES:
+        if key not in PHRASES and key not in ENVIRONMENT_PHRASES:
             return None
         # Only these fixed filenames and phrases can be played; no shell input.
         asset = self._audio_dir / f'behavior_{key}.mp3'
@@ -38,7 +39,7 @@ class BehaviorSpeechService:
             return [self._player, '-hide_banner', '-loglevel', 'error',
                     '-nodisp', '-autoexit', '-vn', str(asset)]
         if self._synth:
-            return [self._synth, '-v', 'cmn', '-s', '150', PHRASES[key]]
+            return [self._synth, '-v', 'cmn', '-s', '150', PHRASES.get(key, ENVIRONMENT_PHRASES.get(key))]
         return None
 
     def status(self):
@@ -50,7 +51,7 @@ class BehaviorSpeechService:
     def announce(self, key):
         now = time.monotonic()
         with self._lock:
-            if (key not in PHRASES or self._closed.is_set()
+            if ((key not in PHRASES and key not in ENVIRONMENT_PHRASES) or self._closed.is_set()
                     or not self._command(key)
                     or now - self._last.get(key, float('-inf')) < self._cooldown):
                 return False

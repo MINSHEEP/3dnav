@@ -5,7 +5,8 @@
   "hash_scope": "Locally verified SHA256; not publisher signatures",
   "active_models": [
     "shared_pose",
-    "fight"
+    "fight",
+    "smoking"
   ],
   "includes_export_source_weight": false,
   "files": [
@@ -44,6 +45,30 @@
       "bytes": 44260633,
       "sha256": "4736ac91fd609bd5b896338e7df72ebd1b6cc32eeec3b8adb1c20198506fd5db",
       "role": "pinned_vendor_source_archive"
+    },
+    {
+      "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/infer_cfg.yml",
+      "bytes": 1117,
+      "sha256": "16577ec5a93a1f92cd6daea652cbb9597955b438cf0061d9e907d8de0bb34a81",
+      "model_id": "smoking"
+    },
+    {
+      "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdiparams",
+      "bytes": 29968179,
+      "sha256": "3136b301bc46098aa7fbe3511a6919cb885ca1c8f8070ec73ad573c05eac4db9",
+      "model_id": "smoking"
+    },
+    {
+      "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdiparams.info",
+      "bytes": 29260,
+      "sha256": "9250995bbaae69053d7e7c37c0541da6c1b3d1a7c5b85c481a948c20ec84f158",
+      "model_id": "smoking"
+    },
+    {
+      "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdmodel",
+      "bytes": 2406689,
+      "sha256": "e58d54a287d78a9fccd3d832853a6f778c3109a88abbc7d910c92002c7fc5428",
+      "model_id": "smoking"
     }
   ]
 }

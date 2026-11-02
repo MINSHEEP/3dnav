@@ -43,6 +43,15 @@ class BehaviorSpeechTests(unittest.TestCase):
             finally:
                 service.close()
 
+    def test_smoking_uses_fixed_suspected_behavior_phrase(self):
+        with patch.object(speech.shutil, 'which', side_effect=lambda name: '/usr/bin/espeak-ng' if name == 'espeak-ng' else None):
+            service = speech.BehaviorSpeechService()
+        try:
+            self.assertEqual(service._command('smoking')[-1], '检测到疑似人员吸烟')
+            self.assertIsNone(service._command('cigarettes'))
+        finally:
+            service.close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -61,6 +61,7 @@ from .environment_alerts import (
     MAX_CO2_THRESHOLD_PPM,
     MIN_CO2_THRESHOLD_PPM,
 )
+from .detection_settings import DetectionSettings
 from .navigation_mode import (
     TERRAIN_3D,
     navigation_mode_label,
@@ -103,7 +104,9 @@ def _confirmed_detections(
         if not bool(detection.get('alert', True)):
             continue
         category = str(detection.get('category') or '')
-        if category in {'fall', 'fight'}:
+        if category in {'cigarettes', 'cigarette', 'cigarette_butt'}:
+            continue  # Retired object category; smoking requires person evidence.
+        if category in {'fall', 'fight', 'smoking'}:
             # Behavior is temporal evidence, never an ordinary single-frame box.
             if (detection.get('state') != 'valid'
                     or detection.get('updated') is not True
@@ -121,6 +124,26 @@ def _confirmed_detections(
             if category == 'fall':
                 if (detection.get('score_kind') == 'rule_evidence'
                         and detection.get('confidence') is None):
+                    confirmed.append(detection)
+                continue
+            if category == 'smoking':
+                details = detection.get('evidence_details') or {}
+                try:
+                    score = float(detection.get('confidence'))
+                except (ValueError, TypeError):
+                    continue
+                kind = detection.get('score_kind')
+                if (detection.get('scope') != 'person' or detection.get('track_id') is None
+                        or detection.get('measurement_type') != 'associated_detection_score'
+                        or not isinstance(details, dict) or details.get('head_observable') is not True
+                        or not math.isfinite(score) or not 0 <= score <= 1):
+                    continue
+                direct = kind == 'detection_score' and score >= 0.5 and bool(details.get('selected_detection'))
+                hand = details.get('hand_to_mouth') or {}
+                associated = (kind == 'temporally_associated_detection_score'
+                              and isinstance(hand, dict) and hand.get('confirmed') is True
+                              and hand.get('short_occlusion') is not True and bool(hand.get('detection')))
+                if direct or associated:
                     confirmed.append(detection)
                 continue
             if (detection.get('scope') != 'scene'
@@ -154,7 +177,7 @@ def _alert_storage_fields(
         measurement_type = 'rule_evidence'
     # A temporal result may be from an earlier frame than the YOLO capture.
     # Use only its own evidence; never label another frame as behavior evidence.
-    if detection.get('category') in {'fall', 'fight'}:
+    if detection.get('category') in {'fall', 'fight', 'smoking'}:
         evidence = dict(detection.get('evidence') or {})
     fields = {
         'measurement_type': measurement_type,
@@ -175,11 +198,11 @@ def _alert_storage_fields(
                 'x_normalized', 'y_normalized', 'temperature_source')
             if key in detection
         }
-    elif detection.get('category') in {'fall', 'fight'}:
+    elif detection.get('category') in {'fall', 'fight', 'smoking'}:
         fields['measurement'] = {
             key: detection[key] for key in (
                 'label', 'score_kind', 'scope', 'state', 'updated', 'fresh',
-                'source_epoch', 'stamp_ns', 'person_id', 'track_id',
+                'source_epoch', 'stamp_ns', 'prediction_stamp_ns', 'person_id', 'track_id',
                 'evidence_details', 'rule_evidence', 'reason', 'window_seconds', 'confidence')
             if key in detection
         }
@@ -191,6 +214,8 @@ def _detection_summary(detection: Dict[str, Any]) -> str:
         return '疑似跌倒（连续动作规则证据，无概率分数）'
     if detection.get('category') == 'fight':
         return f'疑似打架（场景级，模型分数 {float(detection.get("confidence", 0.0)):.0%}）'
+    if detection.get('category') == 'smoking':
+        return f'疑似人员吸烟（人物关联检测分数 {float(detection.get("confidence", 0.0)):.0%}，非行为概率）'
     if str(detection.get('measurement_type')) == 'temperature':
         maximum = float(detection.get('max_temperature_c', 0.0))
         threshold = float(detection.get('threshold_c', 0.0))
@@ -203,7 +228,7 @@ def _behavior_capture_detail(capture: Dict[str, Any]) -> str:
     behavior = capture.get('behavior')
     if not isinstance(behavior, dict):
         return ''
-    labels = {'fall': '跌倒', 'fight': '打架'}
+    labels = {'fall': '跌倒', 'fight': '打架', 'smoking': '吸烟'}
     pending = []
     for key, branch in (behavior.get('branches') or {}).items():
         if key not in labels or not isinstance(branch, dict):
@@ -356,6 +381,7 @@ class InspectionTaskManager(Node):
                 f'Expired {len(expired_tasks)} inspection reports older than '
                 f'{report_retention_days} days.')
         self._camera = CameraInspectionClient(camera_url, camera_timeout)
+        self._detection_settings = DetectionSettings()
         default_environment_path = (
             Path.home() / '.ros' / 'robot_navigation' /
             'environment_alerts.json')
@@ -502,6 +528,7 @@ class InspectionTaskManager(Node):
         self._3d_authorization_generation = 0
         self._route_session_active = False
         self._route_session_purpose = ''
+        self._route_completion_event_floor = 0
         self._camera_future: Optional[Future] = None
         self._camera_future_purpose = ''
         self._pending_camera_mode: Optional[tuple[str, str]] = None
@@ -1041,7 +1068,7 @@ class InspectionTaskManager(Node):
             'navigation_mode': prepared['mode'],
             'total_points': len(route['points']) * loop_count,
             'total_detection_points': checkpoint_count * loop_count,
-            'message': '正在启动并预热 YOLO',
+            'message': '正在准备已启用的识别项目',
             'started_at': utc_now(), 'resume_state': '',
             'recovery_pending': False,
         }
@@ -1065,7 +1092,7 @@ class InspectionTaskManager(Node):
         mode_label = navigation_mode_label(prepared['mode'])
         self._database.add_event(
             task_id, 'task_started', f'巡检任务已创建，模式：{mode_label}')
-        self._log(f'巡检任务已创建（{mode_label}），正在预热 YOLO')
+        self._log(f'巡检任务已创建（{mode_label}），正在准备已启用的识别项目')
         self._publish(force=True)
         response.success = True
         response.message = '巡检任务已启动'
@@ -1243,6 +1270,11 @@ class InspectionTaskManager(Node):
             return False, '请先继续任务，再跳过当前点'
         if self._state['state'] not in ('navigating', 'inspecting'):
             return False, '当前阶段没有可跳过的巡检点'
+        if not self._route_session_active:
+            status = getattr(self, '_route_status', None)
+            if status is not None:
+                self._route_status_callback(status)
+            return False, '路线已结束或尚未就绪，当前没有可跳过的活动路线点'
         if self._state['state'] == 'inspecting':
             self._skip_event.set()
             self._state['message'] = '正在结束当前检测并跳过该点'
@@ -1559,6 +1591,10 @@ class InspectionTaskManager(Node):
     def _start_route(
             self, purpose: str, reverse: bool, hold: bool,
             start_point_id: int, point_limit: int) -> None:
+        # The route process may have restarted and reset its event counter.
+        # Baseline the currently observed publisher, not the previous session.
+        self._route_completion_event_floor = int(getattr(
+            getattr(self, '_route_status', None), 'goal_event_sequence', 0))
         self._pending_route_start = {
             'purpose': purpose, 'reverse': bool(reverse), 'hold': bool(hold),
             'start_point_id': int(start_point_id),
@@ -1729,14 +1765,22 @@ class InspectionTaskManager(Node):
                 self._state['message'] = (
                     f'第 {self._state["current_loop"]} 轮巡检进行中'
                     if route_purpose == 'patrol' else '正在返回起点复位')
+            # A very short route can finish before its Start service reply.
+            # Consume that cached terminal event now that the session exists.
+            status = getattr(self, '_route_status', None)
+            if status is not None and str(status.state) == 'completed':
+                self._route_status_callback(status)
         elif (not success and purpose == 'control:failed_start_cleanup:stop'
                 and message == 'No route navigation task is active'):
             self._log('启动未成功，后台未创建活动路线；清理已结束，保留原始启动失败原因')
         elif not success and not purpose.startswith('control:cancel'):
             self._log(f'路线控制失败：{message}', 'warning')
         elif success and purpose.startswith('control:'):
+            if self._state['state'] in TERMINAL_STATES:
+                return
             command = purpose.rsplit(':', 1)[-1]
-            if command in ('release', 'skip') and not self._state.get('paused'):
+            if (command in ('release', 'skip') and not self._state.get('paused')
+                    and self._route_session_active):
                 self._state['state'] = 'navigating'
                 self._state['message'] = '正在前往下一个巡检点'
             elif command == 'resume':
@@ -1747,6 +1791,7 @@ class InspectionTaskManager(Node):
         if str(message.owner_token) != str(self._state.get('task_id', '')):
             return
         self._route_session_active = bool(message.active)
+        self._route_completion_event_floor = int(getattr(message, 'goal_event_sequence', 0))
         resume_state = str(self._state.get('resume_state') or 'navigating')
         self._route_session_purpose = (
             'reposition' if resume_state == 'returning_to_start' else 'patrol')
@@ -1859,7 +1904,14 @@ class InspectionTaskManager(Node):
                 self._persist()
                 self._publish(force=True)
                 return
-            if str(message.owner_token) != str(self._state['task_id']):
+            completed = (self._route_session_active and not message.active
+                and str(message.state) == 'completed'
+                and (str(message.owner_token) == str(self._state['task_id']) or (
+                    str(getattr(message, 'last_goal_owner_token', '')) == str(self._state['task_id'])
+                    and str(getattr(message, 'last_goal_result', '')) == 'route_completed'
+                    and int(getattr(message, 'goal_event_sequence', 0))
+                        > getattr(self, '_route_completion_event_floor', 0))))
+            if str(message.owner_token) != str(self._state['task_id']) and not completed:
                 if self._state.get('recovery_pending') and bool(message.active):
                     self._state['message'] = '路线正由其他任务占用，等待操作员处理'
                     self._persist()
@@ -1896,11 +1948,10 @@ class InspectionTaskManager(Node):
                 self._handle_route_point_event(message)
             if message.awaiting_release and str(message.state) == 'awaiting_release':
                 self._handle_point_hold(message)
-            if (
-                self._route_session_active
-                and not message.active
-                and str(message.state) == 'completed'
-            ):
+            if completed:
+                self._route_completion_event_floor = max(
+                    getattr(self, '_route_completion_event_floor', 0),
+                    int(getattr(message, 'goal_event_sequence', 0)))
                 purpose = self._route_session_purpose
                 self._route_session_active = False
                 self._route_session_purpose = ''
@@ -2343,11 +2394,19 @@ class InspectionTaskManager(Node):
     def _handle_thermal_environment_detection(
             self, detection: Dict[str, Any]) -> None:
         active = self._is_active() and not bool(self._state.get('paused'))
+        settings = getattr(self, '_detection_settings', None)
+        active = active and (settings is None or settings.enabled('thermal'))
         if self._environment_policy.observe_thermal(
                 detection, active=active, now=time.monotonic()):
             self._queue_environment_speech('thermal_high')
 
     def _drive_environment_alerts(self) -> None:
+        settings = getattr(self, '_detection_settings', None)
+        if settings is not None and not settings.allows('co2_high'):
+            self._environment_policy.observe_co2(None, valid=False, active=False, now=time.monotonic())
+            self._last_environment_sample_sequence = self._m701_sample_sequence
+            self._publish_environment_config()
+            return
         active = self._is_active() and not bool(self._state.get('paused'))
         now = time.monotonic()
         if not active:
@@ -2378,6 +2437,9 @@ class InspectionTaskManager(Node):
         self._publish_environment_config()
 
     def _queue_environment_speech(self, key: str) -> None:
+        settings = getattr(self, '_detection_settings', None)
+        if settings is not None and not settings.allows(key):
+            return
         if key in self._environment_speech_pending:
             return
         if key == self._environment_speech_active_key:
@@ -2401,6 +2463,9 @@ class InspectionTaskManager(Node):
             return
         key = self._environment_speech_queue.popleft()
         self._environment_speech_pending.discard(key)
+        settings = getattr(self, '_detection_settings', None)
+        if settings is not None and not settings.allows(key):
+            return
         self._environment_speech_active_key = key
         self._environment_speech_future = self._workers.submit(
             self._camera.speak_environment_alert, key)
@@ -2414,17 +2479,23 @@ class InspectionTaskManager(Node):
             max(0.0, time.monotonic() - received)
             if received > 0.0 else None)
         sample_fresh = age is not None and age <= self._environment_sample_max_age
+        settings = getattr(self, '_detection_settings', None)
+        co2_enabled = settings is None or settings.allows('co2_high')
+        thermal_enabled = settings is None or settings.enabled('thermal')
         return {
             **config,
             **policy,
             'minimum_co2_threshold_ppm': MIN_CO2_THRESHOLD_PPM,
             'maximum_co2_threshold_ppm': MAX_CO2_THRESHOLD_PPM,
             'active_inspection': active,
+            'co2_enabled': co2_enabled,
+            'thermal_enabled': thermal_enabled,
             'sample_fresh': sample_fresh,
             'sample_age_seconds': int(age) if age is not None else None,
             'speech_pending': self._environment_speech_future is not None
             or bool(self._environment_speech_queue),
             'message': (
+                '二氧化碳超限告警已在设置页关闭' if not co2_enabled else
                 '巡检中，环境异常语音告警已启用'
                 if active else '阈值已保存；启动巡检后启用语音告警'),
         }

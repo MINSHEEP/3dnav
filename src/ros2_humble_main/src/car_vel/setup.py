@@ -32,6 +32,12 @@ hikvision_runtime_files = install_tree(
     'hikvision_camera',
     os.path.join('share', package_name, 'hikvision_camera'),
 )
+# Standalone camera scripts use the same policy implementation as ROS nodes.
+# Source of truth remains lzp_service; ship a data-file copy for share-only runs.
+hikvision_runtime_files.append((
+    os.path.join('share', package_name, 'hikvision_camera'),
+    ['../nav_service/lzp_service/lzp_service/detection_settings.py'],
+))
 behavior_runtime_files = install_tree(
     'person_behavior',
     os.path.join('share', package_name, 'person_behavior'),
@@ -49,6 +55,7 @@ setup(
             'HIKVISION_CAMERA.md',
             'USB_CAMERA.md',
             'BEHAVIOR_RECOGNITION.md',
+            'DETECTION_SETTINGS.md',
             'WEB_PREVIEW.md',
             'XINGJI_FIXED_OBSTACLE.md',
             'NAVIGATION_MOTION_LOGS.md',

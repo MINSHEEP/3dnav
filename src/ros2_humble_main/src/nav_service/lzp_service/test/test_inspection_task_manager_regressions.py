@@ -120,6 +120,10 @@ def _load_manager_methods(*method_names):
     namespace = {
         'time': time,
         'threading': threading,
+        'TERMINAL_STATES': ast.literal_eval(next(
+            node.value for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == 'TERMINAL_STATES'
+                    for target in node.targets))),
         'utc_now': lambda: 'now',
         'RouteExecutionStatus': object,
         'CancelGoal': type('CancelGoal', (), {'Request': type('Request', (), {})}),

@@ -1,4 +1,4 @@
-# CPU-only shared-pose fall rules and scene fight; preserve original temporal limits.
+# CPU shared-pose fall/smoking rules and independent scene fight; preserve temporal limits.
 protocol_version: 1
 profile: yolo_pose_rules_paddle_aux_v1
 vendor_dir: vendor/PaddleDetection
@@ -11,6 +11,7 @@ disabled_ir_passes:
   - conv_elementwise_add_fuse_pass
 models:
   yolo_pose: output_inference/yolov8m_pose_640/yolov8m-pose.onnx
+  smoking: output_inference/ppyoloe_crn_s_80e_smoking_visdrone
   fight: output_inference/ppTSM
 yolo_pose:
   confidence: 0.25
@@ -51,6 +52,49 @@ fall:
   minimum_rotation_degrees: 20.0
   minimum_height_loss_ratio: 0.2
   temporal_validation: pending_fixed_video_comparison
+smoking:
+  positive_class: 0
+  threshold: 0.5
+  threshold_validation: mouth_association_tuned_on_21_clip_development_set_not_independent_accuracy
+  association:
+    enabled: true
+    keypoint_confidence: 0.5
+    max_evidence_candidates: 8
+  sample_hz: 2.0
+  scheduling: global_clock_fair_oldest_first
+  batch_size: 8
+  max_rois_per_tick: 8
+  diagnostic_max_detections: 20
+  result_ttl_seconds: 1.5
+  hand_to_mouth:
+    # Additional causal path; direct mouth contact and detector threshold stay unchanged.
+    enabled: true
+    evidence_ttl_seconds: 3.0
+    confirmation_seconds: 0.2
+    minimum_far_distance_heads: 2.0
+    maximum_near_distance_heads: 1.5
+    minimum_approach_heads: 1.0
+    max_wrist_distance_heads: 1.5
+    wrist_ambiguity_margin_heads: 0.25
+    near_face:
+      # Strong detection + a distinct matching detection; weak scores cannot start/renew evidence.
+      enabled: true
+      start_threshold: 0.65
+      continue_threshold: 0.30
+      mouth_half_width_heads: 1.25
+      mouth_half_height_heads: 0.5
+      maximum_wrist_mouth_distance_heads: 2.0
+      max_candidate_shift_heads: 0.75
+      occlusion_grace_seconds: 1.0
+  temporal:
+    # Rejected on frozen new-source clips: 3/4 positive coverage fell to 1/4.
+    # Keep the previous spatial smoking decision; do not tune on the holdout.
+    enabled: false
+    minimum_positive_observations: 2
+    confirmation_window_seconds: 1.0
+    minimum_confirmation_seconds: 0.25
+    max_prediction_gap_seconds: 0.75
+    track_gap_seconds: 0.3
 fight:
   positive_class: 1
   minimum_score: 0.5
@@ -74,3 +118,4 @@ stream:
 branches:
   fall: true
   fight: true
+  smoking: true

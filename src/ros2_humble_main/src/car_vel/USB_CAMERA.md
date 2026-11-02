@@ -142,7 +142,7 @@ ros2 launch car_vel launch_manager.launch.py
 - `camera_width:=1280`
 - `camera_height:=720`
 - `camera_fps:=30`
-- 主模型检测烟雾、火焰和烟头，`yolo_imgsz:=640`
+- 主模型仅保留烟雾、火焰（旧香烟/烟头框已移除，疑似吸烟使用行为模块），`yolo_imgsz:=640`
 - 到点精检主模型使用训练分辨率，`yolo_inspection_imgsz:=1280`
 - 行进中人脸/车牌限频检测，`yolo_aux_transit_fps:=3.0`
 - 手动预览人脸/车牌限频检测，`yolo_aux_manual_fps:=5.0`
@@ -164,7 +164,7 @@ USB 摄像头不需要 IP、用户名或密码，也不提供云台、光学变�
 人脸检测后使用 OpenCV SFace 特征与人员库比对；车牌检测后使用 HyperLPR3
 执行字符 OCR，并用 HSV 主色分类为黄底黑字、白底黑字、蓝底白字、绿底黑字
 或未知。识别结果分为“已登记 / 未登记 / 不确定”，三种结果都只记录，均不会
-触发语音或异常告警；烟雾、火焰和烟头继续沿用原有告警策略。
+触发语音或异常告警；烟雾、火焰继续沿用原有告警策略；疑似吸烟由行为模块独立播报和记录。
 
 人员、车辆和识别事件使用独立数据库
 `~/.ros/robot_navigation/recognition.db`，与巡检安全告警库分离。人员和车辆各

@@ -1,7 +1,7 @@
 # Runtime and model provenance
 
 This directory adapts the supplied local `person-behavior-recognition` project
-for the robot's isolated **CPU, fall/lying and scene-fight only** process.
+for the robot's isolated **CPU fall/lying, smoking and scene-fight** workers.
 The source project was read only. Original file hashes and adaptation scope are
 recorded in `environment/source_provenance.json`.
 
@@ -26,8 +26,11 @@ recorded in `environment/source_provenance.json`.
   scene-fighting model is the official `PaddleVideo-release2.3/ppTSM_fight.zip`
   export recorded in `models_manifest.json`.
 
-Only the pose ONNX model and ppTSM fighting model are loaded. No smoking model,
-smoking inference, smoking result, MOT model, HRNet model or STGCN model is used.
+The supplied v4 PPYOLOE smoking export and pure mouth/hand association modules
+were added on 2026-11-02. Provenance and copied-module hashes are in
+`environment/smoking_source_provenance.json`; weight hashes/URL are in the model
+and asset manifests. Shared pose, PPYOLOE smoking and ppTSM fight are loaded only
+when their branches are enabled. No legacy MOT, HRNet or STGCN model is loaded.
 The archive contains upstream general-purpose code which may name other
 capabilities; that does not enable those capabilities in this runtime.
 

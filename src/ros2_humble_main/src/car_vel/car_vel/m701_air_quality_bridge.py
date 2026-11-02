@@ -11,6 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 from lzp_interface.srv import ConfigureM701
+from lzp_service.detection_settings import DetectionSettings
 from .m701_connection import ConfigStore, ConnectionError, diagnose, draft, identity, inventory, observation, resolve
 
 from .m701_protocol import (
@@ -33,6 +34,7 @@ class M701AirQualityBridge(Node):
 
     def __init__(self):
         super().__init__('m701_air_quality_bridge')
+        self._detection_settings = DetectionSettings()
         self.declare_parameter('port', DEFAULT_M701_PORT)
         self.declare_parameter('baudrate', 9600)
         self.declare_parameter('address', 1)
@@ -198,6 +200,16 @@ class M701AirQualityBridge(Node):
             f'({len(received)} bytes received)')
 
     def _poll(self):
+        settings = getattr(self, '_detection_settings', None)
+        if settings is not None and not settings.enabled('m701'):
+            self._close_serial()
+            self._failures = 0
+            self._connection_error = {'code': 'detection_disabled', 'message': 'M701 检测已在设置页关闭'}
+            payload = self._base_payload()
+            payload.update(enabled=False, online=False, valid=False, warming_up=False,
+                           values=None, error='', error_code='detection_disabled', consecutive_failures=0)
+            self.publisher.publish(String(data=json.dumps(payload, ensure_ascii=False, separators=(',', ':'))))
+            return
         try:
             if self._serial is None:
                 self._open_serial()
@@ -211,6 +223,7 @@ class M701AirQualityBridge(Node):
                 if self._first_opened_at is not None else 0.0)
             payload = self._base_payload()
             payload.update({
+                'enabled': True,
                 'online': True,
                 'valid': True,
                 'warming_up': elapsed < self.warmup_sec,

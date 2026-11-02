@@ -22,6 +22,18 @@ from behavior_parallel import ParallelBehaviorSupervisor
 
 
 class ClipRuntimeTests(unittest.TestCase):
+    def test_old_two_switch_clip_cannot_implicitly_enable_new_smoking_branch(self):
+        from pphuman_runtime.runtime_yolo import load_config
+        cfg = load_config(Path(__file__).resolve().parents[1] / 'person_behavior/config/inference.yaml')
+        backend = FakeBackend()
+        runtime = RuntimeYolo(cfg, backend)
+        frame = np.zeros((16, 16, 3), np.uint8)
+        samples = [(i * 240_000_000, frame) for i in range(8)]
+        result = runtime.infer(frame, dict(stamp_ns=samples[-1][0], source_epoch=1, request_id=1,
+                                          enabled_branches={'fall': False, 'fight': True}), fight_samples=samples)
+        self.assertEqual(result['scene']['fight']['state'], 'valid')
+        self.assertFalse(result['enabled_branches']['smoking'])
+        self.assertEqual(backend.pose_calls, 0)
     def test_slow_consumer_still_classifies_eight_real_capture_frames(self):
         backend = FakeBackend()
         runtime = RuntimeYolo(config(), backend)
@@ -133,7 +145,7 @@ class IndependentWorkerTests(unittest.TestCase):
             worker._worker = Mock(is_alive=lambda: True)
             worker._loaded = True
             worker._render = lambda frame, result, raw: (b'raw', b'annotated')
-        fall, fight = service._workers['fall'], service._workers['fight']
+        fall, fight = service._workers['pose'], service._workers['fight']
         fall._error = 'pose model failed'
         stamp = time.monotonic_ns()
         fight._accept(dict(source_epoch=fight._epoch, stamp_ns=stamp, persons=[],
@@ -168,8 +180,8 @@ class Backend(FakeBackend):
         time.sleep(1.05)
         return []
 cfg = config()
-branch = sys.argv[-1]
-cfg['branches'] = {{key:key==branch for key in ('fall','fight')}}
+branches = set(sys.argv[-1].split(','))
+cfg['branches'] = {{key:key in branches for key in ('fall','fight','smoking')}}
 serve(RuntimeYolo(cfg, Backend()), cfg, sys.stdin.buffer, sys.stdout.buffer)
 '''
         with tempfile.TemporaryDirectory() as folder:
@@ -199,9 +211,19 @@ serve(RuntimeYolo(cfg, Backend()), cfg, sys.stdin.buffer, sys.stdout.buffer)
                 self.assertIsNotNone(observed, service.status())
                 self.assertTrue(observed['branches']['fight']['fresh'])
                 self.assertEqual(observed['branches']['fight']['window']['samples'], 8)
-                self.assertTrue(observed['workers']['fall']['running'])
+                self.assertTrue(observed['workers']['pose']['running'])
                 processes = [worker._process for worker in service._workers.values()]
                 self.assertEqual(len({p.pid for p in processes}), 2)
+                fight_pid = service._workers['fight']._process.pid
+                pose_pid = service._workers['pose']._process.pid
+                service.configure({'fall_enabled': True, 'fight_enabled': True, 'smoking_enabled': False})
+                restart_deadline = time.monotonic() + 4
+                while time.monotonic() < restart_deadline and not service._workers['pose']._loaded:
+                    time.sleep(.02)
+                self.assertTrue(service._workers['pose']._loaded)
+                self.assertNotEqual(service._workers['pose']._process.pid, pose_pid)
+                self.assertEqual(service._workers['fight']._process.pid, fight_pid)
+                processes += [service._workers['pose']._process]
                 service.reset_source()
                 self.assertFalse(service.status()['fresh'])
             finally:

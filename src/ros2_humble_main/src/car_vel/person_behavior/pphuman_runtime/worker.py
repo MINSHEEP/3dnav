@@ -12,7 +12,7 @@ def serve(runtime, cfg, input_stream, output_stream):
                                   "models": runtime.backend.identities,
                                   "runtime": runtime.backend.metadata,
                                   "branches": cfg["branches"],
-                                  "sampling": {k: cfg[k] for k in ("fall", "fight")}})
+                                  "sampling": {k: cfg[k] for k in ("fall", "fight", "smoking")}})
     import numpy as np
     limits = {key: cfg["stream"][key] for key in (
         "max_header_bytes", "max_payload_bytes", "max_dimension")}
@@ -44,7 +44,8 @@ def serve(runtime, cfg, input_stream, output_stream):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--branch", choices=("fall", "fight"))
+    parser.add_argument("--branch", choices=("fall", "fight", "smoking", "pose"))
+    parser.add_argument("--branches", help="Comma-separated enabled branches within worker scope")
     args = parser.parse_args()
     # Native Paddle output must not corrupt the binary response stream.
     sys.stdout.flush()
@@ -56,7 +57,13 @@ def main():
         from .yolo_backend import YoloBackend
         cfg = load_config(args.config)
         if args.branch:
-            cfg["branches"] = {key: cfg["branches"][key] and key == args.branch for key in ("fall", "fight")}
+            scope = {"fall", "smoking"} if args.branch == "pose" else {args.branch}
+            cfg["branches"] = {key: value and key in scope for key, value in cfg["branches"].items()}
+        if args.branches is not None:
+            selected = set(args.branches.split(","))
+            if not selected or not selected <= set(cfg["branches"]):
+                raise ValueError("Unknown enabled branch")
+            cfg["branches"] = {key: value and key in selected for key, value in cfg["branches"].items()}
         import cv2
         cv2.setNumThreads(cfg["cpu_threads"])
         backend = YoloBackend(cfg)

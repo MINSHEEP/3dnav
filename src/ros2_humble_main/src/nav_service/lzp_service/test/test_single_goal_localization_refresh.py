@@ -248,6 +248,9 @@ def manager():
     node._goal_status_publisher = FakePublisher()
     node._zero_velocity_publisher = FakePublisher()
     node._inflation_ready_for_navigation = lambda: True
+    # These tests isolate the legacy AMCL refresh protocol. The authority
+    # adapter has its own integration tests; do not omit its preflight seam.
+    node._global_localization_check = lambda: None
     node._drive_inflation_radius_sync = lambda: None
     node._drive_auto_recovery = lambda: None
     node._publish_all_status = lambda: None

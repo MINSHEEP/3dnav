@@ -1,4 +1,4 @@
-"""Isolated fall/fight worker fed exclusively by the gateway's shared camera.
+"""Isolated behavior worker fed exclusively by the gateway's shared camera.
 
 No model or Paddle imports occur here. One replaceable pending frame, one child,
 bounded protocol queues and capture timestamps prevent synthetic clip continuity.
@@ -71,7 +71,7 @@ class BehaviorSupervisor:
         self.ttl = float(freshness_seconds)
         self.startup_timeout, self.inference_timeout = startup_timeout, inference_timeout
         self.speech, self._popen, self._clock = speech, popen, clock
-        if branch not in (None, 'fall', 'fight'):
+        if branch not in (None, 'fall', 'fight', 'smoking', 'pose'):
             raise ValueError('Unknown behavior branch')
         self.branch, self._log = branch, log
         self._clip = deque(maxlen=8)
@@ -85,9 +85,9 @@ class BehaviorSupervisor:
         self._lifecycle = threading.Lock()
         self._stop = threading.Event()
         self._worker = self._process = None
-        self._enabled = {'fall': True, 'fight': True}
+        self._enabled = {'fall': True, 'fight': True, 'smoking': True}
         if branch:
-            self._enabled = {key: key == branch for key in self._enabled}
+            self._enabled = {key: key in self._scope() for key in self._enabled}
         self._manual = False
         self._suspended = False
         self._mode, self._task_id = 'manual', ''
@@ -101,6 +101,7 @@ class BehaviorSupervisor:
         self._last_alert = {}
         self._stderr = ''
         self._fight_ttl = 1.0
+        self._smoking_ttl = 1.5
         if self.config_path and self.config_path.exists():
             try:
                 value = json.loads(self.config_path.read_text(encoding='utf-8'))
@@ -110,21 +111,42 @@ class BehaviorSupervisor:
 
     @staticmethod
     def _validate_config(value):
-        if (not isinstance(value, dict) or set(value) != {'fall_enabled', 'fight_enabled'}
+        # Migrate existing two-switch settings; the replacement is on by default.
+        if (not isinstance(value, dict) or set(value) not in (
+                {'fall_enabled', 'fight_enabled'}, {'fall_enabled', 'fight_enabled', 'smoking_enabled'})
                 or any(type(v) is not bool for v in value.values())):
-            raise ValueError('行为配置只允许 fall_enabled 和 fight_enabled 布尔值')
-        return {'fall': value['fall_enabled'], 'fight': value['fight_enabled']}
+            raise ValueError('行为配置只允许 fall_enabled、fight_enabled 和 smoking_enabled 布尔值')
+        return {'fall': value['fall_enabled'], 'fight': value['fight_enabled'],
+                'smoking': value.get('smoking_enabled', True)}
+
+    def _scope(self):
+        return {'fall', 'smoking'} if self.branch == 'pose' else (
+            {self.branch} if self.branch else {'fall', 'fight', 'smoking'})
 
     def configure(self, value):
         enabled = self._validate_config(value)
+        enabled = {key: active and key in self._scope() for key, active in enabled.items()}
         if self.config_path:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.config_path.with_suffix('.tmp')
             temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
             os.replace(temporary, self.config_path)
         with self._condition:
+            if enabled == self._enabled:
+                return self.status()
             self._enabled = enabled
             self._invalidate_locked('config_changed')
+        # Model ownership changes with the switches. Recreate only this owned
+        # child so enabling smoking actually loads PPYOLOE and disabling it
+        # releases it; the independent fight worker continues unchanged.
+        with self._lifecycle:
+            with self._condition:
+                self._stop.set()
+                self._condition.notify_all()
+                worker = self._worker
+            self._shutdown_child()
+            if worker and worker.is_alive():
+                worker.join(timeout=3)
         self._sync_running()
         return self.status()
 
@@ -253,6 +275,7 @@ class BehaviorSupervisor:
         command = [str(self.python), '-m', 'pphuman_runtime.worker', '--config', 'config/inference.yaml']
         if self.branch:
             command += ['--branch', self.branch]
+        command += ['--branches', ','.join(key for key, value in self._enabled.items() if value)]
         if self._log:
             self._log(f'启动 {self.branch or "fall+fight"}，解释器={self.python}')
         process = self._popen(command, cwd=str(self.runtime_dir), env=isolated_environment(),
@@ -318,6 +341,7 @@ class BehaviorSupervisor:
                 raise RuntimeError('行为识别初始化失败：' + str(ready.get('error') or ready))
             with self._condition:
                 self._fight_ttl = min(self.ttl, float(ready.get('sampling', {}).get('fight', {}).get('result_ttl_seconds', 1.0)))
+                self._smoking_ttl = min(self.ttl, float(ready.get('sampling', {}).get('smoking', {}).get('result_ttl_seconds', 1.5)))
                 if self.branch == 'fight':
                     self._fight_sampling = ready['sampling']['fight']
                 self._loaded = True
@@ -454,16 +478,27 @@ class BehaviorSupervisor:
         cv2 = importlib.import_module('cv2')
         drawn = frame.copy()
         for person in result.get('persons', []):
-            action = (person.get('actions') or {}).get('fall') or {}
+            actions = person.get('actions') or {}
             bbox = person.get('bbox') or person.get('box')
             if bbox and len(bbox) >= 4:
                 x1, y1, x2, y2 = map(int, bbox[:4])
                 cv2.rectangle(drawn, (x1, y1), (x2, y2), (0, 180, 255), 2)
-                cv2.putText(drawn, 'fall: ' + str(action.get('label') or action.get('state', 'unknown')),
+                text = ' | '.join(key + ': ' + str(action.get('label') or action.get('state', 'unknown'))
+                                  for key, action in actions.items() if action.get('state') != 'disabled')
+                cv2.putText(drawn, text,
                             (max(0, x1), max(20, y1 - 7)), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 180, 255), 2)
+                smoke = actions.get('smoking') or {}
+                selected = (smoke.get('evidence') or {}).get('selected_detection') or {}
+                hand_detection = ((smoke.get('evidence') or {}).get('hand_to_mouth') or {}).get('detection') or {}
+                for item in (selected, hand_detection):
+                    box = item.get('bbox')
+                    if box and len(box) == 4:
+                        a, b, c, d = map(int, box)
+                        cv2.rectangle(drawn, (a, b), (c, d), (255, 100, 200), 2)
         fight = (result.get('scene') or {}).get('fight') or {}
-        cv2.putText(drawn, 'scene fight: ' + str(fight.get('label') or fight.get('state', 'unknown')),
-                    (12, 28), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 180, 255), 2)
+        if fight.get('state') != 'disabled':
+            cv2.putText(drawn, 'scene fight: ' + str(fight.get('label') or fight.get('state', 'unknown')),
+                        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 180, 255), 2)
         def encode(image):
             ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 88])
             if not ok: raise RuntimeError('行为证据图片编码失败')
@@ -481,6 +516,23 @@ class BehaviorSupervisor:
                     state=action.get('state', 'unknown'), updated=action.get('updated') is True,
                     alert=action.get('label') == 'fall' and action.get('state') == 'valid' and action.get('updated') is True,
                     rule_evidence=action, source_epoch=result['source_epoch'], stamp_ns=result['stamp_ns'], fresh=True))
+            smoke = (person.get('actions') or {}).get('smoking') or {}
+            score, predicted = smoke.get('score'), smoke.get('prediction_stamp_ns')
+            if (self._enabled['smoking'] and smoke.get('label') == 'smoking'
+                    and smoke.get('state') == 'valid' and type(predicted) is int
+                    and 0 <= self._clock() - predicted <= self._smoking_ttl * 1e9
+                    and type(score) in (int, float) and math.isfinite(score) and 0 <= score <= 1
+                    and smoke.get('score_kind') in ('detection_score', 'temporally_associated_detection_score')):
+                details = smoke.get('evidence') or {}
+                hand = details.get('hand_to_mouth') or {}
+                # Cached/occluded positives are display context, not new alarms.
+                updated = smoke.get('updated') is True and not hand.get('short_occlusion', False)
+                values.append(dict(category='smoking', label='smoking', confidence=float(score),
+                    score_kind=smoke['score_kind'], measurement_type='associated_detection_score', scope='person',
+                    track_id=person.get('track_id'), bbox=person.get('bbox'), state='valid',
+                    updated=updated, alert=updated, evidence_details=details, reason=smoke.get('reason'),
+                    source_epoch=result['source_epoch'], stamp_ns=result['stamp_ns'],
+                    prediction_stamp_ns=predicted, fresh=True))
         action = (result.get('scene') or {}).get('fight') or {}
         score = action.get('score')
         if (self._enabled['fight'] and action.get('label') == 'fight' and
@@ -510,24 +562,29 @@ class BehaviorSupervisor:
             fresh = self._fresh_locked() and running
             result = copy.deepcopy(self._latest['result']) if fresh else {}
             branches = {}
-            for key in ('fall', 'fight'):
+            for key in ('fall', 'fight', 'smoking'):
                 if not self._enabled[key]: state = 'disabled'
                 elif self._error: state = 'error'
                 elif not running: state = 'stopped'
                 elif not self._loaded: state = 'starting'
                 elif not fresh: state = 'stale' if self._latest else 'warming'
                 else: state = 'warming'
-                actions = ([(v.get('actions') or {}).get('fall') or {} for v in result.get('persons', [])]
-                           if key == 'fall' else [(result.get('scene') or {}).get('fight') or {}])
+                actions = ([(v.get('actions') or {}).get(key) or {} for v in result.get('persons', [])]
+                           if key != 'fight' else [(result.get('scene') or {}).get('fight') or {}])
                 action = next((a for a in actions if a.get('label') == key), actions[0] if actions else {})
                 if fresh and self._enabled[key]: state = action.get('state', 'warming')
-                if (fresh and self._enabled[key] and key == 'fall' and not actions
+                if (fresh and self._enabled[key] and key == 'smoking' and actions
+                        and (type(action.get('prediction_stamp_ns')) is not int
+                             or self._clock() - action['prediction_stamp_ns'] > self._smoking_ttl * 1e9)):
+                    state = 'stale'
+                if (fresh and self._enabled[key] and key != 'fight' and not actions
                         and result.get('pose_status', {}).get('state') == 'valid'):
                     state = 'valid'
                     action = {'label': 'no_person'}
                 branches[key] = dict(enabled=self._enabled[key], state=state, ready=state == 'valid',
                                      label=action.get('label'), confidence=None if key == 'fall' else action.get('score'),
-                                     score_kind='rule_evidence' if key == 'fall' else 'model_probability',
+                                     score_kind=('rule_evidence' if key == 'fall' else 'model_probability'
+                                                 if key == 'fight' else action.get('score_kind', 'associated_detection_score')),
                                      window=action.get('window'), reason=action.get('reason'))
             enabled = [v for v in branches.values() if v['enabled']]
             ready = bool(fresh and enabled and all(v['ready'] for v in enabled))

@@ -37,6 +37,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from multimodel_detection import MultiModelDetector
+from detection_switches import DetectionSettings
 from recognition_core import RecognitionDatabase
 from recognition_runtime import (
     DEFAULT_EVIDENCE_DIR, DEFAULT_SFACE_MODEL, HyperLPRPlateRecognizer, RecognitionRuntime,
@@ -61,13 +62,12 @@ G711_FRAME_BYTES = 160
 VOICE_FRAME_SECONDS = 0.02
 VOICE_READY_TIMEOUT_SECONDS = 1.0
 
-# 只播报这三类，其他类别直接忽略。
-TARGET_LABEL_ORDER = ("fire", "smoke", "cigarettes")
+# 此共享权重仅保留火焰、烟雾；吸烟行为由独立行为模块判定。
+TARGET_LABEL_ORDER = ("fire", "smoke")
 MIN_CONFIRM_CONFIDENCE = 0.50
 TARGET_LABEL_CN = {
     "fire": "火灾",
     "smoke": "烟雾",
-    "cigarettes": "烟头",
 }
 
 ENVIRONMENT_SPEECH = {
@@ -78,7 +78,6 @@ ENVIRONMENT_SPEECH = {
 LOCAL_SPEECH_FILES = {
     "火灾": "火焰.mp3",
     "烟雾": "烟雾.mp3",
-    "烟头": "香烟.mp3",
 }
 
 DEVICE_AUDIO_ENC_NAMES = {
@@ -131,8 +130,6 @@ def classify_alarm_label(label: str) -> str | None:
         return "fire"
     if "smoke" in key:
         return "smoke"
-    if "cigarette" in key or "butt" in key:
-        return "cigarettes"
     return None
 
 
@@ -885,8 +882,9 @@ class HikvisionDeviceSpeaker:
 class SpeechQueueService:
     """后台串行语音队列，防止本地播放或设备发送阻塞 YOLO 推理循环。"""
 
-    def __init__(self, output: Any) -> None:
+    def __init__(self, output: Any, detection_settings=None) -> None:
         self._output = output
+        self._detection_settings = detection_settings
         self._queue: queue.Queue[tuple[str, tuple[str, ...]]] = queue.Queue()
         self._stop = threading.Event()
         self._closed = False
@@ -895,7 +893,7 @@ class SpeechQueueService:
 
     def announce(self, alarm_keys: Iterable[str]) -> None:
         """把需要播报的类别放入队列。"""
-        keys = tuple(alarm_keys)
+        keys = tuple(key for key in alarm_keys if self._detection_settings is None or self._detection_settings.allows(key))
         if not keys or self._closed:
             return
         self._queue.put(('alarms', keys))
@@ -905,6 +903,8 @@ class SpeechQueueService:
         phrase = ENVIRONMENT_SPEECH.get(str(key))
         if phrase is None:
             raise ValueError('环境语音告警类型无效')
+        if self._detection_settings is not None and not self._detection_settings.allows(key):
+            return False
         if self._closed:
             raise RuntimeError('语音输出已关闭')
         self._queue.put(('texts', (phrase,)))
@@ -917,9 +917,15 @@ class SpeechQueueService:
                 continue
             try:
                 if kind == 'texts':
-                    self._output.announce_texts(values)
+                    allowed = {phrase for key, phrase in ENVIRONMENT_SPEECH.items()
+                               if self._detection_settings is None or self._detection_settings.allows(key)}
+                    values = tuple(value for value in values if value in allowed)
+                    if values:
+                        self._output.announce_texts(values)
                 else:
-                    self._output.announce(values)
+                    values = tuple(value for value in values if self._detection_settings is None or self._detection_settings.allows(value))
+                    if values:
+                        self._output.announce(values)
             except Exception as exc:  # pragma: no cover - 硬件链路异常不能拖垮检测循环
                 print(f"[语音] 播放失败: {exc}", file=sys.stderr)
 
@@ -935,32 +941,32 @@ class SpeechQueueService:
 
 def run(args: argparse.Namespace) -> None:
     """启动相机取流、多模型检测和本地语音播报。"""
-    model_path = args.model.expanduser().resolve()
-    if not model_path.is_file():
-        raise FileNotFoundError(f"模型不存在: {model_path}")
-    if model_path.suffix.lower() == ".rknn":
-        raise ValueError("本脚本使用 Ultralytics PT/ONNX 模型，不支持 RKNN")
-    if not args.disable_face and not args.face_model.is_file():
-        raise FileNotFoundError(f"人脸模型不存在: {args.face_model}")
-    if not args.disable_plate and not args.plate_model.is_file():
-        raise FileNotFoundError(f"车牌模型不存在: {args.plate_model}")
+    detection_settings = DetectionSettings()
+    def primary_factory():
+        model_path = args.model.expanduser().resolve()
+        if not model_path.is_file():
+            raise FileNotFoundError(f"模型不存在: {model_path}")
+        if model_path.suffix.lower() == ".rknn":
+            raise ValueError("本脚本不支持 RKNN")
+        return YOLO(str(model_path), task="detect")
 
-    primary_model = YOLO(str(model_path), task="detect")
-    face_detector = None
-    if not args.disable_face:
+    def face_factory():
+        if not args.face_model.is_file():
+            raise FileNotFoundError(f"人脸模型不存在: {args.face_model}")
         if not hasattr(cv2, "FaceDetectorYN"):
-            raise RuntimeError("当前 OpenCV 不支持 FaceDetectorYN，无法启用人脸检测")
-        face_detector = cv2.FaceDetectorYN.create(
-            str(args.face_model), "", (320, 320), args.face_conf,
-            0.3, 5000)
-    plate_model = (
-        None if args.disable_plate
-        else YOLO(str(args.plate_model), task="detect")
-    )
+            raise RuntimeError("当前 OpenCV 不支持 FaceDetectorYN")
+        return cv2.FaceDetectorYN.create(str(args.face_model), "", (320, 320), args.face_conf, .3, 5000)
+
+    def plate_factory():
+        if not args.plate_model.is_file():
+            raise FileNotFoundError(f"车牌模型不存在: {args.plate_model}")
+        return YOLO(str(args.plate_model), task="detect")
+
+    factories = {'primary': primary_factory}
+    if not args.disable_face: factories['face'] = face_factory
+    if not args.disable_plate: factories['plate'] = plate_factory
     detector = MultiModelDetector(
-        primary_model,
-        face_detector=face_detector,
-        plate_model=plate_model,
+        None, model_factories=factories,
         primary_conf=args.conf,
         primary_iou=args.iou,
         primary_imgsz=args.imgsz,
@@ -975,18 +981,14 @@ def run(args: argparse.Namespace) -> None:
         display_ttl_seconds=args.aux_display_ttl,
     )
     # 先做空帧预热，减少正式检测首帧卡顿。
-    detector.warmup()
+    detector.warmup(detection_settings.snapshot()['effective'])
     recognition_database = RecognitionDatabase(args.recognition_db)
     recognition = RecognitionRuntime(
         recognition_database,
-        face_extractor=(
-            None if args.disable_face or args.disable_recognition
-            else SFaceFeatureExtractor(args.sface_model)),
-        plate_recognizer=(
-            None if args.disable_plate or args.disable_recognition
-            else HyperLPRPlateRecognizer()),
-        evidence_dir=args.recognition_evidence_dir,
+        face_extractor=None, plate_recognizer=None,
+        evidence_dir=args.recognition_evidence_dir, detection_settings=detection_settings,
     )
+    policy_version = None
     recognition_status = recognition.model_status()
     print(
         "识别匹配层: "
@@ -1046,7 +1048,7 @@ def run(args: argparse.Namespace) -> None:
                 print(f"[语音] 设备输出初始化失败，继续其他输出: {error}", file=sys.stderr, flush=True)
         if outputs:
             output = outputs[0] if len(outputs) == 1 else CompositeSpeechOutput(outputs)
-            speech = SpeechQueueService(output)
+            speech = SpeechQueueService(output, detection_settings=detection_settings)
             print(f"[语音] 输出模式: {args.voice_output}", flush=True)
         else:
             print("[语音] 没有可用输出，已禁用播报但继续 YOLO", file=sys.stderr, flush=True)
@@ -1075,7 +1077,30 @@ def run(args: argparse.Namespace) -> None:
                 web_server.inspection.context()
                 if web_server is not None else ("manual", "")
             )
-            analysis = detector.analyze(frame, mode=mode)
+            policy_state = detection_settings.snapshot()
+            enabled = policy_state['effective']
+            if policy_version != policy_state['version']:
+                recognition.reset_observations()
+                policy_version = policy_state['version']
+            if enabled['face'] and not args.disable_face and not args.disable_recognition:
+                if recognition.face_extractor is None:
+                    recognition.face_extractor = SFaceFeatureExtractor(args.sface_model)
+            else:
+                recognition.face_extractor = None
+            if enabled['plate'] and not args.disable_plate and not args.disable_recognition:
+                if recognition.plate_recognizer is None:
+                    recognition.plate_recognizer = HyperLPRPlateRecognizer()
+            else:
+                recognition.plate_recognizer = None
+            recognition_status = recognition.model_status()
+            recognition_status['enabled'] = {key: enabled[key] for key in ('face', 'plate')}
+            if web_server is not None:
+                web_server.inspection.set_recognition_status(recognition_status)
+            analysis = detector.analyze(frame, mode=mode, enabled=enabled)
+            # Do not publish an in-flight result under a newer switch revision.
+            if detection_settings.snapshot()['version'] != policy_state['version']:
+                frame = source.read(args.frame_timeout)
+                continue
             public_detections = recognition.process(
                 raw_frame, analysis.public_detections(), task_id=task_id)
             elapsed = max(time.perf_counter() - started, 1e-9)

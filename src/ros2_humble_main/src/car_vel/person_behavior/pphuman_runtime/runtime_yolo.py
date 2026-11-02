@@ -1,4 +1,4 @@
-"""Two-model CPU runtime adapted from the supplied shared-pose implementation.
+"""Three-branch CPU runtime adapted from the supplied shared-pose implementation.
 
 Fall is person-level rule evidence, with no numeric confidence. Fight is a
 scene-level model result. Capture timestamps, not processed-frame counts,
@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .fall_rules import FallRuleEngine
+from .smoking_branch import SmokingBranch
 from .runtime import NS, TimeWindow, classification, current, empty_action
 
 
@@ -21,17 +22,17 @@ def load_config(path):
         cfg = yaml.safe_load(stream)
     cfg["project_root"] = str(path.parent.parent)
     if cfg.get("protocol_version") != 1 or cfg.get("profile") != "yolo_pose_rules_paddle_aux_v1":
-        raise ValueError("Expected two-model shared-pose profile and protocol 1")
-    if set(cfg["models"]) != {"yolo_pose", "fight"} or "smoking" in cfg:
-        raise ValueError("Only yolo_pose and fight models are supported")
+        raise ValueError("Expected shared-pose profile and protocol 1")
+    if set(cfg["models"]) != {"yolo_pose", "fight", "smoking"}:
+        raise ValueError("Expected shared pose, fight and smoking models")
     if cfg.get("device") != "CPU" or cfg.get("run_mode") != "paddle":
         raise ValueError("This deployed runtime requires CPU and paddle run mode")
     for threads in (cfg.get("cpu_threads"), cfg["yolo_pose"].get("cpu_threads")):
         if type(threads) is not int or not 1 <= threads <= 16:
             raise ValueError("CPU thread count must be between 1 and 16")
-    branches = cfg.setdefault("branches", {"fall": True, "fight": True})
-    if set(branches) != {"fall", "fight"} or any(type(v) is not bool for v in branches.values()):
-        raise ValueError("branches must contain boolean fall and fight switches")
+    branches = cfg.setdefault("branches", {"fall": True, "fight": True, "smoking": True})
+    if set(branches) != {"fall", "fight", "smoking"} or any(type(v) is not bool for v in branches.values()):
+        raise ValueError("branches must contain boolean fall, fight and smoking switches")
     fight = cfg["fight"]
     if not 0 < fight["sample_hz"] <= 120 or fight["result_ttl_seconds"] <= 0:
         raise ValueError("Invalid fight sampling or TTL")
@@ -51,6 +52,15 @@ def load_config(path):
         raise ValueError("Rule confirmation/gap must be positive")
     if fall.get("minimum_lying_observations", 3) < 2 or fall.get("max_visibility_gap_seconds", .4) <= 0:
         raise ValueError("Rules require repeated observations and a positive visibility deadline")
+    smoke = cfg["smoking"]
+    if (not 0 < smoke["sample_hz"] <= 120 or smoke["result_ttl_seconds"] <= 0
+            or not 1 <= smoke["max_rois_per_tick"] <= smoke["batch_size"]
+            or not 0 <= smoke["threshold"] <= 1
+            or not smoke.get("association", {}).get("enabled")):
+        raise ValueError("Invalid smoking sampling, budget or required spatial association")
+    limit = smoke.get("diagnostic_max_detections", 20)
+    if type(limit) is not int or not 0 <= limit <= 100:
+        raise ValueError("Invalid smoking diagnostics limit")
     return cfg
 
 
@@ -72,6 +82,7 @@ class RuntimeYolo:
     def reset(self, reason="explicit_reset"):
         self.backend.reset()
         self.rules = FallRuleEngine(self.cfg["fall"])
+        self.smoking = SmokingBranch(self.cfg, self.backend)
         self.fight_window = TimeWindow(self.cfg["fight"])
         self.fight_cache = None
         self.last_stamp = self.last_shape = self.source_epoch = None
@@ -84,7 +95,9 @@ class RuntimeYolo:
         stamp, epoch = header["stamp_ns"], header["source_epoch"]
         requested = header.get("enabled_branches", self.cfg["branches"])
         enabled = {name: bool(self.cfg["branches"][name] and requested.get(name, True))
-                   for name in ("fall", "fight")}
+                   for name in ("fall", "fight", "smoking")}
+        if fight_samples is not None and 'smoking' not in requested:
+            enabled['smoking'] = False  # Preserve legacy fight-only clip clients.
         reason = None
         if self.last_stamp is not None:
             if epoch != self.source_epoch:
@@ -111,26 +124,29 @@ class RuntimeYolo:
             return result
 
         people = []
-        if enabled["fall"]:
+        smoking_actions, smoking_schedule = {}, {}
+        if enabled["fall"] or enabled["smoking"]:
             observations = call("shared_pose", self.backend.observe, bgr, stamp)
             timing.update(getattr(self.backend, "last_timing", {}))
             for track_id in getattr(getattr(self.backend, "tracker", None), "retired_ids", ()):
                 self.rules.forget(track_id)
             self.rules.expire(stamp, {p["track_id"] for p in observations})
+            if enabled["smoking"]:
+                smoking_actions, smoking_schedule = self.smoking.update(bgr, observations, stamp, epoch, call)
             for person in observations:
                 track_id = person["track_id"]
                 fall = call("fall_rules", self.rules.update, track_id, person["keypoints"], person["bbox"], stamp,
                             bgr.shape, person.get("association_evidence"),
                             {"track_id": track_id, "source_stamp_ns": person.get("observation_stamp_ns"),
                              "rotation_cw": person.get("observation_rotation_cw", 0),
-                             "association": person.get("association")})
+                             "association": person.get("association")}) if enabled["fall"] else empty_action("disabled", "branch_disabled")
                 people.append({"track_id": track_id, "bbox": person["bbox"], "score": person["score"],
                                "keypoints": np.asarray(person["keypoints"]).tolist(), "keypoints_stamp_ns": stamp,
                                "observation_rotation_cw": person.get("observation_rotation_cw", 0),
                                "pose_observation_stamp_ns": person.get("observation_stamp_ns", stamp),
                                "association": person.get("association"),
                                "association_evidence": person.get("association_evidence"),
-                               "actions": {"fall": fall}})
+                               "actions": {"fall": fall, **({"smoking": smoking_actions[track_id]} if enabled["smoking"] else {})}})
 
         # Scene sampling is independent of person detection, but never fills
         # missed slots with duplicates or claims sparse history is continuous.
@@ -141,7 +157,7 @@ class RuntimeYolo:
                 # slow; a stream gap or reset never licenses invented frames.
                 self.fight_window.clear()
                 self.fight_cache = None
-                if (enabled["fall"] or not 1 <= len(fight_samples) <= 8
+                if (enabled["fall"] or enabled["smoking"] or not 1 <= len(fight_samples) <= 8
                         or fight_samples[-1][0] != stamp
                         or any(a[0] >= b[0] for a, b in zip(fight_samples, fight_samples[1:]))):
                     raise ValueError("Invalid fight-only capture clip")
@@ -171,8 +187,8 @@ class RuntimeYolo:
                 fight["window"] = self.fight_window.info()
         else:
             fight = empty_action("disabled", "branch_disabled")
-        actions = ([fight] if enabled["fight"] else []) + [p["actions"]["fall"] for p in people]
-        status = "valid" if actions and all(a["state"] == "valid" for a in actions) else "warming"
+        actions = ([fight] if enabled["fight"] else []) + [action for p in people for key, action in p["actions"].items() if enabled[key]]
+        status = "valid" if (actions or enabled["fall"] or enabled["smoking"]) and all(a["state"] == "valid" for a in actions) else "warming"
         if any(a["state"] == "unknown" for a in actions):
             status = "partial"
         timing["total"] = (time.perf_counter() - started) * 1000
@@ -180,6 +196,7 @@ class RuntimeYolo:
                 "request_id": header["request_id"], "stamp_ns": stamp, "source_epoch": epoch,
                 "status": status, "persons": people, "scene": {"fight": fight}, "timing_ms": timing,
                 "enabled_branches": enabled,
-                "pose_status": {"state": "valid" if enabled["fall"] else "disabled", "person_count": len(people)},
-                "pose_observation": getattr(self.backend, "last_pose_observation", None) if enabled["fall"] else None,
+                "pose_status": {"state": "valid" if enabled["fall"] or enabled["smoking"] else "disabled", "person_count": len(people)},
+                "pose_observation": getattr(self.backend, "last_pose_observation", None) if enabled["fall"] or enabled["smoking"] else None,
+                "scheduling": {"smoking": smoking_schedule},
                 "generation": self.generation, "reset_reason": reset_reason, "models": self.backend.identities}

@@ -2,7 +2,8 @@
 (function (global) {
     'use strict';
     const bindings = new WeakMap();
-    const NAMES = Object.freeze({ fall: '疑似跌倒', lying: '躺卧姿态（未确认跌倒）', fight: '疑似打架' });
+    const NAMES = Object.freeze({ fall: '疑似跌倒', lying: '躺卧姿态（未确认跌倒）', fight: '疑似打架', smoking: '疑似吸烟' });
+    const BRANCHES = ['fall', 'fight', 'smoking'];
     // Fight evidence expires after one second; poll sooner so a healthy stream
     // does not repeatedly disappear between ordinary 1.5-second status polls.
     const POLL_MS = 500;
@@ -16,6 +17,11 @@
             const value = alert.confidence;
             return value != null && Number.isFinite(Number(value))
                 ? `模型分数 ${Math.round(Number(value) * 100)}%` : '场景行为证据';
+        }
+        if (alert.category === 'smoking') {
+            const score = alert.confidence;
+            return score != null && Number.isFinite(Number(score))
+                ? `人物关联检测分数 ${Math.round(Number(score) * 100)}%（非行为概率）` : '人物与吸烟动作关联证据';
         }
         return `${Math.round(Number(alert.confidence || 0) * 100)}%`;
     }
@@ -40,15 +46,17 @@
         const yolo = detection?.yolo || {};
         const thermal = detection?.thermal || {};
         const behavior = detection?.behavior || {};
-        const enabled = ['fall', 'fight'].some(key => behavior.enabled?.[key] === true);
+        const enabled = BRANCHES.some(key => behavior.enabled?.[key] === true);
+        const required = detection?.requirements || {yolo: true, thermal: true, behavior: enabled};
+        if (!required.yolo && !required.thermal && !enabled) return '识别项目已全部关闭，可在设置页开启。';
         const running = Boolean(detection?.running || yolo.running || thermal.manual_detection_enabled || behavior.running);
         if (!running) return '识别已停止。';
-        if (yolo.error || !yolo.running || thermal.error
+        if ((required.yolo && (yolo.error || !yolo.running)) || (required.thermal && thermal.error)
             || (enabled && (!behavior.running || behavior.error
                 || Object.values(behavior.branches || {}).some(branch => branch.enabled && branch.state === 'error')))) {
             return '识别部分不可用，请查看各项状态。';
         }
-        if (!yolo.ready || !thermal.ready || (enabled && !behavior.ready)) return '识别启动中，等待各项就绪。';
+        if ((required.yolo && !yolo.ready) || (required.thermal && !thermal.ready) || (enabled && !behavior.ready)) return '识别启动中，等待各项就绪。';
         return '视觉识别、高温检测及已启用行为识别已就绪。';
     }
 
@@ -61,9 +69,11 @@
             + '<label><input type="checkbox" data-behavior-toggle="fall" disabled> 疑似跌倒'
             + '<span data-behavior-branch="fall">检查中</span></label>'
             + '<label><input type="checkbox" data-behavior-toggle="fight" disabled> 疑似打架'
-            + '<span data-behavior-branch="fight">检查中</span></label></div>'
+            + '<span data-behavior-branch="fight">检查中</span></label>'
+            + '<label><input type="checkbox" data-behavior-toggle="smoking" disabled> 疑似吸烟'
+            + '<span data-behavior-branch="smoking">检查中</span></label></div>'
             + '<p class="hint" data-behavior-note>正在读取状态；开关仅设置识别项目，启动识别或巡检后生效。</p>';
-        const inputs = ['fall', 'fight'].map(key => root.querySelector(`[data-behavior-toggle="${key}"]`));
+        const inputs = BRANCHES.map(key => root.querySelector(`[data-behavior-toggle="${key}"]`));
         const image = options.image;
         const message = options.message;
         const baseUrl = options.baseUrl || '';
@@ -123,7 +133,7 @@
             else if (status.ready && status.fresh) stateNode.textContent = '就绪';
             else if (Object.values(status.branches || {}).some(branch => branch.state === 'starting')) stateNode.textContent = '启动中';
             else stateNode.textContent = '等待连续观测';
-            ['fall', 'fight'].forEach((key, index) => {
+            BRANCHES.forEach((key, index) => {
                 const known = typeof status?.enabled?.[key] === 'boolean';
                 inputs[index].disabled = busy || !known;
                 if (known) inputs[index].checked = status.enabled[key];
@@ -135,7 +145,7 @@
                     + '开关仅设置识别项目，启动识别或巡检后生效。疑似事件需人工核实；等待观测不代表正常。'
                     + (status.branches?.fight?.timing_ms?.fight != null
                         ? ` 打架推理 ${Math.round(status.branches.fight.timing_ms.fight)} 毫秒。` : '')
-                    + (status.preview_branch ? ` 当前画面：${status.preview_branch === 'fight' ? '打架' : '跌倒'}独立检测结果。` : '')
+                    + (status.preview_branch ? ` 当前画面：${status.preview_branch === 'fight' ? '打架' : '人物姿态与吸烟'}检测结果。` : '')
                     + (status.speech?.error ? ` 语音：${status.speech.error}` : '');
             options.onStatus?.(status);
         }
@@ -222,7 +232,8 @@
             try {
                 const incoming = await request('/api/behavior/config', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ fall_enabled: enabled.fall, fight_enabled: enabled.fight })
+                    body: JSON.stringify({ fall_enabled: enabled.fall, fight_enabled: enabled.fight, smoking_enabled: enabled.smoking,
+                        ...(Number.isInteger(status.settings_version) ? {expected_version: status.settings_version} : {}) })
                 }, 'config');
                 if (!disposed) status = incoming;
             } catch (_error) {
@@ -234,7 +245,7 @@
                 if (!disposed) { busy = false; render(); refresh(); }
             }
         }
-        ['fall', 'fight'].forEach((key, index) => listen(inputs[index], 'change', () => configure(key, inputs[index])));
+        BRANCHES.forEach((key, index) => listen(inputs[index], 'change', () => configure(key, inputs[index])));
         if (image) {
             listen(image, 'load', () => {
                 if (!previewActive || !objectUrl || image.getAttribute('src') !== objectUrl || !allowed()) return;

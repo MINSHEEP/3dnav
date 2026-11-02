@@ -14,10 +14,10 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
         const errors = [], writes = [];
         page.on('pageerror', error => errors.push(error.message));
         await page.routeWebSocket('**/*', socket => socket.close());
-        const enabled = {fall:true, fight:true};
+        const enabled = {fall:true, fight:true, smoking:true};
         const behavior = () => ({success:true,running:true,ready:true,fresh:true,source_epoch:1,
             stamp_ns:1000000001,frame_stamp_ns:'1000000001',frame_age_seconds:0.01,max_result_age_seconds:1,
-            enabled:{...enabled},branches:Object.fromEntries(['fall','fight'].map(key => [key,{
+            enabled:{...enabled},branches:Object.fromEntries(['fall','fight','smoking'].map(key => [key,{
                 enabled:enabled[key],state:enabled[key]?'valid':'disabled',ready:enabled[key],
                 label:key==='fall'?'no_person':'other'}])),speech:{ready:false,error:'测试：未安装本地语音'}});
         const thermal = {ready:true,max_temperature_c:25,frame_age_seconds:0.01,manual_detection_enabled:true,
@@ -30,7 +30,7 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
                 writes.push({path:url.pathname,body:route.request().postDataJSON()});
                 assert.equal(url.pathname, '/api/behavior/config', 'UI test must never trigger robot control');
                 const value = writes.at(-1).body;
-                enabled.fall = value.fall_enabled; enabled.fight = value.fight_enabled;
+                enabled.fall = value.fall_enabled; enabled.fight = value.fight_enabled; enabled.smoking = value.smoking_enabled;
                 return route.fulfill({json:behavior()});
             }
             if (url.pathname === '/api/behavior/status') return route.fulfill({json:behavior()});
@@ -64,6 +64,13 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
             await fall.setChecked(false);
             await page.waitForFunction(id => document.querySelector('#'+id+' [data-behavior-branch="fall"]').textContent.includes('未启用'), id);
             await fall.setChecked(true);
+            const smoking = card.locator('[data-behavior-toggle="smoking"]');
+            assert(await smoking.isVisible());
+            await smoking.setChecked(false);
+            await page.waitForFunction(id => document.querySelector('#'+id+' [data-behavior-branch="smoking"]').textContent.includes('未启用'), id);
+            assert.equal(enabled.fall, true);
+            assert.equal(enabled.fight, true);
+            await smoking.setChecked(true);
             await page.locator('#btn-behavior-view').click();
             const image = page.locator(filename === 'camera.html' ? '#camera-feed' : '#camera-image');
             await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('src')?.startsWith('blob:'),
@@ -74,7 +81,7 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
             }
             assert(await image.getAttribute('src'));
         }
-        assert.equal(writes.length,4);
+        assert.equal(writes.length,8);
         assert.deepEqual(errors,[]);
         console.log('behavior browser: both pages, switches, speech notice, exact preview and desktop layout OK');
     } finally { await browser.close(); }

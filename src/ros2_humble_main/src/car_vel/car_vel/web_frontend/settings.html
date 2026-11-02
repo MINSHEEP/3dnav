@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>设置 · 四足机器人巡检</title>
     <link rel="stylesheet" href="robot_ui.css?v=20260825-system-settings">
-    <link rel="stylesheet" href="settings.css?v=20261020-mapping-filter">
+    <link rel="stylesheet" href="settings.css?v=20261102-detection">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <script src="robot_ui_common.js?v=20261022-web-preview"></script>
     <script src="robot_body_settings.js?v=20260911-zsl1"></script>
@@ -13,6 +13,7 @@
     <script src="lidar_settings.js?v=20260916-network"></script>
     <script src="mapping_filter_settings.js?v=20261020-switch"></script>
     <script src="camera_source_settings.js?v=20261015-source"></script>
+    <script src="detection_settings.js?v=20261102-switches"></script>
 </head>
 <body>
 <div class="app-shell">
@@ -39,7 +40,7 @@
         <div class="settings-heading">
             <div>
                 <h1>系统设置</h1>
-                <p>选择机器人本体与普通摄像头，设置建图过滤、巡检导航和安全距离，并管理小电脑电源。</p>
+                <p>选择本体与摄像头，管理检测功能、建图过滤、巡检导航、安全距离和小电脑电源。</p>
             </div>
             <div id="power-state" class="power-state" aria-live="polite">
                 <span class="label">电源控制服务</span>
@@ -119,6 +120,15 @@
             </form>
             <p>请先结束巡检并停止识别。仅保存所选来源的参数；首帧确认后保存，切换失败恢复原来源。设置保存在小电脑，重启后沿用，不随浏览器改变。</p>
             <p id="ordinary-camera-result" role="status" aria-live="polite"></p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="detection-settings-title">
+            <h2 id="detection-settings-title">检测功能开关</h2>
+            <p>各项独立设置，修改后自动保存在小电脑；USB 相机页面与巡检任务统一使用，重启后沿用。</p>
+            <p id="detection-settings-state" role="status" aria-live="polite">正在读取检测配置…</p>
+            <div id="detection-settings-list" class="detection-settings-grid"></div>
+            <p class="hint">视觉与行为开关用于选择识别项目，仍需在相机页面启动识别或启动巡检；M701 开启后恢复后台串口轮询。关闭检测不关闭普通视频或热成像预览，也不删除已保存的记录。</p>
+            <button id="detection-settings-refresh" type="button">刷新检测设置</button>
+            <p id="detection-settings-result" role="status" aria-live="polite"></p>
         </section>
         <section class="navigation-mode-section" aria-labelledby="lidar-title">
             <h2 id="lidar-title">雷达网络（MID360s）</h2>
@@ -390,6 +400,7 @@
     const lidarSettings = window.LidarSettings.create(log);
     const mappingFilterSettings = window.MappingFilterSettings.create(log);
     const cameraSourceSettings = window.CameraSourceSettings.create(log);
+    const detectionSettings = window.DetectionSettingsUI.create(log);
     document.getElementById('web-preview-profile').value = UI.previewProfile();
     document.getElementById('web-preview-save').addEventListener('click', () => {
         try {
@@ -618,7 +629,7 @@
             const active = status.active_inspection === true;
             const alarm = status.co2_alarm_active === true;
             renderEnvironmentAlertState(
-                'ready', alarm ? '二氧化碳超限告警中' : (
+                'ready', status.co2_enabled === false ? '二氧化碳告警已关闭' : alarm ? '二氧化碳超限告警中' : (
                     active ? '巡检中 · 告警已启用' : '等待巡检任务'));
             const current = Number(status.current_co2_ppm);
             const currentText = status.co2_sample_valid === true
@@ -929,12 +940,13 @@
         if (event.key === 'Escape') closeModal();
     });
     window.addEventListener('beforeunload', () => {
-        mappingFilterSettings.stop(); cameraSourceSettings.stop(); session.stop();
+        mappingFilterSettings.stop(); cameraSourceSettings.stop(); detectionSettings.stop(); session.stop();
     });
 
     log('设置页面已加载，正在连接导航、安全距离、环境告警与系统电源服务。');
     session.connect();
     cameraSourceSettings.start();
+    detectionSettings.start();
 }());
 </script>
 </body>

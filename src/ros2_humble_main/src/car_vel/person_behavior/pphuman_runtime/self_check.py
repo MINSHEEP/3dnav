@@ -1,4 +1,4 @@
-"""Load both CPU models in an owned worker; never open a camera or run ROS."""
+"""Load all three CPU models in an owned worker; never open a camera or run ROS."""
 import argparse
 import json
 import os
@@ -36,10 +36,10 @@ def check(timeout=90.0):
             raise RuntimeError('Behavior model load failed: ' + errors.read().decode('utf-8', 'replace'))
         if reply.get('runtime', {}).get('device') != 'CPU':
             raise RuntimeError('Worker did not confirm CPU inference')
-        if set(reply.get('models', {})) != {'yolo_pose', 'fight'}:
-            raise RuntimeError('Worker did not load both expected behavior models')
+        if set(reply.get('models', {})) != {'yolo_pose', 'fight', 'smoking'}:
+            raise RuntimeError('Worker did not load all three expected behavior models')
         return {'success': True, 'device': 'CPU', 'models': list(reply.get('models', {})),
-                'message': 'Both models loaded. Accuracy and real-time throughput are not measured.'}
+                'message': 'All three models loaded. Accuracy and real-time throughput are not measured.'}
 
 
 def main():

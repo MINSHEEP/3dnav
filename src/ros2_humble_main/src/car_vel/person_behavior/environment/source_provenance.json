@@ -4,7 +4,7 @@
   "scope": [
     "CPU pose-rule fall/lying",
     "scene-level ppTSM fight",
-    "No smoking models or inference"
+    "Original integration excluded smoking; superseded by smoking_source_provenance.json on 2026-11-02"
   ],
   "adaptations": [
     "Two-model CPU configuration and independent branch switches",

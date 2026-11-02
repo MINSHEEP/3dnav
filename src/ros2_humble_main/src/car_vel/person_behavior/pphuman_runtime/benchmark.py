@@ -53,7 +53,9 @@ def run(args):
         capture.release()
         raise ValueError("Video has no usable frame-rate metadata")
     timing = defaultdict(list)
-    coverage = {name: Counter() for name in ("fall", "fight")}
+    selected = {'fall', 'fight'} if args.branches == 'both' else (
+        {'fall', 'fight', 'smoking'} if args.branches == 'all' else {args.branches})
+    coverage = {name: Counter() for name in ("fall", "fight", "smoking")}
     reasons = {name: Counter() for name in coverage}
     report = {"schema_version": 1, "video": str(video), "mode": args.mode,
               "fps_metadata": fps, "inference_device": "CPU", "cpu_threads": 2,
@@ -106,7 +108,7 @@ def run(args):
         log_path = output.with_suffix(output.suffix + ".worker.log")
         with log_path.open("wb") as worker_log:
             process = subprocess.Popen([sys.executable, "-s", "-m", "pphuman_runtime.worker",
-                                        "--config", "config/inference.yaml"], cwd=str(root),
+                                        "--config", "config/inference.yaml", "--branches", ','.join(sorted(selected))], cwd=str(root),
                                        env=clean_environment(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=worker_log, bufsize=0)
 
@@ -166,7 +168,7 @@ def run(args):
                 last_sent_ns = stamp_ns
                 header = {"op": "infer", "request_id": report["frames_inferred"], "source_epoch": "benchmark-file-1",
                           "stamp_ns": stamp_ns, "shape": list(frame.shape), "payload_bytes": len(payload),
-                          "enabled_branches": {"fall": args.branches != "fight", "fight": args.branches != "fall"}}
+                          "enabled_branches": {key: key in selected for key in coverage}}
                 inference_started = time.monotonic()
                 send(header, payload)
                 result = receive(args.request_timeout)
@@ -178,9 +180,11 @@ def run(args):
                 report["frames_inferred"] += 1
                 report["media_seconds_observed"] = media
                 fight = result["scene"]["fight"]
-                actions = {"fight": [fight], "fall": [p["actions"]["fall"] for p in result["persons"]]}
-                if not actions["fall"]:
-                    coverage["fall"]["no_person" if header["enabled_branches"]["fall"] else "disabled"] += 1
+                actions = {"fight": [fight], **{key: [p['actions'].get(key, {'state': 'disabled'}) for p in result['persons']]
+                                               for key in ('fall', 'smoking')}}
+                for key in ('fall', 'smoking'):
+                    if not actions[key]:
+                        coverage[key]["no_person" if key in selected else "disabled"] += 1
                 for branch, entries in actions.items():
                     for action in entries:
                         coverage[branch][action["state"]] += 1
@@ -216,7 +220,7 @@ def run(args):
             total = sum(counts.values())
             report.setdefault("valid_fraction", {})[name] = counts["valid"] / total if total else None
         report["assessment"] = ("Temporal coverage is insufficient for one or both enabled branches; inspect unknown reasons and capture gaps."
-            if any(args.branches in ("both", name) and report["valid_fraction"][name] in (None, 0) for name in coverage)
+            if any(name in selected and report["valid_fraction"][name] in (None, 0) for name in coverage)
             else "This is a performance/state-coverage result only; labeled-video accuracy validation is still required.")
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
         print(json.dumps({"report": str(output), "frames_inferred": report["frames_inferred"],
@@ -229,7 +233,7 @@ def main():
     parser.add_argument("--video", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mode", choices=("realtime", "offline"), default="realtime")
-    parser.add_argument("--branches", choices=("both", "fall", "fight"), default="both")
+    parser.add_argument("--branches", choices=("all", "both", "fall", "fight", "smoking"), default="all")
     parser.add_argument("--max-frames", type=int, default=120)
     parser.add_argument("--max-seconds", type=float, default=20.)
     parser.add_argument("--wall-timeout", type=float, default=180.)

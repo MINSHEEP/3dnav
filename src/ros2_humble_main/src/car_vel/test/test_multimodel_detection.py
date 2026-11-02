@@ -103,6 +103,15 @@ def _pipeline(transit_fps=2.0):
 
 class MultiModelDetectorTests(unittest.TestCase):
 
+    def test_legacy_cigarette_boxes_are_removed_from_all_public_outputs(self):
+        detector, primary, _face, _plate = _pipeline()
+        primary.result = _Result({0: 'fire', 1: 'smoke', 2: 'CigaretteButt'}, [
+            _Box(0, .9, [1, 2, 20, 30]), _Box(1, .8, [5, 6, 25, 36]),
+            _Box(2, .99, [15, 16, 35, 46])])
+        # The public conversion is also the source for annotation/inspection.
+        items = detector._primary_detections(primary.result, 120, 100)
+        self.assertEqual([v.category for v in items], ['fire', 'smoke'])
+
     def test_transit_auxiliary_models_are_limited_and_cached_for_display(self):
         detector, primary, face, plate = _pipeline(transit_fps=2.0)
         frame = _Frame()

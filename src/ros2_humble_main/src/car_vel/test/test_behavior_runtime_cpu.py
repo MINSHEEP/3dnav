@@ -23,7 +23,9 @@ from pphuman_runtime.yolo_backend import YoloBackend
 
 
 def config():
-    return load_config(RUNTIME_ROOT / "config/inference.yaml")
+    cfg = load_config(RUNTIME_ROOT / "config/inference.yaml")
+    cfg["branches"]["smoking"] = False  # Existing fall/fight regression scope.
+    return cfg
 
 
 def skeleton(kind="standing"):
@@ -85,12 +87,12 @@ class RuntimeTests(unittest.TestCase):
         return self.runtime.infer(self.bgr, header)
 
     def test_only_two_models_cpu_and_original_gaps(self):
-        self.assertEqual(set(self.cfg["models"]), {"yolo_pose", "fight"})
+        self.assertEqual(set(self.cfg["models"]), {"yolo_pose", "fight", "smoking"})
         self.assertEqual(self.cfg["device"], "CPU")
         self.assertEqual(self.cfg["cpu_threads"], 2)
         self.assertEqual(self.cfg["fall"]["max_observation_gap_seconds"], .3)
         self.assertEqual(self.cfg["fight"]["max_sample_gap_seconds"], .6)
-        self.assertNotIn("smoking", self.cfg)
+        self.assertIn("smoking", self.cfg)
 
     def test_result_has_no_smoking_or_fake_fall_score(self):
         result = self.frame(0)
@@ -198,7 +200,7 @@ class ConfigAndBackendTests(unittest.TestCase):
                 (root / 'pose.onnx').write_bytes(b'fake test model')
                 cfg = config()
                 cfg.update(project_root=str(root), models={'yolo_pose': 'pose.onnx', 'fight': 'fight'},
-                           branches={key: key == branch for key in ('fall', 'fight')})
+                           branches={key: key == branch for key in ('fall', 'fight', 'smoking')})
                 with patch.dict(sys.modules, modules), patch('pphuman_runtime.yolo_backend.YoloPosePredictor', Pose), patch('pphuman_runtime.yolo_backend.model_identity', return_value={}):
                     backend = YoloBackend(cfg)
             self.assertEqual(loaded, ['pose'] if branch == 'fall' else ['fight'])
@@ -206,7 +208,7 @@ class ConfigAndBackendTests(unittest.TestCase):
 
     def test_invalid_configs_rejected(self):
         original = config()
-        for key, value in (("device", "GPU"), ("models", {"yolo_pose": "a", "fight": "b", "smoking": "c"}),
+        for key, value in (("device", "GPU"), ("models", {"yolo_pose": "a", "fight": "b", "unexpected": "c"}),
                            ("branches", {"fall": 1, "fight": True}), ("cpu_threads", 0)):
             cfg = copy.deepcopy(original)
             cfg[key] = value
@@ -241,7 +243,7 @@ class ConfigAndBackendTests(unittest.TestCase):
                 backend = YoloBackend(cfg)
             self.assertEqual(loaded, ["pose", "fight"])
             self.assertFalse(hasattr(backend, "smoking_model"))
-            self.assertFalse(hasattr(backend, "smoking"))
+            self.assertTrue(callable(backend.smoking))  # Adapter exists, disabled predictor was not loaded.
             self.assertEqual(backend.fight_model.kwargs["device"], "CPU")
             self.assertEqual(backend.fight_model.kwargs["cpu_threads"], 2)
 
@@ -270,13 +272,13 @@ class ProtocolTests(unittest.TestCase):
         ready, reset, result, shutdown = [read_message(outgoing) for _ in range(4)]
         self.assertEqual([r["type"] for r in (ready, reset, result, shutdown)], ["ready", "reset_ack", "result", "shutdown_ack"])
         self.assertEqual(set(ready["models"]), {"yolo_pose", "fight"})
-        self.assertEqual(set(ready["sampling"]), {"fall", "fight"})
+        self.assertEqual(set(ready["sampling"]), {"fall", "fight", "smoking"})
         self.assertEqual((result["source_epoch"], result["stamp_ns"], result["request_id"]), (2, 100, 3))
         self.assertEqual(shutdown["request_id"], 4)
 
     def test_invalid_branch_values_and_truncated_payload_rejected(self):
         header = {"op": "infer", "request_id": 1, "source_epoch": 1, "stamp_ns": 0, "shape": [1, 1, 3], "payload_bytes": 3}
-        for switches in ({"smoking": True}, {"fall": "false"}, []):
+        for switches in ({"unexpected": True}, {"fall": "false"}, []):
             with self.assertRaises(ProtocolError):
                 read_request(self.packet(dict(header, enabled_branches=switches), b"123"))
         with self.assertRaises(ProtocolError):
@@ -291,11 +293,11 @@ class ModelLoadCheckTests(unittest.TestCase):
             self.assertEqual(kwargs['stdin'], self_check.subprocess.DEVNULL)
             self.assertEqual(kwargs['env']['CUDA_VISIBLE_DEVICES'], '')
             write_message(kwargs['stdout'], {'type': 'ready', 'runtime': {'device': 'CPU'},
-                                            'models': {'yolo_pose': {}, 'fight': {}}})
+                                            'models': {'yolo_pose': {}, 'fight': {}, 'smoking': {}}})
             return types.SimpleNamespace(returncode=0, wait=lambda timeout: None)
         with patch.object(self_check.subprocess, 'Popen', side_effect=factory):
             result = self_check.check(timeout=1)
-        self.assertEqual(result['models'], ['yolo_pose', 'fight'])
+        self.assertEqual(result['models'], ['yolo_pose', 'fight', 'smoking'])
 
     def test_initialization_timeout_kills_only_owned_child(self):
         from unittest.mock import Mock

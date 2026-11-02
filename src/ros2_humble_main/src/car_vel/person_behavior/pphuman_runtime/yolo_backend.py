@@ -1,7 +1,7 @@
 """One official YOLO pose observation shared by tracking and action branches.
 
 The exported graph performs no NMS: xywh + person probability + COCO17 xyz.
-Only the scene fight predictor is loaded from PaddleDetection.
+Only enabled smoking/fight predictors are loaded from PaddleDetection.
 """
 import hashlib
 import sys
@@ -13,6 +13,7 @@ import numpy as np
 from .backend import FightAdapter, model_identity, predictor_options
 from .tracking import ObservationTracker
 from .pose_recovery import PoseRecovery
+from .smoking_backend import SmokingAdapter
 
 
 def letterbox(bgr, size=640):
@@ -122,7 +123,7 @@ class YoloPosePredictor:
         return people
 
 
-class YoloBackend:
+class YoloBackend(SmokingAdapter):
     # These adapters retain official preprocessing/postprocessing of auxiliaries.
     prepare_fight = FightAdapter.prepare_fight
     fight = FightAdapter.fight
@@ -131,9 +132,9 @@ class YoloBackend:
         self.cfg = cfg
         root = Path(cfg["project_root"])
         vendor = root / cfg["vendor_dir"]
-        if cfg['branches']['fight'] and not (vendor / "deploy").is_dir():
+        if (cfg['branches']['fight'] or cfg['branches']['smoking']) and not (vendor / "deploy").is_dir():
             vendor = Path(sys.prefix).parent / "vendor" / "PaddleDetection"
-        if cfg['branches']['fight'] and not (vendor / "deploy").is_dir():
+        if (cfg['branches']['fight'] or cfg['branches']['smoking']) and not (vendor / "deploy").is_dir():
             raise FileNotFoundError("Pinned PaddleDetection deploy source missing; run install_behavior_deps.sh")
         for suffix in ("", "deploy", "deploy/pptracking/python", "deploy/python",
                        "deploy/pipeline", "deploy/pipeline/pphuman"):
@@ -141,7 +142,7 @@ class YoloBackend:
         paths = {key: root / value for key, value in cfg["models"].items()}
         self.identities = {}
         self.pose_predictor = None
-        if cfg["branches"]["fall"]:
+        if cfg["branches"]["fall"] or cfg["branches"]["smoking"]:
             digest = hashlib.sha256()
             with paths["yolo_pose"].open("rb") as stream:
                 for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
@@ -157,6 +158,17 @@ class YoloBackend:
         common = {"device": cfg["device"], "run_mode": cfg["run_mode"],
                   "cpu_threads": cfg["cpu_threads"], "enable_mkldnn": False}
         paddle_version = None
+        if cfg["branches"]["smoking"]:
+            import paddle
+            paddle.enable_static()
+            from python.infer import Detector
+            from python.keypoint_preprocess import expand_crop
+            self.expand_crop = expand_crop
+            self.identities["smoking"] = model_identity(paths["smoking"])
+            with predictor_options(cfg):
+                self.smoking_model = Detector(str(paths["smoking"]), batch_size=cfg["smoking"]["batch_size"],
+                    threshold=cfg["smoking"]["threshold"], **common)
+            paddle_version = paddle.__version__
         if cfg["branches"]["fight"]:
             import paddle
             paddle.enable_static()
@@ -182,6 +194,9 @@ class YoloBackend:
                              "parameters": dict(self.pose_recovery.cfg) if self.pose_recovery is not None else {},
                              "limitations": ["requires recently observed reliable native person", "does not recover a missing person when native detects any other person"],
                              "cached_persons": False}}
+        self.metadata['smoking_association'] = {
+            'enabled': cfg['branches']['smoking'], 'version': 'v4-smoking-near-face-conservative-20261030',
+            'score_semantics': 'real cigarette detector score associated with person/mouth/wrist; not action probability'}
         self.last_timing = {}
 
     def reset(self):

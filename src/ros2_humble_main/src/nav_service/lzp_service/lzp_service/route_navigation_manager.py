@@ -4966,6 +4966,11 @@ class RouteNavigationManager(Node):
         self._zero_velocity_publisher.publish(Twist())
 
     def _finish_task(self, final_state: str, message: str) -> None:
+        # Active ownership is released below. Preserve a route-level terminal
+        # event so a mission can correlate completion after owner_token clears.
+        if (self._mode == 'route' and final_state == 'completed'
+                and getattr(self, '_owner_token', '')):
+            self._record_managed_goal_event('route_completed', message)
         self._mode = 'idle'
         self._active_navigation_mode = ''
         self._state = final_state
