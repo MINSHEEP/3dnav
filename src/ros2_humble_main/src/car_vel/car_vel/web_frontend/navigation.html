@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
-    <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
+    <script src="velocity_guard_widget.js?v=20261103-terrain-advisory"></script>
     <script src="pointcloud_viewer.js?v=20261023-draft-marker-scale"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
 </head>
@@ -76,7 +76,7 @@
             <section class="section" aria-labelledby="automatic-terrain-title">
                 <div id="automatic-terrain-title" class="section-title">自动地形导航</div>
                 <div class="status-grid">
-                    <div class="status-card"><span class="label">实时安全</span><span id="automatic-terrain-status" class="value">等待后端</span></div>
+                    <div class="status-card"><span class="label">地形评估</span><span id="automatic-terrain-status" class="value">等待后端</span></div>
                     <div class="status-card"><span class="label">地形阶段（星玑固定越障）</span><span id="automatic-terrain-mode" class="value">等待地形状态</span></div>
                     <div class="status-card"><span id="automatic-terrain-speed-label" class="label">地形速度上限</span><span id="automatic-terrain-speed" class="value">--</span></div>
                 </div>
@@ -984,12 +984,12 @@
             const safe = Boolean(value.safe);
             const state = String(value.state || 'unknown');
             const stateLabels = {
-                ready: '允许通行', idle: '等待任务', disabled: '已关闭',
-                suspended: '人工连接段接管', switching: '切换中，已停车',
-                enter_confirming: '确认地形，已停车',
-                exit_confirming: '确认恢复平地', blocked: '禁止通行'
+                ready: '评估通过', idle: '等待任务', disabled: '已关闭',
+                suspended: '人工连接段接管', switching: '步态切换中',
+                enter_confirming: '确认地形中',
+                exit_confirming: '确认恢复平地', blocked: '评估未通过'
             };
-            statusElement.textContent = stateLabels[state] || (safe ? '允许通行' : '禁止通行');
+            statusElement.textContent = stateLabels[state] || (safe ? '评估通过' : '评估未通过');
             statusElement.dataset.state = state;
             statusElement.classList.toggle('danger', !safe && state !== 'idle');
             const fixedSpeedPolicy = value.speed_policy === 'nav2_body_limits'

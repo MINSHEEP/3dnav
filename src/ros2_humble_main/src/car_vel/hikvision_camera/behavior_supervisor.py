@@ -63,7 +63,7 @@ def _write_message(stream, message, payload=b''):
 class BehaviorSupervisor:
     def __init__(self, *, runtime_dir=None, python=None, config_path=None,
                  freshness_seconds=5.0, startup_timeout=60.0,
-                 inference_timeout=30.0, speech=None, popen=subprocess.Popen,
+                 inference_timeout=30.0, speech=None, inspection_speech=None, popen=subprocess.Popen,
                  clock=time.monotonic_ns, branch=None, log=None):
         self.runtime_dir = Path(runtime_dir or Path(__file__).resolve().parent.parent / 'person_behavior')
         self.python = Path(python or Path(os.environ.get('BEHAVIOR_HOME', str(Path.home() / '.local/share/robot-behavior'))) / 'venv/bin/python')
@@ -71,11 +71,16 @@ class BehaviorSupervisor:
         self.ttl = float(freshness_seconds)
         self.startup_timeout, self.inference_timeout = startup_timeout, inference_timeout
         self.speech, self._popen, self._clock = speech, popen, clock
+        self.inspection_speech = inspection_speech
         if branch not in (None, 'fall', 'fight', 'smoking', 'pose'):
             raise ValueError('Unknown behavior branch')
         self.branch, self._log = branch, log
         self._clip = deque(maxlen=8)
+        self._capture_jpegs = {}
+        self._preview_frames = {}
+        self._fight_latest = None
         self._fight_sampling = None
+        self._fight_rgb_capture = False
         self._next_capture_ns = None
         self._last_result_latency = None
         self._last_model_timing = {}
@@ -187,6 +192,9 @@ class BehaviorSupervisor:
         self._pending = self._latest = None
         self._last_stamp = 0
         self._clip.clear()
+        self._capture_jpegs.clear()
+        self._preview_frames.clear()
+        self._fight_latest = None
         self._next_capture_ns = None
         self._last_result_latency = None
         self._last_model_timing = {}
@@ -239,30 +247,42 @@ class BehaviorSupervisor:
                     or stamp_ns > self._clock() + 100000000):
                 return False
             self._last_stamp = stamp_ns
-            if self.branch == 'fight':
-                cfg = self._fight_sampling
-                if not cfg:
-                    return False  # Sampling parameters come from the loaded worker.
-                if self._next_capture_ns is not None and stamp_ns < self._next_capture_ns:
-                    return False
+            if self.branch == 'fight' and not self._fight_sampling:
+                return False  # Sampling parameters come from the loaded worker.
+            cfg = self._fight_sampling
+            capture_due = cfg and (self._next_capture_ns is None or stamp_ns >= self._next_capture_ns)
+            if capture_due:
                 period = round(1e9 / cfg['sample_hz'])
                 if self._clip and stamp_ns - self._clip[-1][0] > cfg['max_sample_gap_seconds'] * 1e9:
                     self._clip.clear()
                     self._next_capture_ns = None
-                # Bound transport/memory, retaining aspect ratio. This is a
-                # real capture, never a duplicate or a synthesized timestamp.
                 height, width = shape[:2]
-                ratio = min(1., 640 / max(height, width))
-                small = (importlib.import_module('cv2').resize(frame, (max(1, round(width * ratio)), max(1, round(height * ratio))))
-                         if ratio < 1 else frame.copy())
+                if self._fight_rgb_capture:
+                    image = importlib.import_module('PIL.Image')
+                    numpy = importlib.import_module('numpy')
+                    short = cfg['short_size']
+                    long = int(short * 4 / 3)
+                    size = (short, long) if width <= height else (long, short)
+                    rgb = image.fromarray(frame[:, :, ::-1]).resize(size, getattr(image, 'Resampling', image).BILINEAR)
+                    small = numpy.asarray(rgb)
+                else:
+                    ratio = min(1., 640 / max(height, width))
+                    size = max(1, round(width * ratio)), max(1, round(height * ratio))
+                    small = importlib.import_module('cv2').resize(frame, size) if ratio < 1 else frame.copy()
                 self._clip.append((stamp_ns, small))
-                while self._clip and stamp_ns - self._clip[0][0] > cfg['max_window_seconds'] * 1e9:
+                while stamp_ns - self._clip[0][0] > cfg['max_window_seconds'] * 1e9:
                     self._clip.popleft()
+                if self._fight_rgb_capture:
+                    self._capture_jpegs[stamp_ns] = raw_jpeg
+                    self._capture_jpegs = {t: self._capture_jpegs[t] for t, _ in self._clip}
                 if self._next_capture_ns is None:
                     self._next_capture_ns = stamp_ns + period
                 else:
                     self._next_capture_ns += ((stamp_ns - self._next_capture_ns) // period + 1) * period
-                self._pending = (self._epoch, stamp_ns, small, None)
+            if self.branch == 'fight':
+                if not capture_due:
+                    return False
+                self._pending = (self._epoch, stamp_ns, small, raw_jpeg if self._fight_rgb_capture else None)
                 self._condition.notify_all()
                 return True
             self._pending = (self._epoch, stamp_ns, frame.copy(), raw_jpeg)
@@ -342,13 +362,15 @@ class BehaviorSupervisor:
             with self._condition:
                 self._fight_ttl = min(self.ttl, float(ready.get('sampling', {}).get('fight', {}).get('result_ttl_seconds', 1.0)))
                 self._smoking_ttl = min(self.ttl, float(ready.get('sampling', {}).get('smoking', {}).get('result_ttl_seconds', 1.5)))
-                if self.branch == 'fight':
+                self._fight_rgb_capture = 'fight_samples_rgb_v1' in ready.get('capabilities', [])
+                if self._enabled['fight'] and (self.branch == 'fight' or self._fight_rgb_capture):
                     self._fight_sampling = ready['sampling']['fight']
                 self._loaded = True
             if self._log:
                 self._log(f'{self.branch or "fall+fight"} 模型已加载；等待真实采样')
             child_epoch = None
             last_fight_request_stamp = None
+            fight_frames = {}
             while not self._stop.is_set():
                 with self._condition:
                     while self._pending is None and not self._stop.is_set():
@@ -357,7 +379,8 @@ class BehaviorSupervisor:
                     packet, self._pending = self._pending, None
                     epoch, stamp, frame, raw = packet
                     enabled = dict(self._enabled)
-                    clip = list(self._clip) if self.branch == 'fight' else None
+                    clip = list(self._clip) if self._fight_sampling else []
+                    capture_jpegs = dict(self._capture_jpegs)
                 if (self._clock() - stamp) / 1e9 > self.ttl:
                     continue
                 if child_epoch != epoch:
@@ -367,22 +390,44 @@ class BehaviorSupervisor:
                         raise RuntimeError('行为识别重置确认无效')
                     child_epoch = epoch
                     last_fight_request_stamp = None
-                if (clip and len(clip) == 8 and last_fight_request_stamp is not None
+                    fight_frames.clear()
+                if (not self._fight_rgb_capture and clip and len(clip) == 8 and last_fight_request_stamp is not None
                         and stamp - last_fight_request_stamp
                         < self._fight_sampling['prediction_interval_seconds'] * 1e9):
                     continue
                 self._request_id += 1
                 request_id = self._request_id
-                payload = frame.tobytes(order='C')
-                if clip:
-                    # Snapshot and payload belong to one epoch and end exactly
-                    # at the frame selected while holding the capture lock.
+                capture_samples = None
+                if clip and self.branch == 'fight':
                     stamp, frame = clip[-1]
+                    if self._fight_rgb_capture:
+                        frame = frame[:, :, ::-1]
+                if self._fight_sampling and self._fight_rgb_capture:
+                    clip = [(t, rgb) for t, rgb in clip
+                            if 0 <= stamp - t <= self._fight_sampling['max_window_seconds'] * 1e9]
+                    capture_samples = [dict(stamp_ns=t, shape=list(rgb.shape)) for t, rgb in clip]
+                    oldest = stamp - int(self._fight_ttl * 1e9)
+                    fight_frames.update({t: (rgb[:, :, ::-1], capture_jpegs.get(t)) for t, rgb in clip if t >= oldest})
+                    fight_frames = {t: evidence for t, evidence in fight_frames.items() if t >= oldest}
+                    clip_payload = b''.join(rgb.tobytes(order='C') for _, rgb in clip)
+                    short = self._fight_sampling['short_size']
+                    main_limit = 25165824 - 8 * short * int(short * 4 / 3) * 3
+                    if frame.nbytes > main_limit:
+                        scale = math.sqrt(main_limit / frame.nbytes)
+                        height, width = frame.shape[:2]
+                        frame = importlib.import_module('cv2').resize(
+                            frame, (max(1, int(width * scale)), max(1, int(height * scale))))
+                    payload = frame.tobytes(order='C') + clip_payload
+                elif clip:
                     payload = b''.join(item.tobytes(order='C') for _, item in clip)
+                else:
+                    payload = frame.tobytes(order='C')
                 header = dict(op='infer', request_id=request_id, source_epoch=epoch,
                               stamp_ns=stamp, shape=list(frame.shape), payload_bytes=len(payload),
                               enabled_branches=enabled)
-                if clip:
+                if capture_samples is not None:
+                    header['fight_samples'] = capture_samples
+                elif clip:
                     header['clip_stamps_ns'] = [captured for captured, _ in clip]
                     if len(clip) == 8:
                         last_fight_request_stamp = stamp
@@ -392,16 +437,44 @@ class BehaviorSupervisor:
                     raise RuntimeError('行为识别结果与请求不匹配：' + str(result.get('error') or 'protocol'))
                 if result.get('source_epoch') != epoch or result.get('stamp_ns') != stamp:
                     raise RuntimeError('行为识别结果来源或时间戳不匹配')
-                self._accept(result, frame, raw)
+                if capture_samples is not None and self.branch is None:
+                    fight_result = dict(result, persons=[])
+                    fight_result, (fight_frame, fight_raw) = self._match_fight_frame(
+                        fight_result, (frame, raw), fight_frames)
+                    self._accept(fight_result, fight_frame, fight_raw, stream='fight')
+                    if enabled['fall'] or enabled['smoking']:
+                        pose_result = dict(result, scene={'fight': {'state': 'disabled'}})
+                        self._accept(pose_result, frame, raw, stream='pose')
+                else:
+                    if capture_samples is not None:
+                        result, (frame, raw) = self._match_fight_frame(result, (frame, raw), fight_frames)
+                    self._accept(result, frame, raw)
         except Exception as error:
             with self._condition:
                 if not self._stop.is_set(): self._error = str(error)
-                self._latest = self._pending = None
+                self._latest = self._fight_latest = self._pending = None
+                self._preview_frames.clear()
             if not self._stop.is_set() and self._log:
                 self._log(f'{self.branch or "fall+fight"} 失败：{error}；{self._stderr[-1200:]}')
         finally:
-            with self._condition: self._loaded = False
+            with self._condition:
+                self._loaded = False
+                self._fight_sampling = None
+                self._fight_rgb_capture = False
             self._shutdown_child()
+
+    @staticmethod
+    def _match_fight_frame(result, evidence, captured):
+        fight = result.get('scene', {}).get('fight', {})
+        if fight.get('state') != 'valid':
+            return result, evidence
+        stamp = fight.get('prediction_stamp_ns')
+        if type(stamp) is not int or stamp not in captured:
+            # A valid classification cannot be published against another frame.
+            fight = dict(fight, state='unknown', label=None, score=None, updated=False,
+                         reason='fight_evidence_frame_unavailable')
+            return dict(result, status='partial', scene=dict(result['scene'], fight=fight)), evidence
+        return dict(result, stamp_ns=stamp, inference_stamp_ns=result['stamp_ns']), captured[stamp]
 
     def _shutdown_child(self):
         with self._condition:
@@ -428,7 +501,7 @@ class BehaviorSupervisor:
                 try: pipe.close()
                 except (AttributeError, OSError, ValueError): pass
 
-    def _accept(self, result, frame, raw_jpeg=None):
+    def _accept(self, result, frame, raw_jpeg=None, *, stream=None):
         stamp, epoch = result['stamp_ns'], result['source_epoch']
         expires = self._expires(result)
         with self._condition:
@@ -449,10 +522,22 @@ class BehaviorSupervisor:
             if self._log and self._announced_ready_epoch != epoch and result.get('status') == 'valid':
                 self._announced_ready_epoch = epoch
                 self._log(f'{self.branch or "fall+fight"} 检测已就绪；耗时 {self._last_result_latency:.3f}s')
-            self._latest = dict(result=copy.deepcopy(result), raw=raw, annotated=annotated,
-                                stamp_ns=stamp, source_epoch=epoch, sequence=self._sequence,
-                                expires_ns=expires,
-                                timestamp_epoch=time.time(), mode=self._mode, task_id=self._task_id)
+            snapshot = dict(result=copy.deepcopy(result), raw=raw, annotated=annotated,
+                            stamp_ns=stamp, source_epoch=epoch, sequence=self._sequence,
+                            expires_ns=expires, worker_branch=stream,
+                            timestamp_epoch=time.time(), mode=self._mode, task_id=self._task_id)
+            if stream == 'fight':
+                self._fight_latest = snapshot
+            else:
+                self._latest = snapshot
+            # A status response can be followed by an image request after the
+            # next inference finishes. Retain only the JPEG and its deadline.
+            frame_key = (str(stamp), stream)
+            self._preview_frames.pop(frame_key, None)
+            self._preview_frames[frame_key] = (expires, annotated)
+            while (len(self._preview_frames) > 16
+                   or sum(len(image) for _, image in self._preview_frames.values()) > 16 * 1024 * 1024):
+                self._preview_frames.pop(next(iter(self._preview_frames)))
             detections = self._detections(result)
             alerts = [v for v in detections if v['alert']]
             keys = [v['category'] for v in alerts
@@ -460,16 +545,20 @@ class BehaviorSupervisor:
             if keys:
                 for key in keys: self._last_alert[key] = stamp
                 if self._mode in ('transit', 'inspection') and self._task_id:
-                    event = self._evidence_locked()
+                    event = self._evidence_locked(snapshot)
                     event['detections'] = [v for v in alerts if v['category'] in keys]
                     self._events.append(event)
                     self._events = self._events[-16:]
             self._condition.notify_all()
-        if self.speech:
+        if self.speech or self.inspection_speech:
             for key in set(keys):
                 with self._condition:
                     if epoch != self._epoch or self._mode == 'paused' or self._clock() > expires: break
-                    try: self.speech(key)
+                    speaker = (self.inspection_speech if self._mode in ('transit', 'inspection')
+                               and self._task_id and self.inspection_speech else self.speech)
+                    try:
+                        if speaker:
+                            speaker(key)
                     except Exception: pass
         return True
 
@@ -544,8 +633,12 @@ class BehaviorSupervisor:
                 source_epoch=result['source_epoch'], stamp_ns=result['stamp_ns'], fresh=True))
         return values
 
-    def _fresh_locked(self):
-        return bool(self._latest and self._clock() <= self._latest['expires_ns'])
+    def _fresh_locked(self, snapshot):
+        return bool(snapshot and self._clock() <= snapshot['expires_ns'])
+
+    def _preview_locked(self):
+        return next((value for value in (self._latest, self._fight_latest)
+                     if self._fresh_locked(value)), None)
 
     def _expires(self, result):
         deadline = result['stamp_ns'] + int(self.ttl * 1e9)
@@ -559,25 +652,32 @@ class BehaviorSupervisor:
     def status(self):
         with self._condition:
             running = bool(self._worker and self._worker.is_alive() and not self._stop.is_set())
-            fresh = self._fresh_locked() and running
-            result = copy.deepcopy(self._latest['result']) if fresh else {}
+            preview = self._preview_locked() if running else None
+            fresh = preview is not None
+            capture_window = (dict(samples=len(self._clip), required_samples=8,
+                                   target_sample_hz=self._fight_sampling['sample_hz'] if self._fight_sampling else None)
+                              if self._fight_sampling or self.branch == 'fight' else None)
             branches = {}
             for key in ('fall', 'fight', 'smoking'):
+                snapshot = (self._fight_latest if key == 'fight' and self._fight_sampling
+                            and self.branch is None else self._latest)
+                branch_fresh = self._fresh_locked(snapshot) and running
+                result = snapshot['result'] if branch_fresh else {}
                 if not self._enabled[key]: state = 'disabled'
                 elif self._error: state = 'error'
                 elif not running: state = 'stopped'
                 elif not self._loaded: state = 'starting'
-                elif not fresh: state = 'stale' if self._latest else 'warming'
+                elif not branch_fresh: state = 'stale' if snapshot else 'warming'
                 else: state = 'warming'
                 actions = ([(v.get('actions') or {}).get(key) or {} for v in result.get('persons', [])]
                            if key != 'fight' else [(result.get('scene') or {}).get('fight') or {}])
                 action = next((a for a in actions if a.get('label') == key), actions[0] if actions else {})
-                if fresh and self._enabled[key]: state = action.get('state', 'warming')
-                if (fresh and self._enabled[key] and key == 'smoking' and actions
+                if branch_fresh and self._enabled[key]: state = action.get('state', 'warming')
+                if (branch_fresh and self._enabled[key] and key == 'smoking' and actions
                         and (type(action.get('prediction_stamp_ns')) is not int
                              or self._clock() - action['prediction_stamp_ns'] > self._smoking_ttl * 1e9)):
                     state = 'stale'
-                if (fresh and self._enabled[key] and key != 'fight' and not actions
+                if (branch_fresh and self._enabled[key] and key != 'fight' and not actions
                         and result.get('pose_status', {}).get('state') == 'valid'):
                     state = 'valid'
                     action = {'label': 'no_person'}
@@ -585,6 +685,8 @@ class BehaviorSupervisor:
                                      label=action.get('label'), confidence=None if key == 'fall' else action.get('score'),
                                      score_kind=('rule_evidence' if key == 'fall' else 'model_probability'
                                                  if key == 'fight' else action.get('score_kind', 'associated_detection_score')),
+                                     fresh=branch_fresh and state != 'stale',
+                                     capture_window=capture_window if key == 'fight' else None,
                                      window=action.get('window'), reason=action.get('reason'))
             enabled = [v for v in branches.values() if v['enabled']]
             ready = bool(fresh and enabled and all(v['ready'] for v in enabled))
@@ -592,29 +694,42 @@ class BehaviorSupervisor:
                         error=self._error or None, diagnostics=self._stderr[-2048:],
                         last_result_latency_seconds=self._last_result_latency,
                         last_model_timing_ms=dict(self._last_model_timing), stale_results=self._stale_results,
-                        capture_window=dict(samples=len(self._clip), required_samples=8,
-                                            target_sample_hz=self._fight_sampling['sample_hz'] if self._fight_sampling else None)
-                            if self.branch == 'fight' else None,
+                        capture_window=capture_window,
                         enabled=dict(self._enabled), branches=branches,
-                        source_epoch=self._epoch, stamp_ns=self._latest['stamp_ns'] if self._latest else None,
-                        frame_stamp_ns=str(self._latest['stamp_ns']) if self._latest else None,
-                        frame_age_seconds=round((self._clock() - self._latest['stamp_ns']) / 1e9, 3) if self._latest else None,
-                        fresh=bool(fresh), result=result, detections=self._detections(result) if fresh else [],
-                        max_result_age_seconds=(self._latest['expires_ns'] - self._latest['stamp_ns']) / 1e9 if self._latest else self.ttl,
+                        source_epoch=self._epoch, stamp_ns=preview['stamp_ns'] if preview else None,
+                        frame_stamp_ns=str(preview['stamp_ns']) if preview else None,
+                        frame_age_seconds=round((self._clock() - preview['stamp_ns']) / 1e9, 3) if preview else None,
+                        fresh=fresh, result=copy.deepcopy(preview['result']) if preview else {},
+                        preview_branch=preview['worker_branch'] if preview else None,
+                        detections=[item for snapshot in (self._latest, self._fight_latest)
+                                    if running and self._fresh_locked(snapshot)
+                                    for item in self._detections(snapshot['result'])],
+                        workers={'shared': dict(running=running, ready=ready, error=self._error or None)},
+                        max_result_age_seconds=(preview['expires_ns'] - preview['stamp_ns']) / 1e9 if preview else self.ttl,
                         mode=self._mode, task_id=self._task_id, sequence=self._sequence,
                         frame_url='/api/behavior/frame.jpg', manual_detection_enabled=self._manual)
 
-    def frame(self):
+    def frame(self, *, epoch=None, stamp=None, view=None):
         with self._condition:
-            if not self._fresh_locked() or not self._loaded:
+            if epoch is not None or stamp is not None:
+                if (not self._loaded or self._stop.is_set()
+                        or str(epoch) != str(self._epoch)):
+                    raise LookupError('行为画面来源已变化')
+                views = (view,) if view is not None else ('pose', 'fight', None)
+                for key in views:
+                    cached = self._preview_frames.get((str(stamp), key))
+                    if cached and self._clock() <= cached[0]:
+                        return cached[1], self._epoch, int(stamp)
+                raise LookupError('指定行为帧已过期或不在预览缓存中')
+            value = self._preview_locked()
+            if value is None or not self._loaded:
                 raise RuntimeError('行为标注帧尚未就绪或已过期')
-            return self._latest['annotated'], self._latest['source_epoch'], self._latest['stamp_ns']
+            return value['annotated'], value['source_epoch'], value['stamp_ns']
 
-    def _evidence_locked(self):
-        value = self._latest
+    def _evidence_locked(self, value):
         return dict(mode=value['mode'], task_id=value['task_id'], sequence=value['sequence'],
                     timestamp_epoch=value['timestamp_epoch'], source_epoch=value['source_epoch'], stamp_ns=value['stamp_ns'],
-                    expires_ns=value['expires_ns'],
+                    expires_ns=value['expires_ns'], worker_branch=value['worker_branch'],
                     fresh=True, detections=self._detections(value['result']),
                     raw_jpeg_base64=base64.b64encode(value['raw']).decode(),
                     annotated_jpeg_base64=base64.b64encode(value['annotated']).decode())
@@ -626,20 +741,31 @@ class BehaviorSupervisor:
             if not any(self._enabled.values()):
                 return dict(detections=[], behavior=self.status(), partial=False)
             epoch, sequence = self._epoch, self._sequence
-            best = None
+            best = {}
+            seen = dict.fromkeys(('primary', 'fight'), sequence)
             while True:
                 if epoch != self._epoch or task_id != self._task_id:
                     return dict(detections=[], error='行为巡检范围已变化', partial=True)
-                if self._fresh_locked() and self._sequence > sequence:
-                    candidate = self._evidence_locked()
-                    if best is None or any(v['alert'] for v in candidate['detections']): best = candidate
-                    sequence = self._sequence
+                for key, value in (('primary', self._latest), ('fight', self._fight_latest)):
+                    if not self._fresh_locked(value) or value['sequence'] <= seen[key]:
+                        continue
+                    seen[key] = value['sequence']
+                    candidate = self._evidence_locked(value)
+                    previous = best.get(key)
+                    if (previous is None or self._clock() > previous['expires_ns']
+                            or any(v['alert'] for v in candidate['detections'])
+                            or not any(v['alert'] for v in previous['detections'])):
+                        best[key] = candidate
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or self._error or not self._wanted(): break
                 self._condition.wait(min(.2, remaining))
-            if best is None or self._clock() > best['expires_ns']:
-                return dict(detections=[], error=self._error or '采集窗口内没有新鲜行为结果', partial=True, behavior=self.status())
-            return {**best, 'behavior': self.status(), 'partial': not self.status()['ready']}
+            usable = [value for value in best.values() if self._clock() <= value['expires_ns']]
+            status = self.status()
+            if not usable:
+                return dict(detections=[], error=self._error or '采集窗口内没有新鲜行为结果', partial=True, behavior=status)
+            primary = next((v for v in usable if any(d['alert'] for d in v['detections'])), usable[0])
+            return {**primary, 'branch_captures': [v for v in usable if v is not primary],
+                    'behavior': status, 'partial': not status['ready']}
 
     def events(self, task_id):
         with self._condition:

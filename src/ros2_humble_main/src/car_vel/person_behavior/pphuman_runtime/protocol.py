@@ -67,8 +67,25 @@ def read_request(stream, max_header_bytes=65536, max_payload_bytes=25165824,
                 or branches.get("smoking", False) or branches.get("fight") is not True):
             raise ProtocolError("Expected bounded, ordered fight-only capture clip")
         count = len(stamps)
-    if length != count * shape[0] * shape[1] * 3:
-        raise ProtocolError("payload_bytes does not match uint8 BGR shape")
+    expected = count * shape[0] * shape[1] * 3
+    if "fight_samples" in header:
+        samples = header["fight_samples"]
+        if stamps is not None or not isinstance(samples, list) or len(samples) > 8:
+            raise ProtocolError("Expected at most eight RGB capture samples and no legacy clip")
+        previous = -1
+        for sample in samples:
+            if not isinstance(sample, dict):
+                raise ProtocolError("Invalid fight sample header")
+            stamp, dims = sample.get("stamp_ns"), sample.get("shape")
+            if (type(stamp) is not int or not previous < stamp <= header["stamp_ns"]
+                    or not isinstance(dims, list) or len(dims) != 3
+                    or any(type(value) is not int for value in dims) or dims[2] != 3
+                    or not all(0 < value <= 512 for value in dims[:2])):
+                raise ProtocolError("Invalid fight sample timestamp or shape")
+            expected += dims[0] * dims[1] * 3
+            previous = stamp
+    if length != expected:
+        raise ProtocolError("payload_bytes does not match the declared frame shapes")
     return header, read_exact(stream, length)
 
 

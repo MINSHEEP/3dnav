@@ -130,27 +130,31 @@ class SmokingRuntimeTests(unittest.TestCase):
             version = 'injected'
             session = types.SimpleNamespace(get_providers=lambda: ['CPUExecutionProvider'], get_provider_options=lambda: {})
             def __init__(self, *a): loaded.append('pose')
-        class Detector:
-            def __init__(self, *a, **kw):
-                loaded.append('smoking')
-                self.kwargs = kw
+        def detector(path, cfg):
+            loaded.append('smoking')
+            self.assertEqual(cfg['device'], 'CPU')
+            return object()
+
         modules = {'paddle': types.SimpleNamespace(enable_static=lambda: None, __version__='injected'),
-                   'python.infer': types.SimpleNamespace(Detector=Detector),
                    'python.keypoint_preprocess': types.SimpleNamespace(expand_crop=lambda *a: None)}
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / 'vendor/PaddleDetection/deploy').mkdir(parents=True)
-            (root / 'pose.onnx').write_bytes(b'injected')
+            (root / 'pose.xml').write_bytes(b'injected')
+            (root / 'pose.bin').write_bytes(b'injected')
+            (root / 'smoking').mkdir()
+            for name in ('model.xml', 'model.bin', 'infer_cfg.yml'):
+                (root / 'smoking' / name).write_bytes(b'injected')
             cfg = config()
-            cfg.update(project_root=str(root), models={'yolo_pose': 'pose.onnx', 'smoking': 'smoking', 'fight': 'fight'},
+            cfg.update(project_root=str(root), models={'yolo_pose': 'pose.xml', 'smoking': 'smoking', 'fight': 'fight'},
                        branches={'fall': True, 'smoking': True, 'fight': False})
             with patch.dict(sys.modules, modules), patch('pphuman_runtime.yolo_backend.YoloPosePredictor', Pose), \
-                    patch('pphuman_runtime.yolo_backend.model_identity', return_value={}):
+                    patch('pphuman_runtime.openvino_cpu.create_smoking_detector', side_effect=detector):
                 backend = YoloBackend(cfg)
         self.assertEqual(loaded, ['pose', 'smoking'])
-        self.assertFalse(hasattr(backend, 'fight_model'))
-        self.assertEqual(backend.smoking_model.kwargs['device'], 'CPU')
-        self.assertFalse(backend.smoking_model.kwargs['enable_mkldnn'])
+        self.assertIsNone(backend.fight_model)
+        self.assertEqual(set(backend.identities), {'yolo_pose', 'smoking'})
+
 
 
 class SmokingGatewayTests(unittest.TestCase):
@@ -183,13 +187,31 @@ class SmokingGatewayTests(unittest.TestCase):
         self.assertEqual(self.speech, ['smoking'])
         self.assertTrue(event['raw_jpeg_base64'])
 
+    def test_inspection_notice_callback_uses_worker_context_and_repeat_control(self):
+        inspection = []
+        self.worker.inspection_speech = inspection.append
+        for mode in ('transit', 'inspection', 'manual'):
+            with self.subTest(mode=mode):
+                self.now += 21_000_000_000
+                self.worker._mode = mode
+                self.worker._task_id = '' if mode == 'manual' else 'task'
+                self.speech.clear()
+                inspection.clear()
+                self.assertTrue(self.worker._accept(self.result(), None))
+                self.worker._accept(self.result(), None)
+                self.assertEqual(inspection, ['smoking'] if mode != 'manual' else [])
+                self.assertEqual(self.speech, ['smoking'] if mode == 'manual' else [])
+
     def test_cached_occluded_stale_results_do_not_produce_new_alerts(self):
+        inspection = []
+        self.worker.inspection_speech = inspection.append
         for patch in ({'updated': False}, {'prediction_stamp_ns': self.now - 2_000_000_000},
                       {'evidence': {'hand_to_mouth': {'short_occlusion': True}}},
                       {'score_kind': 'model_probability'}):
             self.worker._accept(self.result(**patch), None)
             self.assertFalse(self.worker.events('task'))
             self.assertFalse(self.speech)
+            self.assertFalse(inspection)
 
     def test_two_switch_settings_migrate_and_pose_worker_cannot_enable_fight(self):
         old = {'fall_enabled': False, 'fight_enabled': False}

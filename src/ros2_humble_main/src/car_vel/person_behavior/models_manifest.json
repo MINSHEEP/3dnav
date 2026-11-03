@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "scope": "Historical provenance for removed model exports",
+  "active_manifest": "assets/runtime_assets.json",
   "downloaded_at_utc": "2026-10-15T11:09:16.366882+00:00",
   "hash_scope": "local SHA256 integrity only; not an upstream signature",
   "upstream": {

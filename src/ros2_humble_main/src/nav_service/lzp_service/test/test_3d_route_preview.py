@@ -87,6 +87,14 @@ def test_route_order_includes_wrap_for_finite_repetition():
         raise AssertionError('3D continuous route was accepted')
 
 
+def test_round_trip_previews_a_19_point_route_without_repeating_each_round():
+    select = _harness('_route_preview_points')._route_preview_points
+    forward = list(range(1, 20))
+    route = {'points': [{'id': point_id} for point_id in forward]}
+    points = select(route, loop_count=5, bidirectional=True)
+    assert [point['id'] for point in points] == forward + forward[-2::-1]
+
+
 def test_xingji_requires_preview_but_2d_and_gangben_do_not():
     cls = _harness('_prepare_3d_route_start')
     manager = cls()

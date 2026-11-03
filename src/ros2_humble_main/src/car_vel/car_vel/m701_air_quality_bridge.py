@@ -242,7 +242,12 @@ class M701AirQualityBridge(Node):
                 self.get_logger().warning(f'M701 poll failed: {error}')
                 self._warning_key, self._warning_at = warning_key, now
             self._publish_invalid(error)
-            self._close_serial()
+            # Keep the link and its warmup clock across transient Modbus errors.
+            transient = self._serial is not None and (
+                isinstance(error, TimeoutError)
+                or isinstance(error, ConnectionError) and error.code == 'invalid_response')
+            if not transient:
+                self._close_serial()
 
     def _connection_status(self):
         diagnostic = diagnose(self._config, self._devices, self._missing_usb)

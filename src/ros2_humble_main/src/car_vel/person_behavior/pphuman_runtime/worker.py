@@ -12,6 +12,7 @@ def serve(runtime, cfg, input_stream, output_stream):
                                   "models": runtime.backend.identities,
                                   "runtime": runtime.backend.metadata,
                                   "branches": cfg["branches"],
+                                  "capabilities": ["fight_samples_rgb_v1"] if cfg["fight"].get("capture_buffer") else [],
                                   "sampling": {k: cfg[k] for k in ("fall", "fight", "smoking")}})
     import numpy as np
     limits = {key: cfg["stream"][key] for key in (
@@ -32,7 +33,21 @@ def serve(runtime, cfg, input_stream, output_stream):
                                           "generation": runtime.generation})
             continue
         stamps = header.get("clip_stamps_ns")
-        if stamps is None:
+        samples = header.get("fight_samples")
+        if samples is not None:
+            height, width, channels = header["shape"]
+            frame_bytes = height * width * channels
+            frame = np.frombuffer(payload, dtype=np.uint8, count=frame_bytes).reshape(header["shape"])
+            capture = []
+            offset = frame_bytes
+            for sample in samples:
+                h, w, c = sample["shape"]
+                size = h * w * c
+                image = np.frombuffer(payload, dtype=np.uint8, count=size, offset=offset).reshape(sample["shape"])
+                capture.append((sample["stamp_ns"], image))
+                offset += size
+            result = runtime.infer(frame, header, fight_samples=capture)
+        elif stamps is None:
             frame = np.frombuffer(payload, dtype=np.uint8).reshape(header["shape"])
             result = runtime.infer(frame, header)
         else:
@@ -65,9 +80,12 @@ def main():
                 raise ValueError("Unknown enabled branch")
             cfg["branches"] = {key: value and key in selected for key, value in cfg["branches"].items()}
         import cv2
-        cv2.setNumThreads(cfg["cpu_threads"])
-        backend = YoloBackend(cfg)
-        serve(RuntimeYolo(cfg, backend), cfg, sys.stdin.buffer, output)
+        cv2.setNumThreads(cfg.get("opencv_threads", cfg["cpu_threads"]))
+        runtime = RuntimeYolo(cfg, YoloBackend(cfg))
+        try:
+            serve(runtime, cfg, sys.stdin.buffer, output)
+        finally:
+            runtime.close()
     except BrokenPipeError:
         return 1
     except Exception:

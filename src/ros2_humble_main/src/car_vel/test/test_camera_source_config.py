@@ -89,6 +89,7 @@ class GatewayTests(unittest.TestCase):
         self.args = Namespace(speed=4, camera_type='usb', usb_device='/dev/video2',
             usb_width=1280, usb_height=720, usb_fps=30.0, usb_fourcc='MJPG',
             video_start_timeout=0.05,
+            recognition_db=Path(self.tmp.name)/'recognition.db',
             camera_source_config=Path(self.tmp.name)/'source.json')
         self.sources = []
         self.fail_body = False
@@ -118,6 +119,20 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(self.gateway.snapshot(), b'body')
         self.assertEqual(CameraSourceStore(self.args.camera_source_config).active()['source'], 'body')
         self.gateway._thermal.set_detection.assert_not_called()
+
+    def test_c12_switch_keeps_legacy_settings_and_never_exposes_temperature(self):
+        original = self.gateway.camera_source_status()['config']
+        result = self.switch(source='c12')
+        self.assertEqual(result['config']['usb_device'], original['usb_device'])
+        self.assertEqual(result['config']['body_url'], original['body_url'])
+        self.assertEqual(self.gateway.snapshot(), b'c12')
+        preview = self.gateway._thermal_client()
+        self.assertIsNone(preview.status()['max_temperature_c'])
+        self.assertFalse(preview.set_detection(True)['detection_enabled'])
+        with self.assertRaises(ValueError):
+            self.gateway.update_thermal_config({'threshold_c': 50})
+        self.switch(source='usb')
+        self.assertIs(self.gateway._thermal_client(), self.gateway._thermal)
     def test_failed_connection_rolls_back_and_does_not_save(self):
         self.fail_body = True
         old_config = self.gateway.camera_source_status()['config']

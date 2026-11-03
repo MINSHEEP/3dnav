@@ -323,6 +323,10 @@ class CameraInspectionClient:
         return self.request(
             '/api/inspection/speech', {'key': str(key)}, timeout=5.0)
 
+    def speak_patrol_safety(self, task_id: str) -> Dict[str, Any]:
+        return self.request('/api/inspection/speech',
+                            {'key': 'patrol_safety', 'task_id': task_id}, timeout=2.0)
+
 
 class InspectionTaskManager(Node):
     """Run recoverable inspection jobs independently of the browser."""
@@ -396,6 +400,8 @@ class InspectionTaskManager(Node):
         )
         self._workers = ThreadPoolExecutor(
             max_workers=3, thread_name_prefix='inspection-worker')
+        self._patrol_speech_worker = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix='inspection-speech')
         self._selected_navigation_mode = TERRAIN_3D
         self._navigation_mode_seen = False
         self._selected_robot_body = ''
@@ -936,13 +942,6 @@ class InspectionTaskManager(Node):
                 mode=self._selected_navigation_mode, body=self._selected_robot_body,
                 localized_map=self._localized_map_name)
             if self._selected_navigation_mode == TERRAIN_3D and prepared['preview_id']:
-                if bool(request.bidirectional):
-                    response.success = False
-                    response.message = (
-                        '3D 双向巡检暂未完成反向逐段预览，不能启动；'
-                        '请关闭双向巡检并重新预览')
-                    response.task_id = ''
-                    return response
                 if not self._reserve_3d_route_client.service_is_ready():
                     response.success = False
                     response.message = '3D 路线预览预约服务尚未就绪'
@@ -963,7 +962,7 @@ class InspectionTaskManager(Node):
             reserve.owner_token = prepared['task_id']
             reserve.route_id = int(prepared['route']['id'])
             reserve.loop_count = prepared['loop_count']
-            reserve.bidirectional = False
+            reserve.bidirectional = prepared['bidirectional']
             self._log('正在确认三维路线预约与启动条件，可取消本次启动。')
             self.get_logger().info('INSPECTION_START '+_json(dict(stage='reserving',
                 task_id=prepared['task_id'], preview_id=prepared['preview_id'])))
@@ -1071,6 +1070,7 @@ class InspectionTaskManager(Node):
             'message': '正在准备已启用的识别项目',
             'started_at': utc_now(), 'resume_state': '',
             'recovery_pending': False,
+            'start_safety_notice_pending': True,
         }
         route_snapshot = self._route_to_dict(route)
         self._database.create_task(
@@ -1765,6 +1765,8 @@ class InspectionTaskManager(Node):
                 self._state['message'] = (
                     f'第 {self._state["current_loop"]} 轮巡检进行中'
                     if route_purpose == 'patrol' else '正在返回起点复位')
+                if route_purpose == 'patrol' and self._state.pop('start_safety_notice_pending', False):
+                    self._queue_patrol_safety_notice()
             # A very short route can finish before its Start service reply.
             # Consume that cached terminal event now that the session exists.
             status = getattr(self, '_route_status', None)
@@ -2007,6 +2009,7 @@ class InspectionTaskManager(Node):
             return
         if self._inspection_future is not None:
             return
+        self._queue_patrol_safety_notice()
         self._state.update({
             'state': 'inspecting', 'current_direction': '',
             'message': f'正在检测“{point.name}”',
@@ -2436,6 +2439,20 @@ class InspectionTaskManager(Node):
                 None, valid=False, active=True, now=now)
         self._publish_environment_config()
 
+    def _queue_patrol_safety_notice(self) -> None:
+        try:
+            self._patrol_speech_worker.submit(self._send_patrol_safety_notice, self._state['task_id'])
+        except RuntimeError as error:
+            self._log(f'巡检安全提示未加入队列：{error}', 'warning')
+
+    def _send_patrol_safety_notice(self, task_id: str) -> None:
+        try:
+            result = self._camera.speak_patrol_safety(task_id)
+            if not result.get('queued'):
+                self._log('巡检安全提示未加入播放队列', 'warning')
+        except Exception as error:
+            self._log(f'巡检安全提示请求失败：{error}', 'warning')
+
     def _queue_environment_speech(self, key: str) -> None:
         settings = getattr(self, '_detection_settings', None)
         if settings is not None and not settings.allows(key):
@@ -2603,6 +2620,7 @@ class InspectionTaskManager(Node):
             if pending is not None:
                 self._abandon_task_start(pending)
         self._cancel_event.set()
+        self._patrol_speech_worker.shutdown(wait=False, cancel_futures=True)
         self._workers.shutdown(wait=False, cancel_futures=True)
         return super().destroy_node()
 

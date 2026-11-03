@@ -93,6 +93,7 @@ class SmokingBranch:
             return state["first_seen"] if state["last_attempt"] is None else state["last_attempt"] + period
 
         selected, wait_ms, interval = [], [], None
+        smoking_diagnostic = {}
         if self.smoking_clock.due(stamp):
             # One clock governs every person, so newly appearing IDs cannot
             # accidentally cause additional GPU batches between global ticks.
@@ -105,7 +106,8 @@ class SmokingBranch:
                              [dict(p, raw_id=p["track_id"]) for p in selected])
                 observations_by_id = {p["track_id"]: dict(p, keypoints_stamp_ns=stamp) for p in selected}
                 results = call("smoking", self.backend.smoking, crops, observations_by_id, bgr.shape) if crops else {}
-                if crops:
+                smoking_diagnostic = dict(getattr(self.backend, "last_smoking_diagnostic", {})) if crops else {}
+                if crops and smoking_diagnostic.get("inferred_people", len(crops)):
                     interval = (stamp - self.last_smoking_forward) / NS if self.last_smoking_forward is not None else None
                     self.last_smoking_forward = stamp
                     self.smoking_forward_count += 1
@@ -171,6 +173,6 @@ class SmokingBranch:
                         max_rois_per_tick=smoke_cfg['max_rois_per_tick'],
                         selected_ids=[p['track_id'] for p in selected],
                         visible_people=len(observations), forward_count=self.smoking_forward_count,
-                        last_forward_interval_seconds=interval, max_selected_wait_ms=max(wait_ms, default=0.),
+                        current_tick=smoking_diagnostic, last_forward_interval_seconds=interval, max_selected_wait_ms=max(wait_ms, default=0.),
                         max_visible_wait_ms=max([max(0, stamp - eligible_since(i)) / 1e6 for i in seen], default=0.))
         return actions, schedule

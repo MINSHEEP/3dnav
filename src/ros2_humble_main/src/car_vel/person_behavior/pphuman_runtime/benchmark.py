@@ -37,6 +37,7 @@ def summaries(values):
 def run(args):
     import cv2
     import numpy as np
+    from .fight_sampling import FightSampler
     root = Path(__file__).resolve().parents[1]
     video = args.video.resolve(strict=True)
     if not video.is_file():
@@ -58,7 +59,7 @@ def run(args):
     coverage = {name: Counter() for name in ("fall", "fight", "smoking")}
     reasons = {name: Counter() for name in coverage}
     report = {"schema_version": 1, "video": str(video), "mode": args.mode,
-              "fps_metadata": fps, "inference_device": "CPU", "cpu_threads": 2,
+              "fps_metadata": fps, "inference_device": "CPU",
               "limits": {key: getattr(args, key) for key in ("max_frames", "max_seconds", "wall_timeout", "request_timeout")},
               "coverage_semantics": "Counts of observed branch states; not accuracy, recall, or false-positive rate.",
               "timestamp_policy": "Media POS_MSEC when monotonic; otherwise frame index / metadata FPS. No synthetic duplicate samples.",
@@ -127,6 +128,9 @@ def run(args):
             if ready.get("type") != "ready":
                 raise RuntimeError("Worker did not send ready")
             report["ready"] = ready
+            fight_sampler = None
+            if "fight" in selected and "fight_samples_rgb_v1" in ready.get("capabilities", []):
+                fight_sampler = FightSampler(ready["sampling"]["fight"])
             report["startup_seconds"] = time.monotonic() - started
             playback_started = time.monotonic()
             decoded = 0
@@ -150,6 +154,8 @@ def run(args):
                 if media >= args.max_seconds:
                     report["stop_reason"] = "media_duration_limit"
                     break
+                stamp_ns = round(media * 1_000_000_000)
+                fight_samples = fight_sampler.observe(frame, stamp_ns) if fight_sampler else ()
                 if args.mode == "realtime":
                     target = time.monotonic() - playback_started
                     if media + 1.0 / fps < target:
@@ -162,13 +168,16 @@ def run(args):
                     frame = cv2.resize(frame, (args.max_width, height), interpolation=cv2.INTER_AREA)
                 frame = np.ascontiguousarray(frame, dtype=np.uint8)
                 payload = frame.tobytes()
-                stamp_ns = round(media * 1_000_000_000)
                 if last_sent_ns is not None:
                     timing["capture_gap"].append((stamp_ns - last_sent_ns) / 1e6)
                 last_sent_ns = stamp_ns
                 header = {"op": "infer", "request_id": report["frames_inferred"], "source_epoch": "benchmark-file-1",
                           "stamp_ns": stamp_ns, "shape": list(frame.shape), "payload_bytes": len(payload),
                           "enabled_branches": {key: key in selected for key in coverage}}
+                if fight_sampler:
+                    header["fight_samples"] = [{"stamp_ns": t, "shape": list(rgb.shape)} for t, rgb in fight_samples]
+                    payload += b"".join(rgb.tobytes() for _, rgb in fight_samples)
+                    header["payload_bytes"] = len(payload)
                 inference_started = time.monotonic()
                 send(header, payload)
                 result = receive(args.request_timeout)

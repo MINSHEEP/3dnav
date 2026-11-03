@@ -152,6 +152,30 @@ class BehaviorTemporalTests(unittest.TestCase):
         self.assertEqual(self.service.status()['detections'], [])
         self.assertEqual(self.service.events('task1'), [])
         with self.assertRaises(RuntimeError): self.service.frame()
+    def test_preview_request_can_retrieve_the_fresh_frame_reported_before_next_result(self):
+        self.service._render = lambda frame, result, raw: (b'raw', str(result['stamp_ns']).encode())
+        self.service._accept(self.result(), Frame())
+        status = self.service.status()
+        epoch, stamp = status['source_epoch'], status['frame_stamp_ns']
+        self.now += 500_000_000
+        self.service._accept(self.result(), Frame())
+        self.assertNotEqual(self.service.frame()[2], int(stamp))
+        self.assertEqual(self.service.frame(epoch=str(epoch), stamp=stamp), (stamp.encode(), epoch, int(stamp)))
+        self.now += 500_000_001
+        with self.assertRaises(LookupError):
+            self.service.frame(epoch=str(epoch), stamp=stamp)
+        current = self.service.status()
+        self.service.reset_source()
+        with self.assertRaises(LookupError):
+            self.service.frame(epoch=str(epoch), stamp=current['frame_stamp_ns'])
+    def test_preview_can_distinguish_pose_and_fight_at_the_same_capture_time(self):
+        self.service._render = lambda frame, result, raw: (raw, raw)
+        result = self.result(updated=False)
+        self.service._accept(result, Frame(), b'fight', stream='fight')
+        self.service._accept(result, Frame(), b'pose', stream='pose')
+        for view in ('pose', 'fight'):
+            image, _, _ = self.service.frame(epoch=self.service._epoch, stamp=self.now, view=view)
+            self.assertEqual(image, view.encode())
     def test_duplicate_stamp_source_switch_size_change_clear_history_and_inflight_result(self):
         frame = Frame()
         self.assertTrue(self.service.submit(frame, stamp_ns=self.now, source_key='usb'))

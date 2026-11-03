@@ -70,6 +70,32 @@ def test_ready_response_is_processed_with_six_workers_contending_for_state_lock(
     h._database.create_task.assert_not_called()
 
 
+def test_round_trip_start_reserves_the_preview_with_direction_enabled():
+    h, request = harness()
+    request.bidirectional, request.loop_count = True, 2
+    future = Future()
+    future.set_result(NS(success=True, message='reserved'))
+    h._reserve_3d_route_client = NS(
+        service_is_ready=lambda: True, call_async=Mock(return_value=future))
+    response = h._start_task_callback(request, NS())
+    assert response.success, response.message
+    reserved = h._reserve_3d_route_client.call_async.call_args.args[0]
+    assert reserved.bidirectional and reserved.loop_count == 2
+    assert h._state['bidirectional']
+
+    h._is_active = lambda: True
+    h._interval_scale = 60.0
+    h._start_route = Mock()
+    h._persist = Mock()
+    h._begin_patrol_loop()
+    h._enter_interval_wait()
+    h._drive_interval_wait()
+    assert h._state['current_loop'] == 2
+    assert [call.kwargs['reverse'] for call in h._start_route.call_args_list] == [
+        False, True]
+    assert all(call.kwargs['hold'] for call in h._start_route.call_args_list)
+
+
 def test_cancel_during_reservation_cannot_create_task_when_response_arrives_late():
     h,request=harness();future=Future();sent=threading.Event()
     h._reserve_3d_route_client=NS(service_is_ready=lambda:True,

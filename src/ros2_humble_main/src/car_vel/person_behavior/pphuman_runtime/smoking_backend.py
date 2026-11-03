@@ -1,4 +1,4 @@
-"""PPYOLOE adapter from supplied v4; no legacy MOT or extra pose model."""
+"""PPYOLOE adapter from the supplied CPU release; no legacy MOT or extra pose model."""
 import numpy as np
 from .smoking_filter import classify_smoking, profile_head_roi
 
@@ -16,14 +16,44 @@ class SmokingAdapter:
 
     def smoking(self, crops, observations=None, image_shape=None):
         """Keep detector boxes/scores for review, without changing threshold."""
+        self.last_smoking_diagnostic = {"requested_people": len(crops), "inferred_people": 0,
+                                        "skipped_unobservable": 0, "profile_forwards": 0}
         if not crops: return {}
+        skipped = {}
+        association = self.cfg["smoking"].get("association", {})
+        if association.get("enabled") and self.cfg["smoking"].get("skip_unobservable", False):
+            eligible = {}
+            for track_id, crop_info in crops.items():
+                person = (observations or {}).get(track_id)
+                if person is None:
+                    raise RuntimeError("Smoking association requires the same-frame person observation")
+                action = classify_smoking(None, person["keypoints"], person["bbox"],
+                    {**association, "threshold": self.cfg["smoking"]["threshold"],
+                     "positive_class": self.cfg["smoking"]["positive_class"], "image_shape": image_shape,
+                     "candidates_complete": False, "hand_to_mouth": self.cfg["smoking"].get("hand_to_mouth", {})})
+                if action["evidence"]["head_observable"]:
+                    eligible[track_id] = crop_info
+                else:
+                    # Every existing smoking path requires the same observable
+                    # head. Preserve unknown; no model score or fresh detection.
+                    action["evidence"]["detector_skipped"] = "face_unobservable"
+                    skipped[track_id] = dict(action, reason="face_unobservable",
+                        association_stamp_ns=person.get("keypoints_stamp_ns"), detections=[],
+                        crop_bbox=list(crop_info[1]), person_bbox=list(person["bbox"]),
+                        total_detection_count=None, diagnostics_truncated=False,
+                        coordinate_system="original_image_xyxy_pixels; bbox_crop is crop-relative xyxy")
+            crops = eligible
+            self.last_smoking_diagnostic["skipped_unobservable"] = len(skipped)
+        self.last_smoking_diagnostic["inferred_people"] = len(crops)
+        if not crops:
+            return skipped
         ids = list(crops)
         raw = self.smoking_model.predict_image([crops[i][0] for i in ids], visual=False)
         counts = np.asarray(raw["boxes_num"]).reshape(-1)
         boxes = np.asarray(raw["boxes"]).reshape(-1, 6)
         if len(counts) != len(ids) or sum(counts) != len(boxes) or not np.isfinite(boxes).all():
             raise RuntimeError("Invalid smoking detector result")
-        result, start = {}, 0
+        result, start = dict(skipped), 0
         refinement = self.cfg['smoking'].get('profile_refinement', {})
         extra_calls = 0
         for track_id, count in zip(ids, counts):
@@ -66,6 +96,7 @@ class SmokingAdapter:
                     x1, y1, x2, y2 = np.asarray(roi) - np.tile(np.asarray(expanded[:2]), 2)
                     refined = self.smoking_model.predict_image([crop[y1:y2, x1:x2].copy()], visual=False)
                     extra_calls += 1
+                    self.last_smoking_diagnostic["profile_forwards"] = extra_calls
                     refined_boxes = np.asarray(refined['boxes']).reshape(-1, 6)
                     refined_counts = np.asarray(refined['boxes_num']).reshape(-1)
                     if (len(refined_counts) != 1 or refined_counts[0] != len(refined_boxes)

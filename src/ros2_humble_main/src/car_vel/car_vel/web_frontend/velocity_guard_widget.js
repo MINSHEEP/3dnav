@@ -82,6 +82,7 @@
                 if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) streamNode.textContent += ` · 最近窗口 ${rate.toFixed(1)} Hz`;
             }
             const sources = {
+                terrain_advisory: '地形观测仅供参考，速度遵循设置页的导航挡位。',
                 restricted_map: '受限场地地图先验仍使用独立低速上限。',
                 unanchored_observation: '地面高度证据尚未充分确认，保留独立低速上限。',
                 safety_stop: '危险或必要状态无效，已零速停车。',

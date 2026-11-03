@@ -26,10 +26,12 @@ fi
 "$behavior_venv/bin/python" -s -m pphuman_runtime.assets --prepare-vendor "$behavior_home/vendor/PaddleDetection"
 "$behavior_venv/bin/python" -s - <<'PY'
 import cv2, numpy, onnxruntime, paddle
+from importlib.metadata import version
 assert numpy.__version__ == '1.26.4'
 assert cv2.__version__.startswith('4.6.')
 assert paddle.__version__ == '2.6.2' and not paddle.is_compiled_with_cuda()
 assert onnxruntime.__version__ == '1.18.0'
+assert version('openvino') == '2024.6.0'
 assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()
 assert 'CUDAExecutionProvider' not in onnxruntime.get_available_providers()
 print('CPU imports verified. No model accuracy or throughput claim has been made.')

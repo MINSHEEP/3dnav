@@ -47,10 +47,9 @@ requireMatch(inline, /result\.path && result\.path\.header[\s\S]*?frame_id[\s\S]
   'preview path is not constrained to the map frame');
 requireMatch(inline, /session !== requestSession \|\| !requestSession\.connected[\s\S]*?currentMapLoadId !== mapLoadId/,
   'asynchronous preview result may survive session or map change');
-requireMatch(inline, /loop_count: Math\.max\(1,[\s\S]*?continuous: false/,
-  'finite loop count or continuous route preview policy missing');
-requireMatch(inline, /bidirectional'\)\.checked\) \{[\s\S]*?3D 巡检暂不支持往返/,
-  'unsupported bidirectional 3D inspection not rejected');
+requireMatch(inline, /const bidirectional = document\.getElementById\('bidirectional'\)\.checked;[\s\S]*?loop_count: loopCount, continuous: false, bidirectional/,
+  'finite inspection preview must send the selected round-trip mode');
+assert(!inline.includes('3D 巡检暂不支持往返'), '3D round-trip checkbox blocks preview');
 requireMatch(inline, /const preview = terrain3d \? currentThreeDPreview\(\) : null;[\s\S]*?if \(terrain3d && !preview\)/,
   '3D start can bypass explicit route preview');
 requireMatch(inline, /preview_id: terrain3d \? preview\.previewId : ''/,

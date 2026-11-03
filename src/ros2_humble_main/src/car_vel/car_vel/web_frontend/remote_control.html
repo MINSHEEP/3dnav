@@ -642,7 +642,8 @@
             const response = await fetch(cameraApiUrl('/api/thermal/status'), {cache:'no-store'});
             const thermal = await response.json();
             if (!response.ok) throw new Error(thermal.error || `HTTP ${response.status}`);
-            thermalVideoStatus.textContent = Number.isFinite(Number(thermal.max_temperature_c))
+            thermalVideoStatus.textContent = thermal.supports_temperature === false ? '● C12 · 仅红外画面' :
+                thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
                 ? `● 最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃ · ${thermal.alarm_active ? '高温报警' : '监测正常'}`
                 : '● 热成像已连接，等待有效温度';
             thermalVideoStatus.classList.toggle('error', Boolean(thermal.alarm_active));

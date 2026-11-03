@@ -56,6 +56,33 @@ class GatewayBehaviorTests(unittest.TestCase):
         self.assertIn('yolo', result['errors'])
         self.gateway._behavior.set_mode.assert_called_once_with('transit', 'task-1')
 
+    def test_preview_http_uses_the_requested_frame_and_rejects_cache_misses(self):
+        handler = object.__new__(camera_web.CameraRequestHandler)
+        handler.server = Namespace(gateway=self.gateway)
+        handler.path = '/api/behavior/frame.jpg?epoch=7&stamp=1793111111000000123&view=pose'
+        handler.send_image, handler.send_json = Mock(), Mock()
+        frame = self.gateway._behavior.frame
+        frame.return_value = (b'annotated', 7, 1793111111000000123)
+        handler.do_GET()
+        frame.assert_called_once_with(epoch='7', stamp='1793111111000000123', view='pose')
+        handler.send_image.assert_called_once_with(200, b'annotated',
+            behavior_epoch=7, behavior_stamp=1793111111000000123)
+        frame.side_effect = LookupError('frame expired')
+        handler.send_image.reset_mock()
+        handler.do_GET()
+        handler.send_image.assert_not_called()
+        handler.send_json.assert_called_once_with(409, {'error': 'frame expired'})
+
+    def test_patrol_notice_uses_local_audio_only_for_the_current_task(self):
+        self.gateway._behavior_speech.announce_patrol_safety.return_value = True
+        request = {'key': 'patrol_safety', 'task_id': 'task-1'}
+        self.assertFalse(self.gateway.inspection_speech({**request, 'task_id': 'old-task'})['queued'])
+        self.assertTrue(self.gateway.inspection_speech(request)['queued'])
+        self.gateway._inspection_mode = 'paused'
+        self.assertFalse(self.gateway.inspection_speech(request)['queued'])
+        self.gateway._behavior_speech.announce_patrol_safety.assert_called_once_with()
+        self.gateway._yolo.inspection_request.assert_not_called()
+
     def test_capture_persists_behavior_own_pair_even_if_yolo_is_missing(self):
         self.gateway._behavior.capture.return_value = self.evidence()
         result = self.gateway.inspection_capture(dict(task_id='task-1', loop_number=1,

@@ -129,6 +129,10 @@ class XingjiConfidenceGateTests(unittest.TestCase):
         case = velocity_callbacks.VelocityArbiterCallbacksTest()
         case.setUp()
         case.body('xingji')
+        case.node._global_localization_callback(velocity_callbacks.Message(json.dumps({
+            'ready': True, 'scope': 'xingji_3d', 'body_generation': 1,
+            'stamp_ns': int(case.now * 1e9),
+        })))
         case.node._terrain_status_callback(velocity_callbacks.Message(json.dumps(node.statuses[-1])))
         case.command()
         case.node._tick()

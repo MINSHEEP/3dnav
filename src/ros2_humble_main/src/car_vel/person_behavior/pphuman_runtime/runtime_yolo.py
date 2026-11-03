@@ -1,9 +1,4 @@
-"""Three-branch CPU runtime adapted from the supplied shared-pose implementation.
-
-Fall is person-level rule evidence, with no numeric confidence. Fight is a
-scene-level model result. Capture timestamps, not processed-frame counts,
-govern all temporal history. Disabled branches do not run model forwards.
-"""
+"""Candidate shared-pose runtime; timestamp protocol compatible with legacy."""
 import math
 import time
 from pathlib import Path
@@ -22,45 +17,93 @@ def load_config(path):
         cfg = yaml.safe_load(stream)
     cfg["project_root"] = str(path.parent.parent)
     if cfg.get("protocol_version") != 1 or cfg.get("profile") != "yolo_pose_rules_paddle_aux_v1":
-        raise ValueError("Expected shared-pose profile and protocol 1")
-    if set(cfg["models"]) != {"yolo_pose", "fight", "smoking"}:
-        raise ValueError("Expected shared pose, fight and smoking models")
-    if cfg.get("device") != "CPU" or cfg.get("run_mode") != "paddle":
-        raise ValueError("This deployed runtime requires CPU and paddle run mode")
-    for threads in (cfg.get("cpu_threads"), cfg["yolo_pose"].get("cpu_threads")):
-        if type(threads) is not int or not 1 <= threads <= 16:
-            raise ValueError("CPU thread count must be between 1 and 16")
+        raise ValueError("Expected candidate shared-pose profile/protocol")
+    if set(cfg["models"]) != {"yolo_pose", "smoking", "fight"}:
+        raise ValueError("Exactly three actual model identities are required")
     branches = cfg.setdefault("branches", {"fall": True, "fight": True, "smoking": True})
-    if set(branches) != {"fall", "fight", "smoking"} or any(type(v) is not bool for v in branches.values()):
+    if set(branches) != {"fall", "fight", "smoking"} or any(type(value) is not bool for value in branches.values()):
         raise ValueError("branches must contain boolean fall, fight and smoking switches")
+    engine = cfg["yolo_pose"].get("backend", "onnxruntime")
+    if cfg["yolo_pose"].get("output_format", "yolov8_raw") not in ("yolov8_raw", "yolo26_end2end"):
+        raise ValueError("Unknown pose output format")
+    if engine not in ("onnxruntime", "openvino"):
+        raise ValueError("Unknown pose inference backend: " + str(engine))
+    fight_engine = cfg["fight"].get("backend", "paddle")
+    if fight_engine not in ("paddle", "openvino"):
+        raise ValueError("Unknown fight inference backend: " + str(fight_engine))
+    smoking_engine = cfg["smoking"].get("backend", "paddle")
+    if smoking_engine not in ("paddle", "openvino"):
+        raise ValueError("Unknown smoking inference backend: " + str(smoking_engine))
+    if type(cfg["smoking"].get("skip_unobservable", False)) is not bool:
+        raise ValueError("smoking.skip_unobservable must be boolean")
+    if "opencv_threads" in cfg and (type(cfg["opencv_threads"]) is not int or not 1 <= cfg["opencv_threads"] <= 16):
+        raise ValueError("opencv_threads must be an integer in [1,16]")
+    if fight_engine == "openvino":
+        if not isinstance(cfg["models"]["fight"], str) or not cfg["models"]["fight"].endswith(".xml"):
+            raise ValueError("OpenVINO fight requires an XML model path")
+        if cfg["fight"]["window_frames"] != 8 or cfg["fight"]["target_size"] not in (224, 320):
+            raise ValueError("The CPU fight candidate requires eight 224x224 or 320x320 frames")
+    if type(cfg["fight"].get("async_inference", False)) is not bool:
+        raise ValueError("fight.async_inference must be a boolean")
+    if cfg["fight"].get("async_inference", False):
+        if fight_engine != "openvino":
+            raise ValueError("Asynchronous fight requires the OpenVINO CPU backend")
+        timeout = cfg["fight"].get("async_timeout_seconds", 5.0)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("fight.async_timeout_seconds must be finite and positive")
+    if type(cfg.get("enable_mkldnn", False)) is not bool:
+        raise ValueError("enable_mkldnn must be a boolean")
+    if "openvino" in (engine, fight_engine, smoking_engine) or cfg.get("enable_mkldnn", False):
+        if cfg["device"].upper() != "CPU":
+            raise ValueError("CPU optimization options require device: CPU")
+        for count in (cfg["cpu_threads"], cfg["yolo_pose"].get("cpu_threads", 4),
+                      cfg["fight"].get("cpu_threads", cfg["cpu_threads"]),
+                      cfg["smoking"].get("cpu_threads", cfg["cpu_threads"])):
+            if type(count) is not int or not 1 <= count <= 16:
+                raise ValueError("CPU inference threads must be an integer in [1,16]")
+    for name in ("smoking", "fight"):
+        if not 0 < cfg[name]["sample_hz"] <= 120 or cfg[name]["result_ttl_seconds"] <= 0:
+            raise ValueError("Invalid sampling/TTL: " + name)
     fight = cfg["fight"]
-    if not 0 < fight["sample_hz"] <= 120 or fight["result_ttl_seconds"] <= 0:
-        raise ValueError("Invalid fight sampling or TTL")
-    if type(fight["window_frames"]) is not int or fight["window_frames"] != 8:
-        raise ValueError("The bundled ppTSM export requires eight frames")
+    if type(fight.get('capture_buffer', False)) is not bool:
+        raise ValueError('fight.capture_buffer must be boolean')
+    if fight.get('capture_buffer', False):
+        if not fight.get('async_inference', False):
+            raise ValueError('Capture buffer requires asynchronous fight inference')
+        from .fight_sampling import FightSampler
+        FightSampler(fight)
     expected = (fight["window_frames"] - 1) / fight["sample_hz"]
     if not math.isclose(fight["nominal_window_seconds"], expected, abs_tol=1e-6):
         raise ValueError("Inconsistent fight sample span")
     if fight["max_window_seconds"] < expected or fight["max_sample_gap_seconds"] < 1 / fight["sample_hz"]:
         raise ValueError("Fight window limits too short")
-    if not 0 <= fight["minimum_score"] <= fight.get("positive_minimum_score", fight["minimum_score"]) <= 1:
-        raise ValueError("Invalid fight thresholds")
-    if fight["prediction_interval_seconds"] <= 0 or cfg["stream"]["reset_gap_seconds"] <= 0:
-        raise ValueError("Prediction interval and reset gap must be positive")
-    fall = cfg["fall"]
-    if fall["lying_confirm_seconds"] <= 0 or fall["max_observation_gap_seconds"] <= 0:
+    if not fight["minimum_score"] <= fight.get("positive_minimum_score", fight["minimum_score"]) <= 1:
+        raise ValueError("Fight positive threshold must be between minimum_score and one")
+    if not 1 <= cfg["smoking"]["max_rois_per_tick"] <= cfg["smoking"]["batch_size"]:
+        raise ValueError("Smoking budget must fit one batch")
+    diagnostic_limit = cfg["smoking"].get("diagnostic_max_detections", 20)
+    if type(diagnostic_limit) is not int or not 0 <= diagnostic_limit <= 100:
+        raise ValueError("Smoking diagnostic limit must be an integer between 0 and 100")
+    if cfg["smoking"].get("hand_to_mouth", {}).get("enabled") and not cfg["smoking"].get("association", {}).get("enabled"):
+        raise ValueError("Hand-to-mouth confirmation requires smoking spatial association")
+    refinement = cfg['smoking'].get('profile_refinement', {})
+    if refinement.get('enabled'):
+        if not cfg['smoking'].get('association', {}).get('enabled'):
+            raise ValueError('Profile refinement requires smoking spatial association')
+        high = refinement.get('threshold', cfg['smoking']['threshold'])
+        low = refinement.get('continue_threshold', high)
+        if not all(math.isfinite(v) for v in (low, high)) or not 0 < low <= high <= 1:
+            raise ValueError('Profile continuation/start scores must satisfy 0 < low <= high <= 1')
+        budget = refinement.get('max_rois_per_tick', 2)
+        if type(budget) is not int or not 1 <= budget <= cfg['smoking']['max_rois_per_tick']:
+            raise ValueError('Profile ROI budget must be a positive integer within the smoking ROI budget')
+        for key, default in [('crop_radius_heads', 2.), ('minimum_profile_ratio', .35), ('maximum_head_pixels', 64.)]:
+            if not math.isfinite(refinement.get(key, default)) or refinement.get(key, default) <= 0:
+                raise ValueError('Invalid profile refinement parameter: '+key)
+    if cfg["fall"]["lying_confirm_seconds"] <= 0 or cfg["fall"]["max_observation_gap_seconds"] <= 0:
         raise ValueError("Rule confirmation/gap must be positive")
-    if fall.get("minimum_lying_observations", 3) < 2 or fall.get("max_visibility_gap_seconds", .4) <= 0:
-        raise ValueError("Rules require repeated observations and a positive visibility deadline")
-    smoke = cfg["smoking"]
-    if (not 0 < smoke["sample_hz"] <= 120 or smoke["result_ttl_seconds"] <= 0
-            or not 1 <= smoke["max_rois_per_tick"] <= smoke["batch_size"]
-            or not 0 <= smoke["threshold"] <= 1
-            or not smoke.get("association", {}).get("enabled")):
-        raise ValueError("Invalid smoking sampling, budget or required spatial association")
-    limit = smoke.get("diagnostic_max_detections", 20)
-    if type(limit) is not int or not 0 <= limit <= 100:
-        raise ValueError("Invalid smoking diagnostics limit")
+    if cfg["fall"].get("minimum_lying_observations", 3) < 2 or cfg["fall"].get("max_visibility_gap_seconds", .4) <= 0:
+        raise ValueError("Rule confirmation requires repeated observations and a positive visibility deadline")
     return cfg
 
 
@@ -77,44 +120,152 @@ class RuntimeYolo:
     def __init__(self, cfg, backend):
         self.cfg, self.backend = cfg, backend
         self.generation = 0
+        self.fight_pending = None
+        self.fight_serial = 0
+        self.fight_stats = {"submitted_windows": 0, "completed_windows": 0,
+                            "discarded_windows": 0, "busy_sample_ticks": 0,
+                            "last_model_inference_ms": None, "last_drop_reason": None}
         self.reset("startup")
 
-    def reset(self, reason="explicit_reset"):
+    def reset(self, reason="explicit_reset", *, preserve_fight=False):
         self.backend.reset()
         self.rules = FallRuleEngine(self.cfg["fall"])
         self.smoking = SmokingBranch(self.cfg, self.backend)
-        self.fight_window = TimeWindow(self.cfg["fight"])
-        self.fight_cache = None
-        self.last_stamp = self.last_shape = self.source_epoch = None
         self.enabled_branches = None
+        if not preserve_fight:
+            self.fight_window = TimeWindow(self.cfg["fight"])
+            self.fight_capture_used = None
+            self.fight_serial += 1
+            self.last_fight_submit = None
+            self.fight_cache = None
+        self.last_stamp = self.last_shape = self.source_epoch = None
         self.generation += 1
         self.reset_reason = reason
+
+    def close(self):
+        close = getattr(self.backend, "close", None)
+        if close is not None:
+            close()
+        self.fight_pending = None
+
+    def _fight_tick(self, stamp, as_rgb, call, timing, samples=None, poll_only=False):
+        cfg = self.cfg["fight"]
+        sampled = False
+        if not poll_only:
+            if samples is None:
+                incoming = [(stamp, call("fight_preprocess", self.backend.prepare_fight, as_rgb()))] if self.fight_window.due(stamp) else []
+            else:
+                from PIL import Image
+                last = self.fight_window.samples[-1][0] if self.fight_window.samples else -1
+                incoming = [(t, Image.fromarray(rgb) if cfg.get("capture_buffer", False) else rgb)
+                            for t, rgb in samples if t > last]
+            for source_stamp, sample in incoming:
+                sampled = True
+                if self.fight_window.add(source_stamp, sample):
+                    self.fight_cache = None
+                    self.fight_serial += 1
+                    self.last_fight_submit = None
+        # A buffered job belongs to its actual last capture, never the later
+        # main-inference/completion time. Empty input cannot fabricate a window.
+        evidence_stamp = self.fight_window.samples[-1][0] if self.fight_window.samples else stamp
+        if samples is not None and self.fight_window.samples and stamp-evidence_stamp > cfg['max_sample_gap_seconds']*NS:
+            if not poll_only:
+                self.fight_window.clear()
+                self.fight_cache = None
+                self.fight_serial += 1
+                self.last_fight_submit = None
+                sampled = False
+        if not cfg.get("async_inference", False):
+            if sampled and self.fight_window.full and (self.fight_cache is None or
+                    stamp - self.fight_cache["prediction_stamp_ns"] >= cfg["prediction_interval_seconds"] * NS):
+                raw = call("fight", self.backend.fight, [x[1] for x in self.fight_window.samples])
+                self.fight_cache = fight_classification(raw, cfg, stamp, self.fight_window)
+            result = current(self.fight_cache, stamp, cfg)
+        else:
+            newly_completed = False
+            if self.fight_pending is not None:
+                job = self.fight_pending
+                raw = call("fight_poll", self.backend.poll_fight)
+                if raw is not None:
+                    self.fight_pending = None
+                    self.fight_stats["completed_windows"] += 1
+                    self.fight_stats["last_model_inference_ms"] = raw["model_inference_ms"]
+                    timing["fight_async_model"] = raw["model_inference_ms"]
+                    if job["serial"] != self.fight_serial:
+                        self.fight_stats["discarded_windows"] += 1
+                        self.fight_stats["last_drop_reason"] = "source_or_window_reset"
+                    elif stamp - job["stamp"] > cfg["result_ttl_seconds"] * NS:
+                        self.fight_stats["discarded_windows"] += 1
+                        self.fight_stats["last_drop_reason"] = "expired_before_completion"
+                        self.fight_cache = empty_action("unknown", "expired_before_completion", job["stamp"])
+                    else:
+                        self.fight_cache = fight_classification(raw, cfg, job["stamp"], job["window"])
+                        newly_completed = self.fight_cache["state"] == "valid"
+                        self.fight_stats["last_drop_reason"] = None
+                elif time.monotonic() - job["started"] > cfg.get("async_timeout_seconds", 5.0):
+                    raise RuntimeError("Background fight inference timed out")
+            if sampled and self.fight_window.full:
+                if self.fight_pending is not None:
+                    self.fight_stats["busy_sample_ticks"] += 1
+                elif (self.last_fight_submit is None or
+                      evidence_stamp - self.last_fight_submit >= cfg["prediction_interval_seconds"] * NS):
+                    job = {"serial": self.fight_serial, "stamp": evidence_stamp,
+                           "window": self.fight_window.info(), "started": time.monotonic()}
+                    call("fight_submit", self.backend.start_fight, [x[1] for x in self.fight_window.samples])
+                    self.fight_pending = job
+                    self.last_fight_submit = evidence_stamp
+                    self.fight_stats["submitted_windows"] += 1
+            result = current(self.fight_cache, stamp, cfg)
+            # Completion is a new observation once; its evidence timestamp is
+            # still the source window end, never the later completion timestamp.
+            result["updated"] = newly_completed and result["state"] == "valid"
+        if self.fight_cache is None:
+            result["window"] = self.fight_window.info()
+        return result
 
     def infer(self, bgr, header, fight_samples=None):
         started = time.perf_counter()
         stamp, epoch = header["stamp_ns"], header["source_epoch"]
         requested = header.get("enabled_branches", self.cfg["branches"])
-        enabled = {name: bool(self.cfg["branches"][name] and requested.get(name, True))
-                   for name in ("fall", "fight", "smoking")}
-        if fight_samples is not None and 'smoking' not in requested:
-            enabled['smoking'] = False  # Preserve legacy fight-only clip clients.
+        enabled = {name: active and requested.get(name, True) for name, active in self.cfg["branches"].items()}
+        legacy_clip = fight_samples is not None and "fight_samples" not in header
+        if legacy_clip and "enabled_branches" in header and "smoking" not in requested:
+            enabled["smoking"] = False
+        pose_enabled = enabled["fall"] or enabled["smoking"]
+        captured = enabled["fight"] and fight_samples is not None
+        if captured:
+            fight_cfg = self.cfg["fight"]
+            if legacy_clip:
+                if pose_enabled or not fight_samples or fight_samples[-1][0] != stamp:
+                    raise ValueError("Legacy BGR clips require a fight-only worker and a matching final frame")
+                if fight_cfg.get("capture_buffer", False):
+                    from .fight_sampling import scale_capture_frame
+                    fight_samples = [(t, scale_capture_frame(frame, fight_cfg["short_size"]))
+                                     for t, frame in fight_samples]
+                else:
+                    fight_samples = [(t, self.backend.prepare_fight(np.ascontiguousarray(frame[:, :, ::-1])))
+                                     for t, frame in fight_samples]
+            elif not fight_cfg.get("capture_buffer", False):
+                raise ValueError("Capture buffer is not enabled in this configuration")
+            if fight_cfg.get("capture_buffer", False):
+                from .fight_sampling import validate_samples
+                validate_samples(fight_samples, stamp, fight_cfg)
         reason = None
         if self.last_stamp is not None:
-            if epoch != self.source_epoch:
-                reason = "source_epoch_changed"
-            elif bgr.shape != self.last_shape:
-                reason = "shape_changed"
-            elif stamp <= self.last_stamp:
-                reason = "timestamp_nonincreasing"
-            elif stamp - self.last_stamp > self.cfg["stream"]["reset_gap_seconds"] * NS:
-                reason = "stream_gap"
-            elif enabled != self.enabled_branches:
-                reason = "branches_changed"
+            if epoch != self.source_epoch: reason = "source_epoch_changed"
+            elif bgr.shape != self.last_shape: reason = "shape_changed"
+            elif stamp <= self.last_stamp: reason = "timestamp_nonincreasing"
+            elif stamp - self.last_stamp > self.cfg["stream"]["reset_gap_seconds"] * NS: reason = "stream_gap"
+            elif enabled != self.enabled_branches: reason = "branches_changed"
         if reason:
-            self.reset(reason)
+            # The camera capture clock keeps feeding the fight window even
+            # when a slow pose forward leaves a gap between requests.
+            self.reset(reason, preserve_fight=(
+                reason == "stream_gap" and captured and self.fight_capture_used is True
+                and enabled == self.enabled_branches))
+        self.enabled_branches = enabled
         reset_reason, self.reset_reason = self.reset_reason, None
         self.last_stamp, self.source_epoch, self.last_shape = stamp, epoch, bgr.shape
-        self.enabled_branches = enabled
         timing = {}
 
         def call(name, fn, *args):
@@ -123,6 +274,13 @@ class RuntimeYolo:
             timing[name] = timing.get(name, 0.) + (time.perf_counter() - start) * 1000
             return result
 
+        if self.fight_capture_used is not None and captured != self.fight_capture_used:
+            self.fight_window.clear()
+            self.fight_cache = None
+            self.fight_serial += 1
+            self.last_fight_submit = None
+        self.fight_capture_used = captured
+        early_fight = self._fight_tick(stamp, None, call, timing, samples=fight_samples) if captured else None
         people = []
         smoking_actions, smoking_schedule = {}, {}
         if enabled["fall"] or enabled["smoking"]:
@@ -148,55 +306,37 @@ class RuntimeYolo:
                                "association_evidence": person.get("association_evidence"),
                                "actions": {"fall": fall, **({"smoking": smoking_actions[track_id]} if enabled["smoking"] else {})}})
 
-        # Scene sampling is independent of person detection, but never fills
-        # missed slots with duplicates or claims sparse history is continuous.
-        if enabled["fight"]:
-            if fight_samples is not None:
-                # Rebuild from bounded REAL captures, not consumer processing
-                # times. Validate the original gap/span even when inference is
-                # slow; a stream gap or reset never licenses invented frames.
-                self.fight_window.clear()
-                self.fight_cache = None
-                if (enabled["fall"] or enabled["smoking"] or not 1 <= len(fight_samples) <= 8
-                        or fight_samples[-1][0] != stamp
-                        or any(a[0] >= b[0] for a, b in zip(fight_samples, fight_samples[1:]))):
-                    raise ValueError("Invalid fight-only capture clip")
-                for captured, frame in fight_samples:
-                    if frame.shape != bgr.shape:
-                        raise ValueError("Fight capture clip shape changed")
-                    # The producer already samples on its capture clock. Do
-                    # not re-anchor that clock at the oldest sliding sample,
-                    # which would drop valid jittered captures a second time.
-                    sample = call("fight_preprocess", self.backend.prepare_fight,
-                                  np.ascontiguousarray(frame[:, :, ::-1]))
-                    self.fight_window.add(captured, sample)
-                if self.fight_window.full:
-                    raw = call("fight", self.backend.fight, [x[1] for x in self.fight_window.samples])
-                    self.fight_cache = fight_classification(raw, self.cfg["fight"], stamp, self.fight_window)
-            elif self.fight_window.due(stamp):
-                rgb = np.ascontiguousarray(bgr[:, :, ::-1])
-                sample = call("fight_preprocess", self.backend.prepare_fight, rgb)
-                if self.fight_window.add(stamp, sample):
-                    self.fight_cache = None
-                if self.fight_window.full and (self.fight_cache is None or stamp - self.fight_cache["prediction_stamp_ns"]
-                        >= self.cfg["fight"]["prediction_interval_seconds"] * NS):
-                    raw = call("fight", self.backend.fight, [x[1] for x in self.fight_window.samples])
-                    self.fight_cache = fight_classification(raw, self.cfg["fight"], stamp, self.fight_window)
-            fight = current(self.fight_cache, stamp, self.cfg["fight"])
-            if self.fight_cache is None:
-                fight["window"] = self.fight_window.info()
-        else:
+        def as_rgb():
+            return np.ascontiguousarray(bgr[:, :, ::-1])
+
+        # Sampling continues while the one background fight request is busy.
+        if not enabled["fight"]:
             fight = empty_action("disabled", "branch_disabled")
-        actions = ([fight] if enabled["fight"] else []) + [action for p in people for key, action in p["actions"].items() if enabled[key]]
-        status = "valid" if (actions or enabled["fall"] or enabled["smoking"]) and all(a["state"] == "valid" for a in actions) else "warming"
-        if any(a["state"] == "unknown" for a in actions):
-            status = "partial"
+        elif captured:
+            # Poll after the heavy branches too, so completed work can be
+            # returned in this request. Account for time spent in inference.
+            completed_at = stamp + round((time.perf_counter()-started)*NS)
+            fight = self._fight_tick(completed_at, None, call, timing, poll_only=True)
+            if (early_fight.get('updated') and fight['state'] == 'valid' and
+                    early_fight.get('prediction_stamp_ns') == fight.get('prediction_stamp_ns')):
+                fight['updated'] = True
+        else:
+            fight = self._fight_tick(stamp, as_rgb, call, timing)
+
+        actions = [fight] + [a for p in people for a in p["actions"].values()]
+        status = "valid" if all(a["state"] in ("valid", "disabled") for a in actions) else "warming"
+        if any(a["state"] == "unknown" for a in actions): status = "partial"
         timing["total"] = (time.perf_counter() - started) * 1000
         return {"type": "result", "protocol_version": 1, "profile": self.cfg["profile"],
                 "request_id": header["request_id"], "stamp_ns": stamp, "source_epoch": epoch,
                 "status": status, "persons": people, "scene": {"fight": fight}, "timing_ms": timing,
                 "enabled_branches": enabled,
-                "pose_status": {"state": "valid" if enabled["fall"] or enabled["smoking"] else "disabled", "person_count": len(people)},
-                "pose_observation": getattr(self.backend, "last_pose_observation", None) if enabled["fall"] or enabled["smoking"] else None,
-                "scheduling": {"smoking": smoking_schedule},
-                "generation": self.generation, "reset_reason": reset_reason, "models": self.backend.identities}
+                "pose_status": {"state": "valid" if pose_enabled else "disabled", "person_count": len(people)},
+                "pose_observation": getattr(self.backend, "last_pose_observation", None) if pose_enabled else None,
+                "generation": self.generation, "reset_reason": reset_reason, "models": self.backend.identities,
+                "scheduling": {"fight": {**self.fight_stats,
+                    "sampling_source": "capture_buffer" if captured else "inference_frames",
+                    "mode": "async" if self.cfg["fight"].get("async_inference", False) else "sync",
+                    "pending": self.fight_pending is not None,
+                    "pending_source_stamp_ns": self.fight_pending["stamp"] if self.fight_pending else None,
+                    "window": self.fight_window.info()}, "smoking": smoking_schedule}}

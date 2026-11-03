@@ -263,6 +263,20 @@ class BridgeTests(unittest.TestCase):
         self.node._poll(); self.assertIsNotNone(self.node._first_opened_at)
         self.node._close_serial(); self.assertIsNone(self.node._first_opened_at)
 
+    def test_poll_keeps_warmup_on_bad_response_but_closes_on_io_failure(self):
+        self.node._poll()
+        port, opened = self.node._serial, self.node._first_opened_at
+        for error in (TimeoutError('no reply'), ConnectionError('invalid_response', 'bad CRC')):
+            with patch.object(self.node, '_read_response', side_effect=error):
+                self.node._poll()
+            self.assertIs(self.node._serial, port)
+            self.assertEqual(self.node._first_opened_at, opened)
+            self.assertFalse(port.closed)
+        with patch.object(self.node, '_read_response', side_effect=OSError('device removed')):
+            self.node._poll()
+        self.assertIsNone(self.node._serial)
+        self.assertTrue(port.closed)
+
     def test_error_categories(self):
         for error, code in [(OSError('[Errno 13] Permission denied'), 'permission_denied'),
                             (OSError('Could not exclusively lock port: [Errno 11]'), 'port_busy'),

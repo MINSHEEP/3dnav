@@ -11,9 +11,10 @@ import time
 def run_worker(body, profile, generation, frozen, pipe):
     import rclpy
     from rclpy.parameter import Parameter
+    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from car_vel.dog_remote_bridge import DogRemoteBridge
     from car_vel.velocity_shaping import TurnCommandShaper
-    from car_vel.motion_diagnostics import MotionTrace, age, velocity, body_reason
+    from car_vel.motion_diagnostics import CommandStreamTiming, MotionTrace, age, velocity, body_reason
     from geometry_msgs.msg import Twist
     from std_msgs.msg import Bool, Empty
 
@@ -41,6 +42,7 @@ def run_worker(body, profile, generation, frozen, pipe):
                     self._diag_navigation_active=False
                     self._diag_nav_received_at=0.0
                     self._diag_received=[0.0,0.0,0.0]
+                    self._safe_velocity_timing = CommandStreamTiming('/cmd_vel_safe')
                     self._diag_send_at=0.0
                     self._diag_sent=[0.0,0.0,0.0]
                     self._diag_send_success=None
@@ -52,7 +54,13 @@ def run_worker(body, profile, generation, frozen, pipe):
                         Parameter('dog_port', value=profile['port']),
                         Parameter('camera_upstream_url', value=f"http://{profile['robot_ip']}:8080")])
                     self._motion_trace=MotionTrace(self.get_logger(),'NAV_BODY')
-                    self.create_subscription(Twist, '/cmd_vel_safe', self.nav_velocity, 1)
+                    # The arbiter sends a fresh sample every 50 ms. Waiting for
+                    # reliable repair of an old velocity can stall newer ones.
+                    latest_velocity = QoSProfile(
+                        history=HistoryPolicy.KEEP_LAST, depth=1,
+                        reliability=ReliabilityPolicy.BEST_EFFORT,
+                        durability=DurabilityPolicy.VOLATILE)
+                    self.create_subscription(Twist, '/cmd_vel_safe', self.nav_velocity, latest_velocity)
                     self.create_subscription(Bool, '/navigation_active', self.navigation_diagnostic_active, 1)
                     self.create_subscription(Empty, '/motion_stop', lambda _: self._safety_stop(), 10)
                     # Old publishers remain compatible but may no longer
@@ -218,6 +226,7 @@ def run_worker(body, profile, generation, frozen, pipe):
                     # arm the body from diagnostic receipt alone.
                     self._diag_nav_received_at=time.monotonic()
                     self._diag_received=velocity(message)
+                    self._safe_velocity_timing.observe(self._diag_nav_received_at, self._diag_received)
                     if self.frozen or self.mapping_lio_paused or self.remote_active or self.emergency_latched:
                         return
                     now = time.monotonic()
@@ -290,6 +299,7 @@ def run_worker(body, profile, generation, frozen, pipe):
                         gait_ready=self._diag_tick_gait_ready,
                         permitted_by_body_tick=self._diag_tick_permitted,
                         input_seen=self._diag_nav_received_at>0,input_age_sec=age(now,self._diag_nav_received_at),
+                        safe_velocity_stream=self._safe_velocity_timing.snapshot(now, 0.3),
                         command_age_sec=age(now,self.nav_at),input=list(self._diag_received),
                         command_discarded=self._diag_nav_received_at>0 and self.nav_at<=0,
                         sent_sdk_velocity=list(self._diag_sent),send_age_sec=age(now,self._diag_send_at),

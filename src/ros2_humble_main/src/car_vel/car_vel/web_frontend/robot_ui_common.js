@@ -54,6 +54,7 @@
         startCampusMission: 'lzp_interface/srv/StartCampusMission',
         controlCampusMission: 'lzp_interface/srv/ControlCampusMission',
         setNavigationMode: 'lzp_interface/srv/SetNavigationMode',
+        setNavigationSpeed: 'lzp_interface/srv/SetNavigationSpeed',
         check3dGround: 'lzp_interface/srv/Check3DGround',
         preview3dGoal: 'lzp_interface/srv/Preview3DGoal',
         startPreviewed3dGoal: 'lzp_interface/srv/StartPreviewed3DGoal',

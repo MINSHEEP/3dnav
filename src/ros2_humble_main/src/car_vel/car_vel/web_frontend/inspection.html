@@ -8,11 +8,11 @@
     <link rel="stylesheet" href="inspection.css?v=20261027-behavior-controls">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
-    <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
+    <script src="velocity_guard_widget.js?v=20261103-terrain-advisory"></script>
     <script src="pointcloud_viewer.js?v=20261022-complete-pcd"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
     <script src="air_quality_widget.js?v=20261102-detection"></script>
-    <script src="behavior_widget.js?v=20261102-detection"></script>
+    <script src="behavior_widget.js?v=20261103-frame-cache"></script>
     <script src="inspection_draft_state.js?v=20260811-page-reentry"></script>
 </head>
 <body>
@@ -172,7 +172,7 @@
                         <label>轮次间隔（分钟）<input id="loop-interval" type="number" min="0" max="100000" step="1" value="30"></label>
                         <label class="checkbox-line full"><input id="bidirectional" type="checkbox">启用往返巡检（每轮方向交替）</label>
                     </div>
-                    <p class="hint">巡检速度沿用导航页面的 Nav2 参数。未启用往返且有下一轮时，机器人会先直接返回路线起点，返程不检测。</p>
+                    <p class="hint">巡检前向速度上限沿用设置页的导航速度档位。启用往返时，请至少设置 2 轮，返程也执行检测。未启用往返且有下一轮时，机器人会先直接返回路线起点，返程不检测。</p>
                     <p class="hint">星玑 3D 巡检全程固定越障模式。可通行平地、台阶、坡道和粗糙地面共用导航速度上限，不再按地形额外调速或等待提速确认；检测点停留和任务暂停仍正常停车。越障反馈失效时零速停车。</p>
                 </section>
                 <section class="section">
@@ -734,9 +734,6 @@
         if (!standingConfirmed || !nav2Ready || !localizationReady
             || (localizedMapName && localizedMapName !== loadedMapName)) {
             return '请先确认站立、Nav2 和当前地图定位。';
-        }
-        if (document.getElementById('bidirectional').checked) {
-            return '3D 巡检暂不支持往返方向交替；请取消勾选，或切换 2D 模式。';
         }
         return '';
     }
@@ -1873,6 +1870,10 @@
         const mapLoadId = currentMapLoadId;
         const routeId = Number(route.id);
         const requestSession = session;
+        const bidirectional = document.getElementById('bidirectional').checked;
+        const loopCount = Math.max(1, Math.trunc(Number(
+            document.getElementById('loop-count').value) || 1));
+        const includesReturn = bidirectional && loopCount > 1;
         threeDNotice = '正在逐段校验路线；静止定位过期时自动请求无运动刷新，不会启动巡检。';
         serviceBusy = true;
         updateUi();
@@ -1881,9 +1882,7 @@
                 '/navigation/preview_3d_route', UI.TYPES.preview3dRoute,
                 { route_id: routeId, start_point_id: 0, point_limit: 0,
                     reverse: false, map_name: mapName, map_load_id: mapLoadId,
-                    loop_count: Math.max(1, Math.trunc(Number(
-                        document.getElementById('loop-count').value) || 1)),
-                    continuous: false },
+                    loop_count: loopCount, continuous: false, bidirectional },
                 90000);
             if (generation !== threeDPreviewGeneration
                 || session !== requestSession || !requestSession.connected
@@ -1917,7 +1916,7 @@
             threeDRoutePreview = {
                 previewId: String(result.preview_id), fingerprint, atMs: Date.now()
             };
-            threeDNotice = `整条路线预览通过（${points.length} 个路径点）；`
+            threeDNotice = `${includesReturn ? '往返路线' : '整条路线'}预览通过（${points.length} 个路径点）；`
                 + '预览不设操作倒计时；地图、路线或配置改变后需重新预览，开始时复核当前定位与路径。'
                 + '预览不证明近场没有新出现的坑洞。';
             log(threeDNotice);
@@ -2067,6 +2066,7 @@
             latestCameraStatus = status;
             behaviorWidget.observeSource(status.camera_source?.generation ?? status.behavior?.source_epoch);
             const thermal = status.thermal || {};
+            const infraredOnly = thermal.supports_temperature === false;
             renderCameraReadiness();
             document.getElementById('camera-mode-badge').textContent = `模式 ${stateLabels[status.mode] || status.mode}`;
             document.getElementById('camera-device').textContent = status.device || '/dev/video0';
@@ -2076,7 +2076,7 @@
             document.getElementById('thermal-camera-state').textContent = thermal.ready
                 ? (thermal.alarm_active ? '高温报警' : '在线')
                 : (thermal.error ? '异常' : '等待首帧');
-            document.getElementById('thermal-camera-temperature').textContent = Number.isFinite(Number(thermal.max_temperature_c))
+            document.getElementById('thermal-camera-temperature').textContent = infraredOnly ? '未接入' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
                 ? `${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '-- ℃';
             const config = thermal.config || {};
             const wantsTaskScope = Boolean(taskState.active && taskState.task_id);
@@ -2088,10 +2088,12 @@
                 : Number(config.global_threshold_c ?? config.threshold_c);
             document.getElementById('thermal-camera-threshold').textContent = Number.isFinite(editorThreshold)
                 ? `${editorThreshold.toFixed(1)} ℃` : '-- ℃';
-            document.getElementById('thermal-temperature-badge').textContent = Number.isFinite(Number(thermal.max_temperature_c))
+            document.getElementById('thermal-temperature-badge').textContent = infraredOnly ? 'C12 · 仅红外画面' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
                 ? `最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '最高温 -- ℃';
-            document.getElementById('thermal-alarm-badge').textContent = thermal.detection_enabled
+            document.getElementById('thermal-alarm-badge').textContent = infraredOnly ? '测温未接入' : thermal.detection_enabled
                 ? (thermal.alarm_active ? '高温报警' : '检测中') : '检测暂停';
+            document.getElementById('inspection-thermal-threshold').disabled = infraredOnly;
+            document.getElementById('btn-inspection-threshold').disabled = infraredOnly;
             if (document.activeElement !== document.getElementById('inspection-thermal-threshold')
                 && Number.isFinite(editorThreshold)) {
                 const input = document.getElementById('inspection-thermal-threshold');

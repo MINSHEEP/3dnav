@@ -12,6 +12,12 @@ Twist = runtime['Twist']
 
 
 class DirectionGuardTests(Base):
+    def confirm_localization(self):
+        self.node._global_localization_callback(Message(json.dumps({
+            'ready': True, 'scope': 'xingji_3d', 'body_generation': 1,
+            'stamp_ns': int(self.now * 1e9),
+        })))
+
     def body(self, name='xingji'):
         self.node._body_callback(Message(json.dumps({
             'connected': True, 'active_body': name, 'generation': 1,
@@ -21,6 +27,7 @@ class DirectionGuardTests(Base):
 
     def test_front_floor_never_authorizes_xingji_reverse_or_sideways(self):
         self.body()
+        self.confirm_localization()
         self.terrain(True)
         for x, y in ((-.2, 0.), (0., .2)):
             command = Twist()
@@ -40,11 +47,13 @@ class DirectionGuardTests(Base):
 
     def test_stale_body_and_unanchored_evidence_do_not_enable_xingji_motion(self):
         self.body();self.terrain(True)
+        self.confirm_localization()
         self.node._terrain_evidence='current'
         self.command();self.node._tick()
         self.assertEqual(self.last_velocity(),(0.,0.))
         self.node._terrain_evidence='current_anchored'
         self.now+=2.1
+        self.confirm_localization()
         self.command();self.node._tick()
         self.assertEqual(self.last_velocity(),(0.,0.))
         self.assertIn('身份',self.node._guard_reason)
@@ -52,7 +61,8 @@ class DirectionGuardTests(Base):
     def test_xingji_forward_and_slow_turn_remain_continuous(self):
         self.body()
         for _ in range(30):
-            self.now+=.05;self.body();self.terrain(True);self.command();self.node._tick()
+            self.now+=.05;self.body();self.confirm_localization()
+            self.terrain(True);self.command();self.node._tick()
             self.assertEqual(self.last_velocity(),(.2,.1))
 
 

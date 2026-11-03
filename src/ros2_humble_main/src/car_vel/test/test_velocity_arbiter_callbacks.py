@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT.parent / 'nav_service' / 'lzp_service'))
 
 
 class Twist:
@@ -218,6 +219,103 @@ class VelocityArbiterCallbacksTest(unittest.TestCase):
         self.node._teleop_callback(value)
         self.node._tick()
         self.assertEqual(self.last_velocity(), (.3, 0.))
+
+    def test_xingji_fast_gear_passes_valid_status_and_preserves_terrain_stops(self):
+        self.body('xingji')
+        self.node._navigation_active_callback(Message(True))
+        stamp_ns = int(self.now * 1e9)
+        self.node._global_localization_callback(Message(json.dumps(dict(
+            ready=True, scope='xingji_3d', body_generation=1, stamp_ns=stamp_ns))))
+        terrain = dict(safe=True, speed_limit_mps=.45, stamp_ns=stamp_ns,
+            navigation_active=True, navigation_mode='terrain_3d', state='ready',
+            evidence_source='recent_measured_anchored', speed_policy='nav2_body_limits',
+            terrain_speed_limit_enabled=False, reason='星玑保持越障模式')
+        for changes, expected in (
+                ({}, (.2, .1)),
+                ({'evidence_source': 'restricted_map'}, (.1, .1)),
+                ({'safe': False}, (0., 0.)),
+                ({'speed_limit_mps': .46}, (0., 0.)),
+                ({'speed_policy': 'terrain_adaptive'}, (0., 0.))):
+            with self.subTest(changes=changes):
+                self.node._terrain_status_callback(Message(json.dumps({**terrain, **changes})))
+                self.command()
+                self.node._tick()
+                self.assertEqual(self.last_velocity(), expected)
+                if changes == {'speed_limit_mps': .46}:
+                    status = json.loads(self.node._guard_publisher.publish.call_args.args[0].data)
+                    self.assertIn('0.46', status['reason'])
+
+    def test_advisory_terrain_keeps_speed_gear_and_independent_motion_stops(self):
+        self.body('xingji')
+        self.node._xingji_3d_terrain_stop_enabled = False
+        self.node._navigation_active_callback(Message(True))
+        self.node._navigation_mode_callback(Message(json.dumps({
+            'mode': 'terrain_3d', 'campus_mission_active': False, 'speed_mps': .45})))
+        pose = dict(ready=True, scope='xingji_3d', body_generation=1,
+                    stamp_ns=int(self.now * 1e9))
+        self.node._global_localization_callback(Message(json.dumps(pose)))
+        self.node.publisher.reset_mock()
+        self.terrain(False)
+        self.node._terrain_status_callback(Message('invalid terrain status'))
+        self.node.publisher.publish.assert_not_called()
+        command = Twist()
+        command.linear.x, command.angular.z = .5, .1
+        self.node._nav_callback(command)
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (.45, .1))
+        status = json.loads(self.node._guard_publisher.publish.call_args.args[0].data)
+        self.assertFalse(status['terrain_guard_enabled'])
+        self.assertEqual(status['navigation_mode'], 'terrain_3d')
+        self.assertEqual(status['speed_limit_source'], 'terrain_advisory')
+        self.assertEqual(status['speed_limit_mps'], .45)
+
+        self.node._terrain_guard_at = 0.0
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (.45, .1))
+        self.node._navigation_active_callback(Message(False))
+        self.node._nav_callback(command)
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (0., 0.))
+        self.node._navigation_active_callback(Message(True))
+        self.node._nav_callback(command)
+        self.node._global_localization_callback(Message(json.dumps({**pose, 'ready': False})))
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (0., 0.))
+        self.node._global_localization_callback(Message(json.dumps(pose)))
+        self.node._nav_callback(command)
+        self.node._lio_pause_callback(Message(True))
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (0., 0.))
+        self.node._lio_pause_callback(Message(False))
+        self.node._nav_callback(command)
+        self.node._emergency_callback(Message())
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (0., 0.))
+
+    def test_terrain_advisory_is_scoped_to_xingji_local_navigation(self):
+        self.body('xingji')
+        self.node._xingji_3d_terrain_stop_enabled = False
+        self.node._navigation_active_callback(Message(True))
+        self.node._global_localization_callback(Message(json.dumps(dict(
+            ready=True, scope='xingji_3d', body_generation=1, stamp_ns=int(self.now * 1e9)))))
+        self.node._navigation_mode_callback(Message(json.dumps({
+            'mode': 'terrain_3d', 'campus_mission_active': False})))
+        self.terrain(False)
+        self.command()
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (.2, .1))
+        self.node._navigation_mode_callback(Message(json.dumps({
+            'mode': 'terrain_3d', 'campus_mission_active': True})))
+        self.command()
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (0., 0.))
+        self.node._navigation_mode_callback(Message(json.dumps({
+            'mode': 'terrain_3d', 'campus_mission_active': False})))
+        self.body('gangben_zsl1')
+        self.terrain(False)
+        self.command()
+        self.node._tick()
+        self.assertEqual(self.last_velocity(), (0., 0.))
 
     def test_localization_heartbeat_delay_stops_and_requires_new_command_on_return(self):
         self.body('xingji');self.terrain(True)

@@ -79,7 +79,7 @@ def classification(kind, raw, cfg, stamp, window):
     return {"label": (kind if cls == cfg["positive_class"] else "other") if valid else None,
             "score": score if valid else None, "state": "valid" if valid else "unknown", "updated": valid,
             "model_class": cls, "score_kind": "softmax_probability", **details,
-            "prediction_stamp_ns": stamp, "window": window.info(),
+            "prediction_stamp_ns": stamp, "window": dict(window) if isinstance(window, dict) else window.info(),
             **({"reason": "below_confidence_threshold", "raw_model_score": score} if not valid else {})}
 
 

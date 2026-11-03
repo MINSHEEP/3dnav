@@ -4,6 +4,7 @@
         const get = name => document.getElementById('ordinary-camera-' + name);
         const source = get('source'), device = get('device'), path = get('path');
         const url = get('url'), width = get('width'), height = get('height'), fps = get('fps');
+        const c12Visible = get('c12-visible'), c12Infrared = get('c12-infrared');
         const refreshButton = get('refresh'), saveButton = get('save');
         let host = root.location.hostname || '192.168.66.103';
         if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
@@ -34,7 +35,9 @@
             url.disabled = busy || source.value !== 'body';
             get('usb-fields').hidden = source.value !== 'usb';
             get('body-fields').hidden = source.value !== 'body';
-            const current = latest?.config?.source === 'body' ? '狗本体摄像头' : 'USB 摄像头';
+            get('c12-fields').hidden = source.value !== 'c12';
+            c12Visible.disabled = c12Infrared.disabled = busy || source.value !== 'c12';
+            const current = {body:'狗本体摄像头', usb:'USB 摄像头', c12:'C12 双光相机'}[latest?.config?.source] || '--';
             get('state').textContent = !fresh ? reason : `${busy || latest.switching ? '正在切换；' : ''}已保存来源：${current}。${reason || latest.config_error || latest.error || latest.video?.error || ''}`;
         }
         function receive(value) {
@@ -44,6 +47,8 @@
             if (!dirty && !busy) {
                 const config = value.config;
                 source.value = config.source; path.value = config.usb_device; url.value = config.body_url;
+                c12Visible.value = config.c12_visible_url || '';
+                c12Infrared.value = config.c12_infrared_url || '';
                 width.value = String(config.usb_width); height.value = String(config.usb_height); fps.value = String(config.usb_fps);
                 version = config.version;
             }
@@ -72,6 +77,9 @@
             if (saveButton.disabled || !get('form').reportValidity()) return;
             const config = {...latest.config, source:source.value};
             if (source.value === 'body') config.body_url = url.value.trim();
+            else if (source.value === 'c12') Object.assign(config, {
+                c12_visible_url:c12Visible.value.trim(), c12_infrared_url:c12Infrared.value.trim()
+            });
             else Object.assign(config, {usb_device:path.value.trim(), usb_width:Number(width.value),
                 usb_height:Number(height.value), usb_fps:Number(fps.value)});
             busy = true; render();
@@ -90,7 +98,7 @@
                 }
             } finally { busy = false; render(); }
         }
-        [source, path, url, width, height, fps].forEach(el => el.addEventListener('input', () => { dirty = true; render(); }));
+        [source, path, url, width, height, fps, c12Visible, c12Infrared].forEach(el => el.addEventListener('input', () => { dirty = true; render(); }));
         source.addEventListener('change', () => { dirty = true; render(); });
         device.addEventListener('change', () => { if (device.value) path.value = device.value; dirty = true; render(); });
         refreshButton.addEventListener('click', () => refresh(true));

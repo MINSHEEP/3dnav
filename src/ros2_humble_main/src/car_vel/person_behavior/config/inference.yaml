@@ -1,24 +1,27 @@
-# CPU shared-pose fall/smoking rules and independent scene fight; preserve temporal limits.
 protocol_version: 1
 profile: yolo_pose_rules_paddle_aux_v1
 vendor_dir: vendor/PaddleDetection
 device: CPU
 run_mode: paddle
-cpu_threads: 2
+enable_mkldnn: true
+cpu_threads: 4
+gpu_lock: run/gpu.lock
 disabled_ir_passes:
-  - conv_elementwise_add_act_fuse_pass
-  - conv_elementwise_add2_act_fuse_pass
-  - conv_elementwise_add_fuse_pass
+- conv_elementwise_add_act_fuse_pass
+- conv_elementwise_add2_act_fuse_pass
+- conv_elementwise_add_fuse_pass
 models:
-  yolo_pose: output_inference/yolov8m_pose_640/yolov8m-pose.onnx
-  smoking: output_inference/ppyoloe_crn_s_80e_smoking_visdrone
-  fight: output_inference/ppTSM
+  yolo_pose: output_inference/yolo26s_pose_openvino_fp32/model.xml
+  smoking: output_inference/ppyoloe_smoking_openvino_fp32
+  fight: output_inference/ppTSM_int8_224_cpu_candidate/model.xml
 yolo_pose:
+  backend: openvino
   confidence: 0.25
   nms_iou: 0.45
   max_det: 300
   max_nms_candidates: 30000
-  cpu_threads: 2
+  cpu_threads: 4
+  output_format: yolo26_end2end
 tracking:
   max_gap_seconds: 0.3
   retention_seconds: 0.7
@@ -65,9 +68,16 @@ smoking:
   batch_size: 8
   max_rois_per_tick: 8
   diagnostic_max_detections: 20
-  result_ttl_seconds: 1.5
+  result_ttl_seconds: 2.0
+  profile_refinement:
+    enabled: true
+    threshold: 0.5
+    continue_threshold: 0.3
+    crop_radius_heads: 2.0
+    minimum_profile_ratio: 0.35
+    maximum_head_pixels: 64.0
+    max_rois_per_tick: 2
   hand_to_mouth:
-    # Additional causal path; direct mouth contact and detector threshold stay unchanged.
     enabled: true
     evidence_ttl_seconds: 3.0
     confirmation_seconds: 0.2
@@ -77,25 +87,29 @@ smoking:
     max_wrist_distance_heads: 1.5
     wrist_ambiguity_margin_heads: 0.25
     near_face:
-      # Strong detection + a distinct matching detection; weak scores cannot start/renew evidence.
       enabled: true
       start_threshold: 0.65
-      continue_threshold: 0.30
+      continue_threshold: 0.3
       mouth_half_width_heads: 1.25
       mouth_half_height_heads: 0.5
       maximum_wrist_mouth_distance_heads: 2.0
       max_candidate_shift_heads: 0.75
       occlusion_grace_seconds: 1.0
   temporal:
-    # Rejected on frozen new-source clips: 3/4 positive coverage fell to 1/4.
-    # Keep the previous spatial smoking decision; do not tune on the holdout.
     enabled: false
     minimum_positive_observations: 2
     confirmation_window_seconds: 1.0
     minimum_confirmation_seconds: 0.25
     max_prediction_gap_seconds: 0.75
     track_gap_seconds: 0.3
+  backend: openvino
+  cpu_threads: 4
+  skip_unobservable: true
 fight:
+  backend: openvino
+  async_inference: true
+  async_timeout_seconds: 5.0
+  cpu_threads: 2
   positive_class: 1
   minimum_score: 0.5
   positive_minimum_score: 0.8
@@ -103,19 +117,16 @@ fight:
   window_frames: 8
   sample_hz: 4.285714285714286
   nominal_window_seconds: 1.6333333333333333
-  max_sample_gap_seconds: 0.6
+  max_sample_gap_seconds: 1.0
   max_window_seconds: 3.0
   prediction_interval_seconds: 0.4666666666666667
-  result_ttl_seconds: 1.0
-  short_size: 340
-  target_size: 320
+  result_ttl_seconds: 2.0
+  short_size: 238
+  target_size: 224
+  capture_buffer: true
 stream:
   reset_gap_seconds: 1.0
   max_header_bytes: 65536
   max_payload_bytes: 25165824
   max_dimension: 4096
-
-branches:
-  fall: true
-  fight: true
-  smoking: true
+opencv_threads: 1

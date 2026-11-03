@@ -23,8 +23,8 @@ from behavior_parallel import ParallelBehaviorSupervisor
 
 class ClipRuntimeTests(unittest.TestCase):
     def test_old_two_switch_clip_cannot_implicitly_enable_new_smoking_branch(self):
-        from pphuman_runtime.runtime_yolo import load_config
-        cfg = load_config(Path(__file__).resolve().parents[1] / 'person_behavior/config/inference.yaml')
+        cfg = config()
+        cfg['branches']['smoking'] = True
         backend = FakeBackend()
         runtime = RuntimeYolo(cfg, backend)
         frame = np.zeros((16, 16, 3), np.uint8)
@@ -51,7 +51,7 @@ class ClipRuntimeTests(unittest.TestCase):
     def test_gap_is_not_repaired_by_padding_or_larger_threshold(self):
         runtime = RuntimeYolo(config(), FakeBackend())
         frame = np.zeros((32, 64, 3), np.uint8)
-        stamps = [0, .24, .48, .72, 1.5, 1.74, 1.98, 2.22]
+        stamps = [0, .24, .48, .72, 1.8, 2.04, 2.28, 2.52]
         stamps = [round(s * 1e9) for s in stamps]
         result = runtime.infer(frame, dict(request_id=1, stamp_ns=stamps[-1], source_epoch=1,
             enabled_branches={'fall': False, 'fight': True}), fight_samples=[(stamp, frame) for stamp in stamps])
@@ -115,7 +115,7 @@ class CaptureSamplerTests(unittest.TestCase):
         self.assertLessEqual(service._clip[-1][1].shape[1], 640)
         self.assertEqual(service._pending[1], stamps[-1])
         self.assertLess(sum(img.nbytes for _, img in service._clip), 8*640*640*3+1)
-        now[0] += 700_000_000
+        now[0] += 1_100_000_000
         service.submit(frame, stamp_ns=now[0], source_key='camera')
         self.assertEqual(len(service._clip), 1, 'actual camera gap discards history')
         now[0] += 250_000_000
@@ -165,7 +165,7 @@ class IndependentWorkerTests(unittest.TestCase):
         self.assertIn('pose model failed', status['error'])
         # Do not stop fake threads, which are only used as liveness sentinels.
 
-    def test_real_pipe_slow_pose_does_not_starve_fight_and_stop_owns_both_children(self):
+    def test_shared_worker_slow_pose_keeps_real_fight_capture_and_evidence(self):
         test_root = Path(__file__).resolve().parent
         deps = Path(__file__).resolve().parents[5] / 'tmp/behavior-test-deps'
         # Use production runtime, protocol, supervisor, sampler and coordinator;
@@ -179,7 +179,15 @@ class Backend(FakeBackend):
     def observe(self, frame, stamp):
         time.sleep(1.05)
         return []
+    def start_fight(self, samples):
+        assert len(samples) == 8 and all(sample.size == (317, 238) for sample in samples)
+        self.polls = 0
+    def poll_fight(self):
+        self.polls += 1
+        if self.polls == 1:
+            return {{'class': 1, 'score': .95, 'model_inference_ms': 100.0}}
 cfg = config()
+cfg['fight'].update(capture_buffer=True, async_inference=True)
 branches = set(sys.argv[-1].split(','))
 cfg['branches'] = {{key:key in branches for key in ('fall','fight','smoking')}}
 serve(RuntimeYolo(cfg, Backend()), cfg, sys.stdin.buffer, sys.stdout.buffer)
@@ -193,37 +201,43 @@ serve(RuntimeYolo(cfg, Backend()), cfg, sys.stdin.buffer, sys.stdout.buffer)
             script = script.replace('from test_behavior_runtime_cpu import',
                 "sys.modules.pop('pphuman_runtime', None)\nfrom test_behavior_runtime_cpu import")
             (package / 'worker.py').write_text(script, encoding='utf-8')
-            service = ParallelBehaviorSupervisor(runtime_dir=folder, python=sys.executable, startup_timeout=5)
-            for worker in service._workers.values():
-                worker._render = lambda frame, result, raw: (b'raw', b'annotated')
+            service = BehaviorSupervisor(runtime_dir=folder, python=sys.executable, startup_timeout=5)
+            service._render = lambda frame, result, raw: (raw, b'annotated')
             processes = []
             try:
                 service.start()
-                deadline = time.monotonic()+7
+                deadline = time.monotonic() + 9
                 observed = None
                 while time.monotonic() < deadline:
-                    service.submit(np.zeros((32,64,3), np.uint8), stamp_ns=time.monotonic_ns(), source_key='camera')
+                    stamp = time.monotonic_ns()
+                    service.submit(np.zeros((32, 64, 3), np.uint8), stamp_ns=stamp,
+                                   source_key='camera', raw_jpeg=str(stamp).encode())
                     status = service.status()
                     if status['branches']['fight']['ready'] and status['branches']['fall']['ready']:
                         observed = status
                         break
                     time.sleep(.04)
                 self.assertIsNotNone(observed, service.status())
-                self.assertTrue(observed['branches']['fight']['fresh'])
+                self.assertEqual(set(observed['workers']), {'shared'})
+                self.assertEqual(observed['preview_branch'], 'pose')
                 self.assertEqual(observed['branches']['fight']['window']['samples'], 8)
-                self.assertTrue(observed['workers']['pose']['running'])
-                processes = [worker._process for worker in service._workers.values()]
-                self.assertEqual(len({p.pid for p in processes}), 2)
-                fight_pid = service._workers['fight']._process.pid
-                pose_pid = service._workers['pose']._process.pid
+                self.assertEqual(observed['result']['scene']['fight']['state'], 'disabled')
+                with service._condition:
+                    pose, fight = service._latest, service._fight_latest
+                    result = fight['result']
+                    self.assertLessEqual(result['stamp_ns'], result['inference_stamp_ns'])
+                    self.assertEqual(result['stamp_ns'], result['scene']['fight']['prediction_stamp_ns'])
+                    self.assertEqual(fight['raw'], str(fight['stamp_ns']).encode())
+                    self.assertEqual(pose['raw'], str(pose['stamp_ns']).encode())
+                    self.assertEqual(observed['detections'][0]['stamp_ns'], fight['stamp_ns'])
+                processes.append(service._process)
                 service.configure({'fall_enabled': True, 'fight_enabled': True, 'smoking_enabled': False})
                 restart_deadline = time.monotonic() + 4
-                while time.monotonic() < restart_deadline and not service._workers['pose']._loaded:
+                while time.monotonic() < restart_deadline and not service._loaded:
                     time.sleep(.02)
-                self.assertTrue(service._workers['pose']._loaded)
-                self.assertNotEqual(service._workers['pose']._process.pid, pose_pid)
-                self.assertEqual(service._workers['fight']._process.pid, fight_pid)
-                processes += [service._workers['pose']._process]
+                self.assertTrue(service._loaded)
+                self.assertNotEqual(service._process.pid, processes[0].pid)
+                processes.append(service._process)
                 service.reset_source()
                 self.assertFalse(service.status()['fresh'])
             finally:

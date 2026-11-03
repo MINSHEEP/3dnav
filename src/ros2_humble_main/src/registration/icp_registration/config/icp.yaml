@@ -55,7 +55,7 @@
     minimum_points_per_frame: 250
     # NDT uses the coarser voxel cloud and therefore needs its own lower count
     # gate. GICP and final quality checks still use the denser 700-point cloud.
-    minimum_rough_source_points: 300
+    minimum_rough_source_points: 250
     minimum_source_points: 700
     minimum_target_points: 1200
     maximum_raw_points_per_frame: 80000

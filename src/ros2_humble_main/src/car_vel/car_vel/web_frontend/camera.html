@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="robot_ui.css?v=20260805-usb-camera">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <script src="robot_ui_common.js?v=20261022-web-preview"></script>
-    <script src="behavior_widget.js?v=20261102-detection"></script>
+    <script src="behavior_widget.js?v=20261103-frame-cache"></script>
     <style>
         .usb-camera-workspace { display:grid; grid-template-columns:minmax(0,2.2fr) minmax(300px,.8fr); gap:16px; padding:16px; min-height:calc(100vh - 82px); }
         .usb-camera-card { min-width:0; padding:16px; border:1px solid var(--border); border-radius:14px; background:var(--panel); }
@@ -236,6 +236,7 @@
         const video = payload.video || {};
         const yolo = payload.yolo || {};
         const thermal = payload.thermal || {};
+        const infraredOnly = thermal.supports_temperature === false;
         const thermalBecameReady = Boolean(thermal.ready && !previousThermalReady);
         const detection = payload.detection || {};
         behaviorWidget.observeSource(payload.camera_source?.generation);
@@ -252,13 +253,13 @@
         $('#status-fps').textContent = yolo.running
             ? `${Number(yolo.inference_fps || 0).toFixed(1)} / ${Number(yolo.publish_fps || 0).toFixed(1)} FPS` : '--';
         $('#status-thermal').textContent = thermal.ready ? '在线' : (thermal.error ? '异常' : '等待首帧');
-        $('#status-temperature').textContent = Number.isFinite(Number(thermal.max_temperature_c))
+        $('#status-temperature').textContent = infraredOnly ? '未接入' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
             ? `${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '-- ℃';
-        $('#status-thermal-detection').textContent = thermal.detection_enabled
+        $('#status-thermal-detection').textContent = infraredOnly ? '未接入' : thermal.detection_enabled
             ? (thermal.alarm_active ? '高温报警' : '运行中') : '已停止';
         $('#status-thermal-age').textContent = Number.isFinite(Number(thermal.frame_age_seconds))
             ? `${Number(thermal.frame_age_seconds).toFixed(1)} 秒` : '--';
-        $('#thermal-feed-badge').textContent = Number.isFinite(Number(thermal.max_temperature_c))
+        $('#thermal-feed-badge').textContent = infraredOnly ? 'C12 · 仅红外画面' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
             ? `最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '最高温 -- ℃';
         const recognitionRunning = Boolean(detection.running ?? (yolo.running || thermal.manual_detection_enabled || payload.behavior?.running));
         $('#btn-yolo').textContent = recognitionRunning ? '停止识别' : '启动识别';
@@ -267,6 +268,7 @@
             if (label !== lastRecognitionLabel) { log(label); lastRecognitionLabel = label; }
         }
         const config = thermal.config || {};
+        $('#thermal-threshold').disabled = $('#btn-save-threshold').disabled = infraredOnly;
         if (document.activeElement !== $('#thermal-threshold') && Number.isFinite(Number(config.threshold_c))) {
             $('#thermal-threshold').value = Number(config.threshold_c).toFixed(1);
             $('#thermal-threshold').min = config.minimum_c;
@@ -283,6 +285,7 @@
             if (viewMode !== 'behavior') viewMode = 'raw';
             updateViewUi();
             connectFeed(0);
+            connectThermalFeed(0);
         }
         if (!yolo.running && viewMode === 'yolo') {
             viewMode = 'raw';

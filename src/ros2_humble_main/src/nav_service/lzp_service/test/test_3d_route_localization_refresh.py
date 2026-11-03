@@ -216,6 +216,71 @@ class RouteRefreshTests(unittest.TestCase):
         self.assertEqual(node._inspection_route_authorization['owner_token'], 'inspection-1')
         self.assert_no_motion(node)
 
+    def test_round_trip_previews_both_directions_and_authorizes_return(self):
+        node, request, _ = harness()
+        route = node._database.get_route(8)
+        route['points'].append({'id': 2, 'x': 4.2, 'y': 1.2})
+        node._database.get_route = lambda _: copy.deepcopy(route)
+        node._traversability_grid = fixtures._Grid([[0] * 8 for _ in range(5)])
+        planned_goals = []
+
+        blocked_return = True
+
+        def plan(goal):
+            start, end = goal.start.pose.position, goal.goal.pose.position
+            planned_goals.append(end.x)
+            status = 6 if blocked_return and start.x > end.x else 4
+            result = NS(status=status, result=NS(
+                path=fixtures._path((start.x, start.y), (end.x, end.y))))
+            return Future(NS(accepted=True, get_result_async=lambda: Future(result)))
+
+        node._preview_action_client.send_goal_async.side_effect = plan
+        request.bidirectional, request.loop_count = True, 2
+        failed = node._preview_3d_route_callback(request, NS())
+        self.assertFalse(failed.valid)
+        self.assertEqual(failed.code, 'planner_failed')
+        self.assertIsNone(node._preview_token)
+
+        blocked_return = False
+        planned_goals.clear()
+        preview = node._preview_3d_route_callback(request, NS())
+        self.assertTrue(preview.valid, preview.message)
+        self.assertEqual(planned_goals, [3.2, 4.2, 3.2])
+        request.preview_id, request.owner_token = preview.preview_id, 'inspection-1'
+        reserved = node._reserve_3d_inspection_route_callback(request, NS())
+        self.assertTrue(reserved.success, reserved.message)
+        node._inspection_task_active = True
+        node._inspection_task_id = request.owner_token
+        request.loop_count, request.reverse = 1, True
+        result, ticket = node._prepare_3d_route_start(request)
+        self.assertTrue(result.allowed, result.message)
+        self.assertIsNotNone(ticket)
+        self.assertEqual(planned_goals[-2:], [4.2, 3.2])
+        self.assert_no_motion(node)
+
+    def test_round_trip_cannot_use_a_forward_only_preview(self):
+        node, request, _ = harness()
+        preview = node._preview_3d_route_callback(request, NS())
+        self.assertTrue(preview.valid, preview.message)
+        request.preview_id, request.owner_token = preview.preview_id, 'inspection-1'
+        request.bidirectional = True
+        result = node._reserve_3d_inspection_route_callback(request, NS())
+        self.assertFalse(result.success)
+        self.assertIsNone(node._inspection_route_authorization)
+
+        request.bidirectional = False
+        preview = node._preview_3d_route_callback(request, NS())
+        self.assertTrue(preview.valid, preview.message)
+        request.preview_id = preview.preview_id
+        self.assertTrue(node._reserve_3d_inspection_route_callback(request, NS()).success)
+        node._inspection_task_active = True
+        node._inspection_task_id = request.owner_token
+        request.reverse = True
+        result, ticket = node._prepare_3d_route_start(request)
+        self.assertEqual(result.code, 'inspection_direction_unpreviewed')
+        self.assertIsNone(ticket)
+        self.assert_no_motion(node)
+
     def test_inspection_reservation_timeout_grants_no_lease(self):
         node, request, clock = harness()
         preview = node._preview_3d_route_callback(request, NS())

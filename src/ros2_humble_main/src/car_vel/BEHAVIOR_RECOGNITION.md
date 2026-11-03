@@ -1,13 +1,14 @@
 # 跌倒、打架与吸烟行为识别（M9 Pro CPU）
 
-当前版本接入附件 `v4-smoking-near-face-conservative-20261030` 的吸烟模型与人物关联规则，替代旧的香烟/烟头物体告警。火焰、烟雾、人脸、车牌、高温和气体功能保留。`cigarette_multiclass_best.pt` 是共用多类别权重，仍用于火焰和烟雾；其香烟框已从画面、识别输出、语音和新巡检告警中移除。历史报告不删除。
+行为识别使用附件默认版本 `cpu-yolo26s-fight-capture-20261102`。跌倒与吸烟共用 YOLO26s-pose OpenVINO FP32 姿态模型，吸烟使用 PP-YOLOE OpenVINO FP32，打架使用异步 ppTSM 混合 INT8（8 帧 × 224）。三路行为共用一个进程，普通 YOLO 可同时运行。火焰、烟雾、人脸、车牌、高温和气体走各自原有流程。
 
 ## 使用与结果
 
 - 设置页统一管理检测开关，USB 相机和巡检任务页面的“疑似跌倒”“疑似打架”“疑似吸烟”与它同步，保存在 `~/.ros/robot_navigation/detection_settings.json`。首次迁移保留旧 `behavior.json` 的选择，详见 [检测开关说明](DETECTION_SETTINGS.md)。
-- “启动识别”启用已勾选项目；巡检途中和检测阶段同样启用。跌倒与吸烟共用一个 CPU 人物姿态进程，打架保留独立进程及真实 8 帧采样。默认每进程两线程。开关改变仅重建受影响进程以加载/释放模型。
+- “启动识别”启用已勾选项目；巡检途中和检测阶段同样启用。跌倒与吸烟共享一次人物姿态推理，打架从相机采集端独立保留 8 帧，再交给同一进程异步处理。姿态和吸烟各配置 4 个 OpenVINO 线程，打架配置 2 个。开关改变时重建这个行为进程以加载或释放相应模型。
 - “查看行为画面”优先显示实际推理帧的人物姿态与吸烟标注；人物分支没有新鲜画面时可显示独立打架结果。右侧热成像独立显示。
-- 有效吸烟结果播报“检测到疑似人员吸烟”，同类别至少间隔 20 秒。巡检记录人物、检测分数、关联证据、来源时间戳和对应原图/标注图。过期、缓存及短暂遮挡结果不会产生新告警。
+- 巡检途中和检测点发现有效疑似吸烟结果时，播报“吸烟有害健康，请不要在公共场合吸烟，谢谢配合”；手动识别仍播报“检测到疑似人员吸烟”。同类别至少间隔 20 秒。巡检记录人物、检测分数、关联证据、来源时间戳和对应原图/标注图。过期、缓存及短暂遮挡结果不会产生新告警。
+- 巡检吸烟语音使用独立缓存 `~/.cache/robot_inspection_speech/behavior_smoking_public_notice_v1.mp3`，不会沿用旧 `behavior_smoking.mp3`。没有新音频时由已安装的 `espeak-ng` 离线播报；长句播放超时上限为 30 秒。
 - 暂停、来源/任务/分辨率变化和重新启用清理历史。行为识别不控制机器人运动或急停。
 
 | 显示 | 含义 |
@@ -18,52 +19,29 @@
 | 疑似吸烟 | PPYOLOE 候选与人物嘴部/手腕关联；分数为检测分数，非吸烟行为概率 |
 | 等待连续观测/不可用 | 无法判断，不代表没有异常 |
 
-吸烟保留附件的嘴部空间关联、持烟手靠近嘴部和近脸连续检测规则：基础阈值 0.5，近脸强证据 0.65、后续关联 0.30。后者必须有真实强证据及同一人物/手腕的连续关联，单个低分框不能触发。可选侧脸头部补检默认不启用。
+吸烟保留附件的嘴部空间关联、持烟手靠近嘴部和近脸连续检测规则：基础阈值 0.5，近脸强证据 0.65、后续关联 0.30。后者必须有真实强证据及同一人物/手腕的连续关联，单个低分框不能触发。侧脸头部补检默认启用，每轮最多补检 2 个头部区域，强证据和后续阈值分别为 0.50 与 0.30。脸部不可观测时跳过推理并标为无法判断。
 
-吸烟最多按 2 Hz 公平轮询每轮 8 个人物区域，实际频率取决于 CPU。姿态跟踪仍要求不超过 0.3 秒的有效观测间隔；遮挡、小目标和低帧率可能使动作无法确认。跌倒/打架模型、阈值和时间要求没有放宽，也不重复补帧。准确率和 M9 Pro 速度需用已有授权视频实测。
+吸烟最多按 2 Hz 公平轮询每轮 8 个人物区域，实际频率取决于 CPU。姿态跟踪仍要求不超过 0.3 秒的有效观测间隔；遮挡、小目标和低帧率可能使动作无法确认。打架继续要求 8 张真实采集帧，相邻采样最大间隔 1.0 秒，正例最低分 0.80，整个打架窗口最多 3 秒，结果从实际窗口末帧起有效 2 秒。吸烟结果从实际判定帧起有效 2 秒。准确率和 M9 Pro 速度需用已有授权视频实测。
 
 ## 更新小电脑
 
-正常停止后台，完整同步源码到 `/home/a/3dnav`，包括整个 `person_behavior/` 和新增约 32 MB 的 `output_inference/ppyoloe_crn_s_80e_smoking_visdrone/`。不要只复制页面或 Python 文件。
-
-此前跌倒、打架环境已安装时，依赖版本不变，无需重装整个环境。校验模型：
+停止后台，将 `car_vel` 的更新同步到小电脑，包括网关、`person_behavior/config/inference.yaml` 和 `assets/runtime_assets.json` 列出的全部文件。新版三组权重约 96 MB，XML 和 BIN 需成对复制。
 
 ```bash
-cd /home/a/3dnav/src/ros2_humble_main/src/car_vel/person_behavior
-/usr/bin/python3 -s -m pphuman_runtime.assets
-```
-
-用已有独立环境检查三个模型加载，不打开相机：
-
-```bash
-cd /home/a/3dnav/src/ros2_humble_main/src/car_vel/person_behavior
-env -u PYTHONPATH -u PYTHONHOME -u LD_LIBRARY_PATH -u LD_PRELOAD \
-  PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES='' \
-  OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MKL_NUM_THREADS=2 \
-  "$HOME/.local/share/robot-behavior/venv/bin/python" -s \
-  -m pphuman_runtime.self_check --timeout 90
-```
-
-应列出 `yolo_pose`、`fight`、`smoking`。自定义 `BEHAVIOR_HOME` 时换成实际解释器。自检只验证加载，不验证速度或准确率。
-
-重建并按原方法启动后台，浏览器强制刷新：
-
-```bash
-cd /home/a/3dnav
-source /opt/ros/humble/setup.bash
-colcon build --packages-select car_vel lzp_service --symlink-install
-source install/setup.bash
-```
-
-若独立环境尚未安装，先执行以下命令，再构建：
-
-```bash
-sudo apt-get install python3-venv libgl1 libglib2.0-0 espeak-ng ffmpeg
 cd /home/a/3dnav/src/ros2_humble_main/src/car_vel
 bash scripts/install_behavior_deps.sh
 ```
 
-不要把行为 requirements 装到系统 Python、ROS 或普通相机依赖目录。行为仍使用独立的 NumPy 1.26/Paddle 2.6 CPU 环境。
+安装脚本复用原有独立环境，安装锁定的 OpenVINO 2024.6.0，校验资产、准备 PaddleDetection 预处理代码并检查三个模型能否加载。没有独立环境时先安装 `python3-venv libgl1 libglib2.0-0`。语音可使用 `espeak-ng` 或已有音频与 `ffmpeg`。
+
+```bash
+cd /home/a/3dnav
+source /opt/ros/humble/setup.bash
+colcon build --packages-select car_vel --symlink-install
+source install/setup.bash
+```
+
+按原方法启动后台，在 USB 相机页面验证三路，再检查巡检语音和报告。模型加载自检只覆盖初始化。
 
 ## 检查与回放
 
@@ -73,7 +51,7 @@ bash scripts/install_behavior_deps.sh
 curl -sS --max-time 5 http://127.0.0.1:8766/api/behavior/status | python3 -m json.tool --no-ensure-ascii
 ```
 
-查看 `enabled.smoking`、`branches.smoking`、`workers.pose`、`workers.fight`、`fresh`、耗时与 `speech`。没有人物时的就绪状态不能验证吸烟效果。
+查看 `enabled.smoking`、`branches.smoking`、`workers.shared`、`fresh`、耗时与 `speech`。没有人物时的就绪状态不能验证吸烟效果。
 
 停止线上行为识别后，用已有本地视频回放（修改为实际视频路径）：
 

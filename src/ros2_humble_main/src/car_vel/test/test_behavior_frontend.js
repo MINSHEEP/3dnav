@@ -141,6 +141,23 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     assert.strictEqual(branch(race,'fall'), '已停止');
     widget.dispose();
 
+    // Inference may advance between status polling and JPEG delivery.
+    const advancing = harness(); widget = advancing.attach();
+    const first = status({frame_age_seconds: 0});
+    await advancing.respond('/status', first);
+    widget.setPreviewActive(true);
+    await advancing.respond('/frame.jpg', {}, headers(first)); advancing.image.emit('load');
+    const original = advancing.image.src;
+    await advancing.advance(1500);
+    const second = status({frame_stamp_ns: '1793111112000000123'});
+    await advancing.respond('/status', second);
+    await advancing.respond('/frame.jpg', {}, headers(status({frame_stamp_ns: '1793111112000000124'})));
+    assert.strictEqual(advancing.image.src, original, 'an updated frame must not blank the last still-fresh preview');
+    assert.strictEqual(advancing.message.hidden, true);
+    await advancing.advance(3500);
+    assert.strictEqual(advancing.image.src, '', 'the retained preview still expires at its own deadline');
+    widget.dispose();
+
     // Lost status and body timeouts do not leave a convincing stale image visible.
     const stale = harness(); widget = stale.attach();
     await stale.respond('/status', status({frame_age_seconds:4.5})); widget.setPreviewActive(true);

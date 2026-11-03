@@ -804,7 +804,7 @@ private:
     minimum_rough_source_points_ =
       static_cast<std::size_t>(std::max<int64_t>(
         100, node_.declare_parameter<int64_t>(
-          "minimum_rough_source_points", 300)));
+          "minimum_rough_source_points", 250)));
     minimum_target_points_ =
       static_cast<std::size_t>(std::max<int64_t>(
         200, node_.declare_parameter<int64_t>("minimum_target_points", 1500)));
@@ -2403,7 +2403,7 @@ private:
   double fine_leaf_size_{0.15};
   std::size_t minimum_points_per_frame_{300U};
   std::size_t minimum_source_points_{900U};
-  std::size_t minimum_rough_source_points_{300U};
+  std::size_t minimum_rough_source_points_{250U};
   std::size_t minimum_target_points_{1500U};
   std::size_t maximum_raw_points_per_frame_{120000U};
   std::size_t maximum_rough_source_points_{6000U};

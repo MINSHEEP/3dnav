@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent / 'nav_service' / 'lzp_service'))
 from car_vel.zsl1_adapter import Zsl1Adapter
 from car_vel.velocity_shaping import TurnCommandShaper
-from car_vel.motion_diagnostics import MotionTrace, age, velocity, body_reason
+from car_vel.motion_diagnostics import CommandStreamTiming, MotionTrace, age, velocity, body_reason
 from lzp_service.robot_body import BodyConfigStore, BodySupervisor, default_config, validate_profile
 
 
@@ -273,6 +273,7 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
                 self.sent = []
                 self.received = []
                 self.subscriptions = {}
+                self.subscription_qos = {}
                 self.state_lock = threading.RLock()
                 self.requested_velocity = (0, 0, 0)
                 self.last_velocity_command = 0.0
@@ -281,6 +282,7 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
             def get_clock(self):return types.SimpleNamespace(now=lambda:types.SimpleNamespace(nanoseconds=int(self.last_status_time*1e9)))
             def create_subscription(self, _type, topic, callback, _qos):
                 self.subscriptions[topic] = callback
+                self.subscription_qos[topic] = _qos
             def _send_velocity(self, values): self.sent.append(values);return True
             def _send_zero_burst(self): self.sent.append((0, 0, 0))
             def _control_tick(self): self.sent.append('remote')
@@ -300,6 +302,11 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
                          profile=default_config()['profiles']['xingji'], frozen=False,
                          Parameter=lambda *args, **kwargs: None, Twist=object,
                          Bool=object, Empty=object,
+                         QoSProfile=types.SimpleNamespace,
+                         HistoryPolicy=types.SimpleNamespace(KEEP_LAST='keep_last'),
+                         ReliabilityPolicy=types.SimpleNamespace(BEST_EFFORT='best_effort'),
+                         DurabilityPolicy=types.SimpleNamespace(VOLATILE='volatile'),
+                         CommandStreamTiming=CommandStreamTiming,
                          MotionTrace=MotionTrace,age=age,velocity=velocity,body_reason=body_reason,generation=1,
                          json=json,
                          time=types.SimpleNamespace(monotonic=lambda: self.now))
@@ -327,6 +334,32 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
         self.assertAlmostEqual(values[-1], 0.15)
         self.now += 0.31; self.node._control_tick()
         self.assertEqual(self.node.sent[-1], (0, 0, 0))
+    def test_safe_velocity_prefers_latest_and_reports_a_receive_gap(self):
+        qos = self.node.subscription_qos['/cmd_vel_safe']
+        self.assertEqual((qos.history, qos.depth, qos.reliability, qos.durability),
+                         ('keep_last', 1, 'best_effort', 'volatile'))
+        self.arm()
+        self.node.nav_velocity(self.command())
+        self.node._control_tick()
+        first_yaw = self.node.sent[-1][2]
+        self.now += 0.15
+        self.node._control_tick()
+        self.assertGreater(self.node.sent[-1][2], first_yaw)
+        self.node.nav_velocity(self.command())
+        self.node._control_tick()
+        self.assertGreater(self.node.sent[-1][0], 0)
+        self.now += 0.36
+        self.node._control_tick()
+        self.assertEqual(self.node.sent[-1], (0, 0, 0))
+        record = self.node._motion_trace.last_record
+        self.assertEqual(record['reason_code'], 'safe_command_stale')
+        stream = record['safe_velocity_stream']
+        self.assertFalse(stream['fresh'])
+        self.assertAlmostEqual(stream['max_gap_sec'], 0.36)
+        self.node.nav_velocity(self.command())
+        self.node._control_tick()
+        self.assertGreater(self.node.sent[-1][0], 0)
+        self.assertAlmostEqual(self.node.sent[-1][2], first_yaw)
     def test_remote_excludes_navigation_and_drops_old_target(self):
         self.arm(); self.node.nav_velocity(self.command())
         self.node._enable_callback(types.SimpleNamespace(data=True))

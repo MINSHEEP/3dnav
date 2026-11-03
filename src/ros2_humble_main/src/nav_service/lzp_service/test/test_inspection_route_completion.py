@@ -130,6 +130,36 @@ def test_terminal_status_before_start_reply_is_consumed_when_reply_arrives():
     assert node._state['state'] == 'completed' and not node._state['active']
 
 
+def test_safety_notice_is_queued_only_on_the_first_successful_patrol_start():
+    node = inspection()
+    node._state.update(state='starting', start_safety_notice_pending=True)
+    node._queue_patrol_safety_notice = Mock()
+    node._apply_route_request_result('start:patrol', True, 'Route started')
+    node._apply_route_request_result('start:patrol', True, 'Next loop started')
+    node._queue_patrol_safety_notice.assert_called_once_with()
+    assert node._state['state'] == 'navigating'
+
+
+def test_safety_notice_and_checkpoint_work_are_queued_independently():
+    node = inspection_fixture._load_manager_methods('_handle_point_hold', '_queue_patrol_safety_notice')()
+    node._state = dict(task_id='task', paused=False, current_loop=1)
+    node._processed_hold_key = ''
+    node._checkpoints = {7: {'route_point_id': 7}}
+    node._inspection_future = None
+    node._patrol_speech_worker = Mock()
+    node._send_patrol_safety_notice = Mock()
+    node._workers = Mock()
+    node._run_checkpoint = Mock()
+    node._skip_event = threading.Event()
+    node._log = Mock()
+    message = NS(current_point=NS(id=7, sequence=2, name='检查点', x=1, y=2), point_event_sequence=8)
+    node._handle_point_hold(message)
+    node._handle_point_hold(message)
+    node._patrol_speech_worker.submit.assert_called_once_with(node._send_patrol_safety_notice, 'task')
+    node._workers.submit.assert_called_once()
+    assert node._state['state'] == 'inspecting'
+
+
 def test_paused_completion_is_deferred_until_explicit_resume():
     node = inspection()
     node._state.update(state='paused',paused=True)

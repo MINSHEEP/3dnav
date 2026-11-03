@@ -4,8 +4,7 @@
     const bindings = new WeakMap();
     const NAMES = Object.freeze({ fall: '疑似跌倒', lying: '躺卧姿态（未确认跌倒）', fight: '疑似打架', smoking: '疑似吸烟' });
     const BRANCHES = ['fall', 'fight', 'smoking'];
-    // Fight evidence expires after one second; poll sooner so a healthy stream
-    // does not repeatedly disappear between ordinary 1.5-second status polls.
+    // Poll faster than the result lifetime so valid preview frames can roll over.
     const POLL_MS = 500;
     const REQUEST_TIMEOUT_MS = 5000;
 
@@ -80,6 +79,7 @@
         const fetcher = options.fetch || global.fetch.bind(global);
         let status = null, disposed = false, previewActive = false, busy = false;
         let statusTimer = null, expiryTimer = null, statusRequest = null, frameRequest = null, configRequest = null;
+        let imageExpiryTimer = null, statusFrameDeadline = 0;
         let statusGeneration = 0, frameGeneration = 0, objectUrl = null, lastFrameKey = '';
         let lastAttemptAt = 0, sourceGeneration;
         const listeners = [];
@@ -89,10 +89,8 @@
         };
         const allowed = () => !disposed && !global.document.hidden
             && (!options.isPreviewAllowed || options.isPreviewAllowed());
-        function clearPreview(text = '等待当前来源的行为识别画面…') {
-            frameGeneration += 1;
-            frameRequest?.abort();
-            frameRequest = null;
+        function clearImage(text) {
+            global.clearTimeout(imageExpiryTimer);
             lastFrameKey = '';
             if (objectUrl) global.URL.revokeObjectURL(objectUrl);
             objectUrl = null;
@@ -101,6 +99,12 @@
                 image.classList.remove('ready');
             }
             if (message && previewActive) { message.hidden = false; message.textContent = text; }
+        }
+        function clearPreview(text = '等待当前来源的行为识别画面…') {
+            frameGeneration += 1;
+            frameRequest?.abort();
+            frameRequest = null;
+            clearImage(text);
         }
         async function request(path, options = {}, kind) {
             const controller = new global.AbortController();
@@ -156,28 +160,38 @@
                 return;
             }
             const epoch = String(status.source_epoch), stamp = String(status.frame_stamp_ns || status.stamp_ns);
-            const key = `${epoch}:${stamp}`;
+            const view = status.preview_branch || '';
+            const key = `${epoch}:${stamp}:${view}`;
+            const deadline = statusFrameDeadline;
             if (lastFrameKey === key || Date.now() - lastAttemptAt < POLL_MS) return;
             lastAttemptAt = Date.now();
             const generation = frameGeneration;
             try {
-                const frame = await request(`/api/behavior/frame.jpg?epoch=${encodeURIComponent(epoch)}&stamp=${encodeURIComponent(stamp)}`, {}, 'frame');
+                const query = `epoch=${encodeURIComponent(epoch)}&stamp=${encodeURIComponent(stamp)}`
+                    + (view ? `&view=${encodeURIComponent(view)}` : '');
+                const frame = await request(`/api/behavior/frame.jpg?${query}`, {}, 'frame');
                 if (disposed || generation !== frameGeneration || !previewActive || !allowed()) return;
                 if (String(frame.headers.get('X-Behavior-Source-Epoch')) !== epoch
                     || String(frame.headers.get('X-Behavior-Stamp-Ns')) !== stamp
                     || String(status?.source_epoch) !== epoch
-                    || String(status?.frame_stamp_ns || status?.stamp_ns) !== stamp || !status?.fresh || !status?.running) {
-                    clearPreview('画面已更新，正在获取当前识别结果…');
+                    || String(status?.frame_stamp_ns || status?.stamp_ns) !== stamp
+                    || (status?.preview_branch || '') !== view || !status?.fresh || !status?.running
+                    || Date.now() >= deadline) {
+                    if (!objectUrl) clearImage('画面已更新，正在获取当前识别结果…');
                     return;
                 }
                 const previous = objectUrl;
                 objectUrl = global.URL.createObjectURL(frame.blob);
                 image.src = objectUrl;
                 lastFrameKey = key;
+                global.clearTimeout(imageExpiryTimer);
+                imageExpiryTimer = global.setTimeout(() => {
+                    if (lastFrameKey === key) clearImage('行为画面已过期，等待新的连续观测。');
+                }, Math.max(0, deadline - Date.now()));
                 if (previous) global.URL.revokeObjectURL(previous);
             } catch (_error) {
                 if (disposed || generation !== frameGeneration) return;
-                clearPreview('行为画面暂不可用，正在重试…');
+                if (!objectUrl) clearImage('行为画面暂不可用，正在重试…');
             }
         }
         function schedule() {
@@ -194,9 +208,11 @@
                 if (status && String(status.source_epoch) !== String(incoming.source_epoch)) clearPreview();
                 status = incoming;
                 global.clearTimeout(expiryTimer);
+                statusFrameDeadline = 0;
                 if (status.fresh) {
                     const remaining = Math.max(0, (Number(status.max_result_age_seconds || 5)
                         - Number(status.frame_age_seconds || 0)) * 1000);
+                    statusFrameDeadline = Date.now() + remaining;
                     expiryTimer = global.setTimeout(() => {
                         if (disposed || status !== incoming) return;
                         status = { ...status, fresh: false, ready: false };

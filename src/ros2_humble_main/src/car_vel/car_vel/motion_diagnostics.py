@@ -79,16 +79,20 @@ def arbiter_reason(s):
         return ('global_localization_recovering' if data.get('recovering') is True or delayed
                 else 'global_localization_untrusted')
     if s.get('connector_active') or s['source'] not in ('nav','zero'):return 'other_source_owns_output'
+    if s.get('terrain_stop_bypassed') and not s.get('navigation_active'):return 'idle'
     if not s['input_seen']:return 'upstream_missing'
     if s.get('input_discarded'):return 'upstream_discarded'
     if s['input_age_sec'] is None or s['input_age_sec']>s['command_timeout_sec']:return 'upstream_stale'
     if any(v is None for v in s['input']):return 'input_invalid'
     if s['terrain_enabled']:
         if not s['body_known']:return 'body_identity_invalid'
-        if not s['terrain_fresh']:return 'terrain_status_stale'
-        if not s['terrain_safe']:return 'terrain_unsafe'
+        terrain_stop_bypassed = s.get('terrain_stop_bypassed', False)
+        if not terrain_stop_bypassed:
+            if not s['terrain_fresh']:return 'terrain_status_stale'
+            if not s['terrain_safe']:return 'terrain_unsafe'
         if s['body_id']=='xingji':
-            if s['evidence'] not in ('current_anchored','recent_measured_anchored','restricted_map'):
+            if (not terrain_stop_bypassed
+                    and s['evidence'] not in ('current_anchored','recent_measured_anchored','restricted_map')):
                 return 'ground_evidence_unanchored'
             if s['input'][0]<-1e-6 or abs(s['input'][1])>1e-6:return 'direction_not_authorized'
         if s['speed_limit_mps']<=0 and moving(s['input'][:2]):return 'speed_limit_zero'
@@ -140,8 +144,12 @@ def velocity_guard_status(record):
     blocked = active and code in blocked_codes
     terrain = record.get('terrain') or {}
     reason = REASONS.get(code, code)
-    if code == 'terrain_unsafe' and terrain.get('reason'):
-        reason = '地形保护停车：' + str(terrain['reason'])[:400]
+    if code == 'terrain_unsafe':
+        terrain_reason = terrain.get('validation_error') or terrain.get('reason')
+        if terrain_reason:
+            reason = '地形保护停车：' + str(terrain_reason)[:400]
+    if code == 'direction_not_authorized' and record.get('terrain_stop_bypassed'):
+        reason = '星玑3D导航禁止自动倒退或横移'
     if code == 'upstream_stale':
         reason = ('导航控制器速度消息已过期，保持零速停车；'
                   '正在等待新的有效速度指令')
@@ -161,22 +169,26 @@ def velocity_guard_status(record):
             stream_reason = 'Nav2原始速度仍在更新，但平滑后的速度消息没有及时到达'
     if blocked and stream_reason:
         reason += '；' + stream_reason
+    terrain_stop_bypassed = bool(record.get('terrain_stop_bypassed'))
     cap = finite(record.get('speed_limit_mps'))
-    if not (record.get('terrain_enabled') and record.get('terrain_fresh')
+    if not (record.get('terrain_enabled') and (terrain_stop_bypassed or record.get('terrain_fresh'))
             and record.get('body_known')):
         cap = None
     return dict(schema_version=2, navigation_active=active,
         body_id=record.get('body_id', ''),
         navigation_mode='terrain_3d' if record.get('terrain_enabled') else 'map_2d',
-        terrain_guard_enabled=bool(record.get('terrain_enabled')),
+        terrain_guard_enabled=bool(record.get('terrain_enabled')) and not terrain_stop_bypassed,
         source=record.get('source', 'zero'), input_fresh=fresh,
         input_age_sec=record.get('input_age_sec'),
         command_timeout_sec=record.get('command_timeout_sec'),
         request_velocity=record.get('input') if fresh else None,
         commanded_velocity=record.get('output'), speed_limit_mps=cap,
-        speed_policy=terrain.get('speed_policy', 'terrain_adaptive'),
-        terrain_speed_limit_enabled=terrain.get('terrain_speed_limit_enabled', True),
-        speed_limit_source=terrain.get('speed_limit_source', 'terrain_assessment'),
+        speed_policy=('nav2_body_limits' if terrain_stop_bypassed
+                      else terrain.get('speed_policy', 'terrain_adaptive')),
+        terrain_speed_limit_enabled=(not terrain_stop_bypassed
+                                     and terrain.get('terrain_speed_limit_enabled', True)),
+        speed_limit_source=('terrain_advisory' if terrain_stop_bypassed
+                            else terrain.get('speed_limit_source', 'terrain_assessment')),
         terrain_type=terrain.get('observed_terrain_type', ''),
         controller_stream=controller, stream_reason_code=stream_code,
         stream_reason=stream_reason,

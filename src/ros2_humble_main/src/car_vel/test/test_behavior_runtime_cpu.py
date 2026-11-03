@@ -25,6 +25,7 @@ from pphuman_runtime.yolo_backend import YoloBackend
 def config():
     cfg = load_config(RUNTIME_ROOT / "config/inference.yaml")
     cfg["branches"]["smoking"] = False  # Existing fall/fight regression scope.
+    cfg["fight"].update(capture_buffer=False, async_inference=False)
     return cfg
 
 
@@ -86,12 +87,20 @@ class RuntimeTests(unittest.TestCase):
             header["enabled_branches"] = branches
         return self.runtime.infer(self.bgr, header)
 
-    def test_only_two_models_cpu_and_original_gaps(self):
-        self.assertEqual(set(self.cfg["models"]), {"yolo_pose", "fight", "smoking"})
-        self.assertEqual(self.cfg["device"], "CPU")
-        self.assertEqual(self.cfg["cpu_threads"], 2)
+    def test_latest_default_models_and_original_gaps(self):
+        cfg = load_config(RUNTIME_ROOT / "config/inference.yaml")
+        self.assertEqual(set(cfg["models"]), {"yolo_pose", "fight", "smoking"})
+        self.assertEqual(cfg["device"], "CPU")
+        self.assertEqual(cfg["cpu_threads"], 4)
+        self.assertEqual(cfg["yolo_pose"]["output_format"], "yolo26_end2end")
+        self.assertEqual({cfg[key]["backend"] for key in cfg["models"]}, {"openvino"})
+        self.assertTrue(cfg["smoking"]["profile_refinement"]["enabled"])
+        self.assertTrue(cfg["smoking"]["skip_unobservable"])
+        self.assertTrue(cfg["fight"]["capture_buffer"] and cfg["fight"]["async_inference"])
+        self.assertEqual(cfg["fight"]["result_ttl_seconds"], 2.0)
         self.assertEqual(self.cfg["fall"]["max_observation_gap_seconds"], .3)
-        self.assertEqual(self.cfg["fight"]["max_sample_gap_seconds"], .6)
+        self.assertEqual(cfg["fight"]["max_sample_gap_seconds"], 1.0)
+        self.assertEqual(cfg["smoking"]["result_ttl_seconds"], 2.0)
         self.assertIn("smoking", self.cfg)
 
     def test_result_has_no_smoking_or_fake_fall_score(self):
@@ -136,7 +145,7 @@ class RuntimeTests(unittest.TestCase):
     def test_fight_sample_gap_does_not_reuse_old_window(self):
         for index in range(7):
             self.frame(index * .25)
-        result = self.frame(2.2)
+        result = self.frame(2.6)
         self.assertEqual(self.backend.fight_calls, 0)
         self.assertEqual(result["scene"]["fight"]["window"]["samples"], 1)
 
@@ -201,6 +210,8 @@ class ConfigAndBackendTests(unittest.TestCase):
                 cfg = config()
                 cfg.update(project_root=str(root), models={'yolo_pose': 'pose.onnx', 'fight': 'fight'},
                            branches={key: key == branch for key in ('fall', 'fight', 'smoking')})
+                cfg["yolo_pose"]["backend"] = "onnxruntime"
+                cfg["fight"]["backend"] = "paddle"
                 with patch.dict(sys.modules, modules), patch('pphuman_runtime.yolo_backend.YoloPosePredictor', Pose), patch('pphuman_runtime.yolo_backend.model_identity', return_value={}):
                     backend = YoloBackend(cfg)
             self.assertEqual(loaded, ['pose'] if branch == 'fall' else ['fight'])
@@ -239,13 +250,15 @@ class ConfigAndBackendTests(unittest.TestCase):
             cfg = config()
             cfg["project_root"] = str(root)
             cfg["models"] = {"yolo_pose": "pose.onnx", "fight": "fight"}
+            cfg["yolo_pose"]["backend"] = "onnxruntime"
+            cfg["fight"]["backend"] = "paddle"
             with patch.dict(sys.modules, modules), patch("pphuman_runtime.yolo_backend.YoloPosePredictor", Pose), patch("pphuman_runtime.yolo_backend.model_identity", return_value={}):
                 backend = YoloBackend(cfg)
             self.assertEqual(loaded, ["pose", "fight"])
-            self.assertFalse(hasattr(backend, "smoking_model"))
+            self.assertIsNone(backend.smoking_model)
             self.assertTrue(callable(backend.smoking))  # Adapter exists, disabled predictor was not loaded.
             self.assertEqual(backend.fight_model.kwargs["device"], "CPU")
-            self.assertEqual(backend.fight_model.kwargs["cpu_threads"], 2)
+            self.assertEqual(backend.fight_model.kwargs["cpu_threads"], cfg["cpu_threads"])
 
 
 class ProtocolTests(unittest.TestCase):

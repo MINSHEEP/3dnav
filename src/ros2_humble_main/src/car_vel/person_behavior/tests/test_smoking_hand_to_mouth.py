@@ -195,6 +195,8 @@ class RecordedShapeBackend:
 class RuntimeWiringTests(unittest.TestCase):
     def test_near_face_runtime_clears_cache_between_detector_ticks(self):
         cfg=load_config(ROOT/'config/inference.yaml')
+        cfg['branches']['fight'] = False
+        cfg['smoking']['profile_refinement']['enabled'] = False
         class NearBackend(RecordedShapeBackend):
             def observe(self,frame,stamp):
                 self.stamp=stamp
@@ -217,6 +219,8 @@ class RuntimeWiringTests(unittest.TestCase):
 
     def test_forward_budget_ttl_reset_and_opt_out(self):
         cfg=load_config(ROOT/'config/inference.yaml')
+        cfg['branches']['fight'] = False
+        cfg['smoking']['profile_refinement']['enabled'] = False
         backend=RecordedShapeBackend(cfg); runtime=RuntimeYolo(cfg,backend)
         frame=np.zeros((300,300,3),np.uint8)
         def run(t,epoch=0):

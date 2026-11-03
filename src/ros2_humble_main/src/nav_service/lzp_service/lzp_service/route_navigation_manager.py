@@ -40,6 +40,7 @@ from std_srvs.srv import Empty as EmptyService, Trigger
 
 from lzp_interface.msg import (
     CurrentMap,
+    LaunchStatus,
     RelocalizationRequest,
     Route as RouteMsg,
     RouteExecutionStatus,
@@ -55,6 +56,7 @@ from lzp_interface.srv import (
     SaveRoute,
     SetInflationRadius,
     SetNavigationMode,
+    SetNavigationSpeed,
     StartRoute,
     NavigateManagedGoal,
     Preview3DGoal,
@@ -332,6 +334,15 @@ class RouteNavigationManager(Node):
                 'navigation_mode.json'))
         self._navigation_mode = self._navigation_mode_store.snapshot()['mode']
         self._active_navigation_mode = ''
+        self._speed_clients = {
+            name: self.create_client(SetParameters, f'/{name}/set_parameters',
+                                     callback_group=self._callback_group)
+            for name in ('controller_server', 'velocity_smoother')
+        }
+        self._speed_applied = set()
+        self._speed_pending = {}
+        self._speed_error = ''
+        self._speed_next_retry = 0.0
         inflation_path = str(self.declare_parameter(
             'inflation_radius_config_path', '').value).strip()
         self._inflation_radius_store = InflationRadiusStore(
@@ -377,6 +388,9 @@ class RouteNavigationManager(Node):
         self._preview_action_client = ActionClient(
             self, ComputePathToPose, '/compute_path_to_pose',
             callback_group=self._callback_group)
+        self.create_subscription(
+            LaunchStatus, '/launch_status', self._launch_status_callback,
+            volatile_qos, callback_group=self._callback_group)
         self.create_subscription(
             PoseStamped,
             '/web_goal_pose',
@@ -622,6 +636,9 @@ class RouteNavigationManager(Node):
             self._set_inflation_radius_callback,
             callback_group=self._callback_group,
         )
+        self.create_service(
+            SetNavigationSpeed, '/navigation/set_speed',
+            self._set_navigation_speed_callback, callback_group=self._callback_group)
 
         self._current_map_name = ''
         self._current_map_load_id = ''
@@ -1053,6 +1070,9 @@ class RouteNavigationManager(Node):
             **snapshot,
             'label': navigation_mode_label(snapshot['mode']),
             'locked': locked,
+            'speed_applied': self._navigation_speed_ready(),
+            'speed_locked': locked or self._preview_busy or bool(self._speed_pending),
+            'speed_error': self._speed_error,
             'active_mode': (
                 self._active_navigation_mode if self._mode != 'idle' else ''),
             'execution_mode': self._mode,
@@ -1067,6 +1087,71 @@ class RouteNavigationManager(Node):
         }
         self._navigation_mode_publisher.publish(String(data=json.dumps(
             payload, ensure_ascii=False, separators=(',', ':'))))
+
+    def _set_navigation_speed_callback(self, request, response):
+        with self._lock:
+            if self._navigation_mode_locked() or self._preview_busy or self._speed_pending:
+                response.message = '请停止导航或巡检，并等待预览或参数同步完成后切换速度档位'
+                return response
+            previous = self._navigation_mode_store.snapshot()['speed_mps']
+            try:
+                speed = self._navigation_mode_store.set_speed(request.speed_mps)
+            except (ValueError, OSError) as error:
+                response.message = str(error)
+                return response
+            if speed != previous:
+                self._speed_applied.clear()
+                self._speed_error = ''
+                self._speed_next_retry = 0.0
+            response.success = True
+            response.message = f'已保存 {speed:.2f} m/s 档位'
+            self._publish_navigation_mode()
+            return response
+
+    def _navigation_speed_ready(self):
+        return self._speed_applied == self._speed_clients.keys()
+
+    def _drive_navigation_speed_sync(self):
+        now = time.monotonic()
+        for name, (future, started_at) in list(self._speed_pending.items()):
+            if not future.done():
+                if now - started_at > 3.0:
+                    self._speed_error = f'{name} 速度参数未确认；若持续超时，请重启导航后台'
+                continue  # An outstanding remote write must not race a newer gear.
+            del self._speed_pending[name]
+            try:
+                result, = future.result().results
+                if not result.successful:
+                    raise RuntimeError(result.reason or '拒绝速度参数')
+                if self._nav2_ready:
+                    self._speed_applied.add(name)
+            except Exception as error:
+                self._speed_error = f'{name} 速度参数同步失败：{error}'
+        if self._navigation_speed_ready():
+            self._speed_error = ''
+            return
+        if (not self._nav2_ready or now < self._speed_next_retry
+                or self._preview_busy or self._sending or self._active_goal_handle is not None):
+            return
+        self._speed_next_retry = now + 1.0
+        speed = self._navigation_mode_store.snapshot()['speed_mps']
+        parameters = {
+            'controller_server': Parameter(name='FollowPath.vx_max', value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE, double_value=speed)),
+            'velocity_smoother': Parameter(name='max_velocity', value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE_ARRAY, double_array_value=[speed, 0.0, 0.25])),
+        }
+        for name, client in self._speed_clients.items():
+            if name in self._speed_applied or name in self._speed_pending:
+                continue
+            if not client.service_is_ready():
+                self._speed_error = f'等待 {name} 速度参数服务'
+                continue
+            try:
+                future = client.call_async(SetParameters.Request(parameters=[parameters[name]]))
+                self._speed_pending[name] = (future, now)
+            except Exception as error:
+                self._speed_error = f'{name} 速度参数请求失败：{error}'
 
     def _set_navigation_mode_callback(self, request, response):
         with self._lock:
@@ -1306,6 +1391,7 @@ class RouteNavigationManager(Node):
             ready = self._action_client.server_is_ready()
             if ready != self._nav2_ready:
                 self._nav2_ready = ready
+                self._speed_applied.clear()
                 self._reset_inflation_runtime(
                     'waiting for Nav2 costmaps' if ready else 'Nav2 unavailable')
                 if not self._single_refresh_map_name:
@@ -1313,6 +1399,7 @@ class RouteNavigationManager(Node):
                         'nav2_ready' if ready else 'waiting_for_nav2')
 
             self._drive_inflation_radius_sync()
+            self._drive_navigation_speed_sync()
             self._drive_single_localization_refresh()
 
             if (
@@ -1333,6 +1420,7 @@ class RouteNavigationManager(Node):
                 and self._state == 'waiting_nav2'
                 and ready
                 and self._inflation_ready_for_navigation()
+                and self._navigation_speed_ready()
                 and not self._sending
                 and self._active_goal_handle is None
             ):
@@ -1342,6 +1430,7 @@ class RouteNavigationManager(Node):
                 and self._state == 'waiting_nav2'
                 and ready
                 and self._inflation_ready_for_navigation()
+                and self._navigation_speed_ready()
                 and self._pending_single_pose is not None
             ):
                 pose = self._pending_single_pose
@@ -1948,8 +2037,9 @@ class RouteNavigationManager(Node):
     def _route_preview_points(
             route: dict, *, start_point_id: int = 0,
             point_limit: int = 0, reverse: bool = False,
-            loop_count: int = 1, continuous: bool = False) -> list:
-        """Actual target order, including one closure for repeated rounds."""
+            loop_count: int = 1, continuous: bool = False,
+            bidirectional: bool = False) -> list:
+        """Preview each distinct leg needed by the requested round pattern."""
         if continuous:
             raise ValueError('3D 持续循环未开放；请选择有限巡检轮次')
         if loop_count < 1 or loop_count > 10000 or point_limit < 0:
@@ -1959,6 +2049,17 @@ class RouteNavigationManager(Node):
             ordered.reverse()
         if not ordered:
             raise ValueError('路线没有目标点')
+        if bidirectional:
+            if reverse or start_point_id or point_limit:
+                raise ValueError('往返巡检必须从完整正向路线开始预览')
+            if len(ordered) > 32:
+                raise ValueError('3D 往返巡检每轮最多支持 32 个目标点；请拆分路线')
+            # The first target of the return is the same turning point (pose
+            # and heading) where the forward round ends. Plan each nonduplicate
+            # leg once even when the inspection repeats for many rounds.
+            if loop_count > 1:
+                ordered.extend(reversed(ordered[:-1]))
+            return ordered
         first = 0
         if start_point_id > 0:
             matches = [index for index, point in enumerate(ordered)
@@ -2083,6 +2184,7 @@ class RouteNavigationManager(Node):
                 response.message = '路线含有未标定的特殊地形点，禁止执行'
                 return response
             try:
+                bidirectional = bool(request.bidirectional)
                 params = {
                     'route_id': int(request.route_id),
                     'start_point_id': int(request.start_point_id),
@@ -2093,7 +2195,7 @@ class RouteNavigationManager(Node):
                 }
                 points = self._route_preview_points(route, **{
                     key: value for key, value in params.items()
-                    if key != 'route_id'})
+                    if key != 'route_id'}, bidirectional=bidirectional)
                 digest = self._route_digest(route)
             except (TypeError, ValueError, OverflowError) as error:
                 response.code = 'invalid_route'
@@ -2190,6 +2292,7 @@ class RouteNavigationManager(Node):
                     'created_at': time.monotonic(),
                     'route_digest': digest, 'params': params,
                     'snapshot': snapshot, 'segments': segments,
+                    'bidirectional': bidirectional,
                 }
                 response.valid = True
                 response.code = 'ready'
@@ -2259,14 +2362,14 @@ class RouteNavigationManager(Node):
                 return response
             owner = str(request.owner_token).strip()
             params = token['params']
+            bidirectional = token.get('bidirectional', False)
             if (not owner or len(owner) > 128
-                    or bool(request.bidirectional)
+                    or bool(request.bidirectional) != bidirectional
                     or int(request.route_id) != params['route_id']
                     or int(request.loop_count) != params['loop_count']
                     or params['reverse'] or params['start_point_id']
                     or params['point_limit'] or params['continuous']):
-                response.message = (
-                    '3D 巡检暂不支持双向路线；预览参数与本次任务不一致')
+                response.message = '巡检方向或轮次与 3D 预览不一致，请重新预览'
                 return response
             route = self._database.get_route(params['route_id'])
             if not route or not route.get('points'):
@@ -2292,6 +2395,7 @@ class RouteNavigationManager(Node):
                 'route_id': params['route_id'],
                 'route_digest': token['route_digest'],
                 'snapshot': current,
+                'allow_reverse': bidirectional and params['loop_count'] > 1,
                 'state': 'pending',
                 'generation': 0,
                 'pause_latched': False,
@@ -2539,6 +2643,11 @@ class RouteNavigationManager(Node):
                         False, 'preview_stale',
                         self._preview_3d_change_reason(
                             authorization['snapshot'],include_pose=False)+'；巡检已阻止续跑'), None
+                if (params['reverse']
+                        and not authorization.get('allow_reverse', False)):
+                    return GoalValidationResult(
+                        False, 'inspection_direction_unpreviewed',
+                        '3D 巡检返程未通过预览，不能启动反向路线'), None
             else:
                 token = confirmed_token if confirmed_token is not None else self._preview_token
                 if confirmed_token is None and token and str(request.preview_id) == token.get('id'):
@@ -2546,6 +2655,7 @@ class RouteNavigationManager(Node):
                     self._preview_token = None
                 if (not token or token.get('kind') != 'route'
                         or str(request.preview_id) != token.get('id')
+                        or token.get('bidirectional', False)
                         or token['params'] != params
                         or token['route_digest'] != digest):
                     return GoalValidationResult(
@@ -3994,6 +4104,9 @@ class RouteNavigationManager(Node):
                 response.message = (
                     '障碍膨胀半径尚未同步到全局和局部代价地图，请稍后重试')
                 return response
+            if not self._navigation_speed_ready():
+                response.message = self._speed_error or '导航速度档位正在同步，请稍后重试'
+                return response
             if ticket is not None and not self._verify_3d_route_start_ticket(
                     ticket, route):
                 response.success = False
@@ -4361,6 +4474,31 @@ class RouteNavigationManager(Node):
             self._publish_navigation_mode()
             self._publish_inflation_radius()
 
+    def _launch_status_callback(self, message: LaunchStatus) -> None:
+        with self._lock:
+            stamp_ns = message.timestamp.sec * 1_000_000_000 + message.timestamp.nanosec
+            age_ns = self.get_clock().now().nanoseconds - stamp_ns
+            stopped = (not message.navigation_running and message.navigation_pid == 0
+                       and stamp_ns > 0 and 0 <= age_ns <= 3_000_000_000
+                       and not self._action_client.server_is_ready())
+            if (stopped and self._speed_pending and not any(
+                    client.service_is_ready() for client in self._speed_clients.values())):
+                for future, _ in self._speed_pending.values():
+                    future.cancel()
+                self._speed_pending.clear()
+                self._speed_applied.clear()
+                self._speed_error = ''
+            if (self._state != 'stopping' or self._mode != 'route'
+                    or not stopped):
+                return
+            requested_at = getattr(self, '_route_stop_requested_at_ns', None)
+            if requested_at is None or stamp_ns < requested_at:
+                return
+            # Invalidate callbacks from the exited instance before releasing ownership.
+            self._goal_token += 1
+            self._publish_route_log('导航进程已停止，清理等待取消的旧任务')
+            self._finish_task('stopped', 'Navigation process stopped')
+
     def _cancel_navigation_callback(self, _message: Empty) -> None:
         with self._lock:
             self._preview_request_generation = getattr(
@@ -4454,6 +4592,12 @@ class RouteNavigationManager(Node):
         if not self._inflation_ready_for_navigation():
             self._state = 'waiting_nav2'
             self._status_message = 'Waiting for costmap inflation synchronization'
+            if context == 'single':
+                self._pending_single_pose = pose
+            return
+        if not self._navigation_speed_ready():
+            self._state = 'waiting_nav2'
+            self._status_message = '等待导航速度档位同步'
             if context == 'single':
                 self._pending_single_pose = pose
             return
@@ -4948,6 +5092,8 @@ class RouteNavigationManager(Node):
         self._paused_dwell_remaining = 0.0
         self._cancel_reason = reason
         self._state = 'stopping'
+        if self._mode == 'route':
+            self._route_stop_requested_at_ns = self.get_clock().now().nanoseconds
         self._status_message = 'Stopping navigation'
         self._send_zero_velocity()
         if self._active_goal_handle is not None:
@@ -4966,6 +5112,7 @@ class RouteNavigationManager(Node):
         self._zero_velocity_publisher.publish(Twist())
 
     def _finish_task(self, final_state: str, message: str) -> None:
+        self._route_stop_requested_at_ns = None
         # Active ownership is released below. Preserve a route-level terminal
         # event so a mission can correlate completion after owner_token clears.
         if (self._mode == 'route' and final_state == 'completed'

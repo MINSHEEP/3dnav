@@ -7,12 +7,12 @@
     <link rel="stylesheet" href="robot_ui.css?v=20260825-system-settings">
     <link rel="stylesheet" href="settings.css?v=20261102-detection">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
-    <script src="robot_ui_common.js?v=20261022-web-preview"></script>
+    <script src="robot_ui_common.js?v=20261103-nav-speed"></script>
     <script src="robot_body_settings.js?v=20260911-zsl1"></script>
     <script src="m701_settings.js?v=20260916-connection"></script>
     <script src="lidar_settings.js?v=20260916-network"></script>
     <script src="mapping_filter_settings.js?v=20261020-switch"></script>
-    <script src="camera_source_settings.js?v=20261015-source"></script>
+    <script src="camera_source_settings.js?v=20261103-c12"></script>
     <script src="detection_settings.js?v=20261102-switches"></script>
 </head>
 <body>
@@ -95,6 +95,7 @@
                     <label>画面来源<select id="ordinary-camera-source">
                         <option value="usb">USB 摄像头</option>
                         <option value="body">狗本体摄像头</option>
+                        <option value="c12">C12 双光相机</option>
                     </select></label>
                 </div>
                 <div id="ordinary-camera-usb-fields">
@@ -114,6 +115,11 @@
                 <div id="ordinary-camera-body-fields" class="body-fields" hidden>
                     <label>本体图传地址<input id="ordinary-camera-url" type="url" autocomplete="off" placeholder="http://127.0.0.1:8081/camera"></label>
                     <p class="hint">默认复用原本体 HTTP 图传代理，原上游为 http://192.168.96.2:8080。这里只申请画面，不启用遥控、站立或运动；支持 JPEG/MJPEG，不使用海康云台 SDK。其他本体需填写实际已运行的 HTTP 图传地址。</p>
+                </div>
+                <div id="ordinary-camera-c12-fields" class="body-fields" hidden>
+                    <label>C12 可见光 RTSP<input id="ordinary-camera-c12-visible" type="url" autocomplete="off"></label>
+                    <label>C12 红外 RTSP<input id="ordinary-camera-c12-infrared" type="url" autocomplete="off"></label>
+                    <p class="hint">可见光用于普通画面与识别，红外仅供预览。切回 USB 或本体摄像头后使用海康 USB 测温。</p>
                 </div>
                 <button id="ordinary-camera-refresh" type="button">刷新配置和 USB 设备</button>
                 <button id="ordinary-camera-save" type="button" disabled>保存并切换</button>
@@ -224,6 +230,26 @@
                 </button>
             </div>
             <p id="navigation-mode-lock-note" class="navigation-mode-note">正在连接导航模式服务…</p>
+        </section>
+
+        <section class="navigation-mode-section" aria-labelledby="navigation-speed-title">
+            <div class="navigation-mode-heading">
+                <div>
+                    <h2 id="navigation-speed-title">导航速度挡位</h2>
+                    <p>设置地形导航和巡检任务共用的前进速度上限。请在任务空闲时切换，重启后沿用。实际速度仍由导航控制器和安全限速决定。</p>
+                </div>
+            </div>
+            <div class="navigation-mode-grid">
+                <button class="navigation-mode-card" type="button" data-nav-speed="0.25" disabled aria-pressed="false">
+                    <strong>0.25 m/s</strong>
+                    <span>默认挡</span>
+                </button>
+                <button class="navigation-mode-card" type="button" data-nav-speed="0.45" disabled aria-pressed="false">
+                    <strong>0.45 m/s</strong>
+                    <span>快速挡</span>
+                </button>
+            </div>
+            <p id="navigation-speed-note" class="navigation-mode-note" role="status">正在连接导航速度设置服务…</p>
         </section>
 
         <section class="navigation-mode-section inflation-radius-section" aria-labelledby="inflation-radius-title">
@@ -374,6 +400,8 @@
         map_2d: document.getElementById('btn-nav-mode-2d'),
         terrain_3d: document.getElementById('btn-nav-mode-3d'),
     });
+    const navigationSpeedButtons = document.querySelectorAll('[data-nav-speed]');
+    const navigationSpeedNote = document.getElementById('navigation-speed-note');
     const inflationRadiusState = document.getElementById('inflation-radius-state');
     const inflationRadiusStateValue = document.getElementById('inflation-radius-state-value');
     const inflationRadiusLockNote = document.getElementById('inflation-radius-lock-note');
@@ -419,6 +447,7 @@
     let navigationModeSeen = false;
     let navigationModeRequestActive = false;
     let navigationModeStatus = {};
+    let navigationSpeedSaving = false;
     let inflationRadiusSeen = false;
     let inflationRadiusRequestActive = false;
     let inflationRadiusDirty = false;
@@ -680,6 +709,42 @@
             button.setAttribute('aria-pressed', selected ? 'true' : 'false');
             button.disabled = disabled || selected;
         });
+        renderNavigationSpeed();
+    }
+
+    function renderNavigationSpeed() {
+        const speed = navigationModeStatus.speed_mps;
+        const available = session.connected && Number.isFinite(speed);
+        const locked = navigationModeStatus.speed_locked === true;
+        for (const button of navigationSpeedButtons) {
+            const selected = available && Number(button.dataset.navSpeed) === speed;
+            button.classList.toggle('selected', selected);
+            button.setAttribute('aria-pressed', String(selected));
+            button.disabled = !available || selected || locked || navigationSpeedSaving
+                || requestActive || actionLocked;
+        }
+        if (!available) navigationSpeedNote.textContent = '尚未收到导航速度设置状态。';
+        else if (navigationSpeedSaving) navigationSpeedNote.textContent = '正在保存导航速度挡位…';
+        else if (navigationModeStatus.speed_error) navigationSpeedNote.textContent = navigationModeStatus.speed_error;
+        else if (!navigationModeStatus.speed_applied) navigationSpeedNote.textContent = `${speed.toFixed(2)} m/s 已保存，等待导航控制器和平滑器同步。`;
+        else if (locked) navigationSpeedNote.textContent = `${speed.toFixed(2)} m/s 已生效，请在任务空闲后切换。`;
+        else navigationSpeedNote.textContent = `${speed.toFixed(2)} m/s 已生效。`;
+    }
+
+    async function selectNavigationSpeed(speed) {
+        navigationSpeedSaving = true;
+        renderNavigationSpeed();
+        try {
+            const result = await session.call('/navigation/set_speed', UI.TYPES.setNavigationSpeed,
+                {speed_mps: speed}, 8000);
+            if (!result.success) throw new Error(result.message || '服务拒绝切换');
+            log(result.message);
+        } catch (error) {
+            log('速度档位保存失败：' + error.message);
+        } finally {
+            navigationSpeedSaving = false;
+            renderNavigationSpeed();
+        }
     }
 
     function requestedInflationRadius() {
@@ -898,6 +963,9 @@
         'click', () => openModal('reboot'));
     document.getElementById('btn-poweroff').addEventListener(
         'click', () => openModal('poweroff'));
+    for (const button of navigationSpeedButtons) {
+        button.addEventListener('click', () => selectNavigationSpeed(Number(button.dataset.navSpeed)));
+    }
     navigationModeButtons.map_2d.addEventListener(
         'click', () => selectNavigationMode('map_2d'));
     navigationModeButtons.terrain_3d.addEventListener(
