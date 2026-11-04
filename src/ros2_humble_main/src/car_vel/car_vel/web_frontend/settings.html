@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
+    <script defer src="recording_visibility.js?v=20261104-1"></script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>设置 · 四足机器人巡检</title>
@@ -131,6 +132,12 @@
             </form>
             <p>请先结束巡检并停止识别。仅保存所选来源的参数；首帧确认后保存，切换失败恢复原来源。设置保存在小电脑，重启后沿用，不随浏览器改变。</p>
             <p id="ordinary-camera-result" role="status" aria-live="polite"></p>
+        </section>
+        <section class="navigation-mode-section" aria-labelledby="recording-display-title">
+            <h2 id="recording-display-title">巡检录像显示</h2>
+            <label class="mapping-filter-toggle"><input id="recording-visible-setting" type="checkbox"> 在巡检页面显示录像按钮</label>
+            <p>此设置仅保存在当前浏览器。正在录像时，停止按钮仍会显示。</p>
+            <p>录像与其他页面并发使用仍待验证，演示前请勿启用录像。</p>
         </section>
         <section class="navigation-mode-section" aria-labelledby="lidar-title">
             <h2 id="lidar-title">雷达网络（MID360s）</h2>

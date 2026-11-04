@@ -48,6 +48,7 @@ from ordinary_camera import (CameraSourceStore, HttpCameraSource, DEFAULT_BODY_U
 from behavior_project import BehaviorSupervisor
 from behavior_speech import BehaviorSpeechService
 from c12_control import C12Control, COMMANDS as C12_COMMANDS
+from c12_recording import C12Recorder
 from c12_stream import C12Streams, C12OrdinarySource, VISIBLE_URL, INFRARED_URL
 
 
@@ -996,6 +997,7 @@ class CameraGateway:
         self.c12 = C12Streams(LatestJpegFrame,
             getattr(args, 'c12_visible_url', VISIBLE_URL),
             getattr(args, 'c12_infrared_url', INFRARED_URL))
+        self.c12_recorder = C12Recorder(self.c12.sources['visible'].url, self.c12.sources['infrared'].url)
         self._camera_change_lock = threading.RLock()
         self._ordinary_source_factory = ordinary_source_factory
         self._camera_source_generation = 0
@@ -2813,6 +2815,7 @@ class CameraGateway:
             self._close_resources()
 
     def _close_resources(self) -> None:
+        self.c12_recorder.close()
         self.c12_control.close()
         self.c12.close()
         if getattr(self, '_behavior', None) is not None:
@@ -3138,6 +3141,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, self.gateway.display_status())
             elif path == '/api/c12/commands':
                 self.send_json(HTTPStatus.OK, C12_COMMANDS)
+            elif path == '/api/c12/recording':
+                self.send_json(HTTPStatus.OK, self.gateway.c12_recorder.status())
             elif path == '/api/c12/status':
                 self.send_json(HTTPStatus.OK, self.gateway.c12.status())
             elif path in ('/api/c12/visible/stream.mjpg', '/api/c12/infrared/stream.mjpg',
@@ -3252,7 +3257,17 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                 if path == "/api/recognition/person/upsert"
                 else 16 * 1024)
             payload = self._read_json(max_bytes)
-            if path == '/api/c12/motion':
+            if path == '/api/c12/recording':
+                operation = payload.get('operation')
+                if operation == 'start':
+                    if self.gateway.camera_source_status()['config']['pipeline'] != 'c12':
+                        raise ValueError('请先切换到 C12 相机链路')
+                    result = self.gateway.c12_recorder.start()
+                elif operation == 'stop':
+                    result = self.gateway.c12_recorder.stop()
+                else:
+                    raise ValueError('无效录像操作')
+            elif path == '/api/c12/motion':
                 if payload.get('operation') != 'stop' and self.gateway.camera_source_status()['config']['pipeline'] != 'c12':
                     raise ValueError('请先切换到 C12 相机链路')
                 result = self.gateway.c12_control.motion(payload)

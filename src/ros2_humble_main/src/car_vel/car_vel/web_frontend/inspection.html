@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
+    <script defer src="recording_visibility.js?v=20261104-1"></script>
+    <script defer src="inspection_recording.js?v=20261104-3"></script>
     <script defer src="c12_controls.js?v=20261104-right"></script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -94,6 +96,10 @@
                     <button id="btn-camera-fullscreen" class="flex" type="button">全屏</button>
                     <button id="btn-camera-snapshot" class="flex" type="button">截图</button>
                     <button id="btn-thermal-fullscreen" class="flex" type="button">热图全屏</button>
+                </div>
+                <div id="inspection-recording-controls" hidden>
+                    <div class="row" style="margin-top:10px"><button id="inspection-record-button" type="button">开始双路录像</button></div>
+                    <p id="inspection-record-status" class="hint" role="status">正在读取录像状态…</p>
                 </div>
                 <p id="camera-hint" class="hint">任务运行时复用两路共享视频；检测点稳定 1 秒后并行进行视觉与高温精检 2 秒。</p>
             </section>
