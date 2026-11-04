@@ -262,7 +262,7 @@ class RouteNavigationManager(Node):
                 'route_point_retry_count', 1).value))
         self._settled_xy_tolerance = max(
             0.05, float(self.declare_parameter(
-                'settled_xy_tolerance', 0.25).value))
+                'settled_xy_tolerance', 0.30).value))
         self._settled_yaw_tolerance = math.radians(max(
             1.0, float(self.declare_parameter(
                 'settled_yaw_tolerance_deg', 20.0).value)))
@@ -709,8 +709,8 @@ class RouteNavigationManager(Node):
         self._preflight_wait_deadline: Optional[float] = None
         self._preflight_wait_next_nomotion_at: Optional[float] = None
         self._preflight_wait_nomotion_requests = 0
-        # A web single-goal refresh deliberately stores no goal pose.  A new
-        # click is required after a new AMCL sample has been confirmed.
+        # Keep the explicit 2D goal through refresh; recheck it before sending.
+        self._single_refresh_pose = None
         self._single_refresh_map_name = ''
         self._single_refresh_baseline_stamp_ns = 0
         self._single_refresh_started_at: Optional[float] = None
@@ -1377,6 +1377,32 @@ class RouteNavigationManager(Node):
                 )
         self._inflation_retry_due = now + self._inflation_retry_delay
 
+    def _drive_stationary_localization_update(self):
+        if (self._navigation_mode != 'map_2d' or self._mode != 'idle'
+                or not self._current_map_name or self._latest_amcl_pose is None
+                or self._single_refresh_map_name or self._lio_recovering):
+            return
+        now = time.monotonic()
+        if now < getattr(self, '_stationary_update_due', 0.0):
+            return
+        future = getattr(self, '_stationary_update_future', None)
+        if future is not None:
+            if not future.done():
+                return
+            try:
+                future.result()
+            except Exception as error:
+                self.get_logger().warning(f'AMCL stationary update failed: {error}')
+            self._stationary_update_future = None
+        self._stationary_update_due = now + 1.0
+        if self._nomotion_update_client.service_is_ready():
+            try:
+                self._stationary_update_future = self._nomotion_update_client.call_async(
+                    EmptyService.Request())
+            except Exception as error:
+                self.get_logger().warning(f'AMCL stationary update unavailable: {error}')
+
+
     def _timer_callback(self) -> None:
         with self._lock:
             failure = self._global_localization_check()
@@ -1398,6 +1424,7 @@ class RouteNavigationManager(Node):
                     self._publish_goal_status(
                         'nav2_ready' if ready else 'waiting_for_nav2')
 
+            self._drive_stationary_localization_update()
             self._drive_inflation_radius_sync()
             self._drive_navigation_speed_sync()
             self._drive_single_localization_refresh()
@@ -3101,6 +3128,7 @@ class RouteNavigationManager(Node):
         self._preflight_wait_nomotion_requests = 0
 
     def _clear_single_localization_refresh(self) -> None:
+        self._single_refresh_pose = None
         self._single_refresh_map_name = ''
         self._single_refresh_baseline_stamp_ns = 0
         self._single_refresh_started_at = None
@@ -3118,8 +3146,8 @@ class RouteNavigationManager(Node):
         self._publish_goal_status('goal_localization_refresh_failed')
         self._publish_all_status()
 
-    def _begin_single_localization_refresh(self) -> None:
-        """Refresh AMCL only; never retain the rejected map-frame goal."""
+    def _begin_single_localization_refresh(self, pose=None) -> None:
+        """Refresh real AMCL samples, then recheck the retained explicit goal."""
         self._clear_single_localization_refresh()
         self._pending_single_pose = None
         if not self._current_map_name:
@@ -3128,16 +3156,16 @@ class RouteNavigationManager(Node):
             self._publish_all_status()
             return
         now = time.monotonic()
+        self._single_refresh_pose = copy.deepcopy(pose)
         self._single_refresh_map_name = self._current_map_name
         self._single_refresh_baseline_stamp_ns = self._latest_amcl_stamp_ns
         self._single_refresh_started_at = now
-        self._single_refresh_deadline = now + self._goal_preflight_wait_timeout
+        self._single_refresh_deadline = now + min(3.0, self._goal_preflight_wait_timeout)
         self._single_refresh_next_nomotion_at = now
         self._single_refresh_nomotion_requests = 0
         self._single_refresh_future = None
         self._status_message = (
-            '定位过期，已丢弃本次目标；正在请求静止定位更新。'
-            '刷新完成后请重新点击目标。')
+            '正在更新定位；更新通过后将继续执行本次目标。')
         self._publish_goal_status('goal_refreshing_localization')
         self._send_zero_velocity()
         self._drive_single_localization_refresh(now)
@@ -3164,7 +3192,7 @@ class RouteNavigationManager(Node):
             return
         # A stale replacement must first wait for the old Nav2 goal to end.
         # In particular, do not announce success while its cancellation is
-        # still pending and do not send the new rejected pose later.
+        # still pending; only revalidate the retained goal after cancellation.
         if self._mode != 'idle':
             return
         future = self._single_refresh_future
@@ -3185,9 +3213,12 @@ class RouteNavigationManager(Node):
             and self._latest_amcl_stamp_ns
             > self._single_refresh_baseline_stamp_ns
         ):
+            pose = self._single_refresh_pose
             self._clear_single_localization_refresh()
-            self._status_message = (
-                '定位已刷新，本次目标未发送；请重新点击目标并再次预检')
+            if pose is not None:
+                self._single_goal_callback(pose)
+                return
+            self._status_message = '定位已刷新'
             self._publish_goal_status('goal_localization_refreshed')
             self._publish_all_status()
             return
@@ -3231,7 +3262,7 @@ class RouteNavigationManager(Node):
                 self._publish_all_status()
                 return
             if result.code == 'localization_stale':
-                self._begin_single_localization_refresh()
+                self._begin_single_localization_refresh(pose)
             else:
                 self._status_message = result.message
                 self._publish_goal_status(self._goal_rejection_status(result))
@@ -4360,7 +4391,7 @@ class RouteNavigationManager(Node):
                                 'goal_localization_refresh_failed')
                             self._publish_all_status()
                             return
-                    self._begin_single_localization_refresh()
+                    self._begin_single_localization_refresh(pose)
                     return
                 self._status_message = preflight.message
                 self._publish_goal_status(

@@ -1,0 +1,6 @@
+# Keep the supplied deployment package byte-for-byte intact.
+* -text
+/output_inference/**/*.bin -filter -diff -merge -text
+/output_inference/**/*.pdmodel -filter -diff -merge -text
+/output_inference/**/*.pdiparams -filter -diff -merge -text
+/output_inference/**/*.pdiparams.info -filter -diff -merge -text

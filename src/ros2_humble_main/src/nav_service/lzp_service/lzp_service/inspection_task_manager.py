@@ -61,7 +61,6 @@ from .environment_alerts import (
     MAX_CO2_THRESHOLD_PPM,
     MIN_CO2_THRESHOLD_PPM,
 )
-from .detection_settings import DetectionSettings
 from .navigation_mode import (
     TERRAIN_3D,
     navigation_mode_label,
@@ -104,8 +103,6 @@ def _confirmed_detections(
         if not bool(detection.get('alert', True)):
             continue
         category = str(detection.get('category') or '')
-        if category in {'cigarettes', 'cigarette', 'cigarette_butt'}:
-            continue  # Retired object category; smoking requires person evidence.
         if category in {'fall', 'fight', 'smoking'}:
             # Behavior is temporal evidence, never an ordinary single-frame box.
             if (detection.get('state') != 'valid'
@@ -127,23 +124,12 @@ def _confirmed_detections(
                     confirmed.append(detection)
                 continue
             if category == 'smoking':
-                details = detection.get('evidence_details') or {}
                 try:
                     score = float(detection.get('confidence'))
-                except (ValueError, TypeError):
+                except (TypeError, ValueError):
                     continue
-                kind = detection.get('score_kind')
-                if (detection.get('scope') != 'person' or detection.get('track_id') is None
-                        or detection.get('measurement_type') != 'associated_detection_score'
-                        or not isinstance(details, dict) or details.get('head_observable') is not True
-                        or not math.isfinite(score) or not 0 <= score <= 1):
-                    continue
-                direct = kind == 'detection_score' and score >= 0.5 and bool(details.get('selected_detection'))
-                hand = details.get('hand_to_mouth') or {}
-                associated = (kind == 'temporally_associated_detection_score'
-                              and isinstance(hand, dict) and hand.get('confirmed') is True
-                              and hand.get('short_occlusion') is not True and bool(hand.get('detection')))
-                if direct or associated:
+                if (detection.get('scope') == 'person' and math.isfinite(score) and 0 <= score <= 1
+                        and detection.get('score_kind') in {'detection_score', 'temporally_associated_detection_score'}):
                     confirmed.append(detection)
                 continue
             if (detection.get('scope') != 'scene'
@@ -202,8 +188,8 @@ def _alert_storage_fields(
         fields['measurement'] = {
             key: detection[key] for key in (
                 'label', 'score_kind', 'scope', 'state', 'updated', 'fresh',
-                'source_epoch', 'stamp_ns', 'prediction_stamp_ns', 'person_id', 'track_id',
-                'evidence_details', 'rule_evidence', 'reason', 'window_seconds', 'confidence')
+                'source_epoch', 'stamp_ns', 'person_id', 'track_id',
+                'evidence_details', 'rule_evidence', 'behavior_evidence', 'reason', 'window_seconds', 'confidence')
             if key in detection
         }
     return fields
@@ -215,7 +201,7 @@ def _detection_summary(detection: Dict[str, Any]) -> str:
     if detection.get('category') == 'fight':
         return f'疑似打架（场景级，模型分数 {float(detection.get("confidence", 0.0)):.0%}）'
     if detection.get('category') == 'smoking':
-        return f'疑似人员吸烟（人物关联检测分数 {float(detection.get("confidence", 0.0)):.0%}，非行为概率）'
+        return '疑似吸烟（香烟检测及动作关联证据）'
     if str(detection.get('measurement_type')) == 'temperature':
         maximum = float(detection.get('max_temperature_c', 0.0))
         threshold = float(detection.get('threshold_c', 0.0))
@@ -385,7 +371,6 @@ class InspectionTaskManager(Node):
                 f'Expired {len(expired_tasks)} inspection reports older than '
                 f'{report_retention_days} days.')
         self._camera = CameraInspectionClient(camera_url, camera_timeout)
-        self._detection_settings = DetectionSettings()
         default_environment_path = (
             Path.home() / '.ros' / 'robot_navigation' /
             'environment_alerts.json')
@@ -1066,11 +1051,11 @@ class InspectionTaskManager(Node):
             'loop_interval_minutes': interval,
             'navigation_mode': prepared['mode'],
             'total_points': len(route['points']) * loop_count,
+            'start_safety_notice_pending': True,
             'total_detection_points': checkpoint_count * loop_count,
             'message': '正在准备已启用的识别项目',
             'started_at': utc_now(), 'resume_state': '',
             'recovery_pending': False,
-            'start_safety_notice_pending': True,
         }
         route_snapshot = self._route_to_dict(route)
         self._database.create_task(
@@ -2397,19 +2382,11 @@ class InspectionTaskManager(Node):
     def _handle_thermal_environment_detection(
             self, detection: Dict[str, Any]) -> None:
         active = self._is_active() and not bool(self._state.get('paused'))
-        settings = getattr(self, '_detection_settings', None)
-        active = active and (settings is None or settings.enabled('thermal'))
         if self._environment_policy.observe_thermal(
                 detection, active=active, now=time.monotonic()):
             self._queue_environment_speech('thermal_high')
 
     def _drive_environment_alerts(self) -> None:
-        settings = getattr(self, '_detection_settings', None)
-        if settings is not None and not settings.allows('co2_high'):
-            self._environment_policy.observe_co2(None, valid=False, active=False, now=time.monotonic())
-            self._last_environment_sample_sequence = self._m701_sample_sequence
-            self._publish_environment_config()
-            return
         active = self._is_active() and not bool(self._state.get('paused'))
         now = time.monotonic()
         if not active:
@@ -2445,6 +2422,7 @@ class InspectionTaskManager(Node):
         except RuntimeError as error:
             self._log(f'巡检安全提示未加入队列：{error}', 'warning')
 
+
     def _send_patrol_safety_notice(self, task_id: str) -> None:
         try:
             result = self._camera.speak_patrol_safety(task_id)
@@ -2453,10 +2431,8 @@ class InspectionTaskManager(Node):
         except Exception as error:
             self._log(f'巡检安全提示请求失败：{error}', 'warning')
 
+
     def _queue_environment_speech(self, key: str) -> None:
-        settings = getattr(self, '_detection_settings', None)
-        if settings is not None and not settings.allows(key):
-            return
         if key in self._environment_speech_pending:
             return
         if key == self._environment_speech_active_key:
@@ -2480,9 +2456,6 @@ class InspectionTaskManager(Node):
             return
         key = self._environment_speech_queue.popleft()
         self._environment_speech_pending.discard(key)
-        settings = getattr(self, '_detection_settings', None)
-        if settings is not None and not settings.allows(key):
-            return
         self._environment_speech_active_key = key
         self._environment_speech_future = self._workers.submit(
             self._camera.speak_environment_alert, key)
@@ -2496,23 +2469,17 @@ class InspectionTaskManager(Node):
             max(0.0, time.monotonic() - received)
             if received > 0.0 else None)
         sample_fresh = age is not None and age <= self._environment_sample_max_age
-        settings = getattr(self, '_detection_settings', None)
-        co2_enabled = settings is None or settings.allows('co2_high')
-        thermal_enabled = settings is None or settings.enabled('thermal')
         return {
             **config,
             **policy,
             'minimum_co2_threshold_ppm': MIN_CO2_THRESHOLD_PPM,
             'maximum_co2_threshold_ppm': MAX_CO2_THRESHOLD_PPM,
             'active_inspection': active,
-            'co2_enabled': co2_enabled,
-            'thermal_enabled': thermal_enabled,
             'sample_fresh': sample_fresh,
             'sample_age_seconds': int(age) if age is not None else None,
             'speech_pending': self._environment_speech_future is not None
             or bool(self._environment_speech_queue),
             'message': (
-                '二氧化碳超限告警已在设置页关闭' if not co2_enabled else
                 '巡检中，环境异常语音告警已启用'
                 if active else '阈值已保存；启动巡检后启用语音告警'),
         }

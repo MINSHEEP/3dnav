@@ -37,6 +37,12 @@ def generate_launch_description():
             'thermal_enabled',
             default_value='true',
             description='Start the independent HCUSBSDK thermal backend'),
+        DeclareLaunchArgument('c12_visible_url',
+            default_value='rtsp://192.168.144.108:554/stream=1',
+            description='C12 visible-light RTSP source'),
+        DeclareLaunchArgument('c12_infrared_url',
+            default_value='rtsp://192.168.144.108:555/stream=2',
+            description='C12 infrared RTSP source'),
         DeclareLaunchArgument(
             'm701_enabled',
             default_value='true',
@@ -218,7 +224,7 @@ def generate_launch_description():
             description='Automatic retries before a failed route point is skipped'),
         DeclareLaunchArgument(
             'settled_xy_tolerance',
-            default_value='0.25',
+            default_value='0.30',
             description='Stable near-goal fallback position tolerance in metres'),
         DeclareLaunchArgument(
             'settled_yaw_tolerance_deg',
@@ -538,6 +544,8 @@ def generate_launch_description():
                 '--inspection-evidence-root',
                 LaunchConfiguration('inspection_evidence_root'),
                 '--thermal-url', LaunchConfiguration('thermal_api_url'),
+                '--c12-visible-url', LaunchConfiguration('c12_visible_url'),
+                '--c12-infrared-url', LaunchConfiguration('c12_infrared_url'),
             ],
             name='usb_camera_web',
             output='screen'),

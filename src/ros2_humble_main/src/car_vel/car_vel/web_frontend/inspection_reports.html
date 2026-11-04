@@ -498,14 +498,13 @@
         }
         const value = Number(alert.confidence);
         if (alert.confidence == null || !Number.isFinite(value)) return '无有效分数';
-        if (alert.category === 'smoking') return `人物关联检测分数 ${Math.round(value * 100)}%（非行为概率）`;
         return `${alert.category === 'fight' ? '场景模型分数 ' : ''}${Math.round(value * 100)}%`;
     }
 
     function alertCategoryLabel(alert) {
         if (alert.category === 'fall') return '疑似人员跌倒';
         if (alert.category === 'fight') return '疑似打架（场景级）';
-        if (alert.category === 'smoking') return '疑似人员吸烟';
+        if (alert.category === 'smoking') return '疑似吸烟';
         return alert.measurement_type === 'temperature'
             ? '高温告警'
             : (alert.category || '未知类别');

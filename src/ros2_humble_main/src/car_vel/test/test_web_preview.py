@@ -67,6 +67,22 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(encode.call_count, 2)
         self.assertEqual(len(cache.entries), 2)
 
+    def test_switch_invalidates_cache_immediately_and_drops_inflight_old_frame(self):
+        state = NS(generation=0, image=b'legacy')
+        cache = PreviewCache({'thermal':lambda:state.image}, clock=lambda:0.,
+            encoder=lambda image,_profile:image, generation=lambda:state.generation)
+        self.assertEqual(cache.frame('thermal','remote'), (1,b'legacy'))
+        state.generation, state.image = 1, b'c12'
+        self.assertEqual(cache.frame('thermal','remote'), (2,b'c12'))
+        def switching_encoder(image, _profile):
+            state.generation += 1
+            return image
+        cache.encoder = switching_encoder
+        state.generation += 1
+        with self.assertRaisesRegex(RuntimeError, '相机链路已切换'):
+            cache.frame('thermal','remote')
+        self.assertEqual(cache.entries['thermal','remote']['sequence'], 2)
+
     def test_three_sources_and_two_profiles_do_not_change_originals(self):
         original = jpeg()
         cache = PreviewCache({key:lambda:original for key in ('raw','yolo','thermal')}, encoder=pil_encoder)
@@ -148,6 +164,8 @@ class HttpTests(unittest.TestCase):
             snapshot=Mock(return_value=self.original),
             get_yolo_frame=Mock(return_value=(3,self.original)),
             thermal_frame=Mock(return_value=jpeg(256,192)))
+        self.gateway.display_thermal_frame = self.gateway.thermal_frame
+        self.gateway.display_generation = lambda: 0
         self.server=CameraWebServer(('127.0.0.1',0),CameraRequestHandler)
         self.server.gateway=self.gateway
         self.server.browser_previews.encoder=pil_encoder

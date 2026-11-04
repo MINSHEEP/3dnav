@@ -3,13 +3,14 @@
     'use strict';
     const bindings = new WeakMap();
     const NAMES = Object.freeze({ fall: '疑似跌倒', lying: '躺卧姿态（未确认跌倒）', fight: '疑似打架', smoking: '疑似吸烟' });
-    const BRANCHES = ['fall', 'fight', 'smoking'];
-    // Poll faster than the result lifetime so valid preview frames can roll over.
-    const POLL_MS = 500;
+    // Fight evidence expires after one second; poll sooner so a healthy stream
+    // does not repeatedly disappear between ordinary 1.5-second status polls.
+    const POLL_MS = 200;
     const REQUEST_TIMEOUT_MS = 5000;
 
     function categoryLabel(category) { return NAMES[category] || category || '行为告警'; }
     function evidenceLabel(alert) {
+        if (alert.category === 'smoking') return '香烟检测及动作关联证据';
         if (alert.category === 'fall' || alert.category === 'lying'
             || alert.score_kind === 'rule_evidence') return '连续姿态规则证据';
         if (alert.category === 'fight') {
@@ -17,24 +18,22 @@
             return value != null && Number.isFinite(Number(value))
                 ? `模型分数 ${Math.round(Number(value) * 100)}%` : '场景行为证据';
         }
-        if (alert.category === 'smoking') {
-            const score = alert.confidence;
-            return score != null && Number.isFinite(Number(score))
-                ? `人物关联检测分数 ${Math.round(Number(score) * 100)}%（非行为概率）` : '人物与吸烟动作关联证据';
-        }
         return `${Math.round(Number(alert.confidence || 0) * 100)}%`;
     }
     function branchLabel(status, key) {
         const branch = status?.branches?.[key] || {};
         if (branch.enabled === false || status?.enabled?.[key] === false) return '已停止（未启用）';
         if (['error', 'unavailable'].includes(branch.state) || (!status?.running && status?.error)) return '不可用';
+        if (branch.state === 'unknown' && branch.reason === 'face_unobservable') return '口部不清晰，无法判断吸烟';
+        if (branch.state === 'slow') return `采样不足（间隔 ${Math.round(branch.cadence.gap_seconds * 1000)} 毫秒）`;
         if (branch.state === 'starting') return '启动中';
         if (!status?.running || branch.state === 'stopped') return '已停止';
         if (branch.state === 'valid' && branch.ready === true && status.fresh === true && branch.fresh !== false) {
+            if (branch.label === 'no_person') return '未检测到人员';
             return NAMES[branch.label] ? `就绪 · ${NAMES[branch.label]}` : '就绪';
         }
-        if (branch.state === 'stale') return '等待连续观测（画面已过期）';
-        if (branch.stale_results > 0 && branch.fresh === false) return '推理结果已过期（处理过慢）';
+        if (branch.stale_results > 0 && branch.fresh === false) return '推理超时，结果不可用';
+        if (branch.state === 'stale') return '结果已过期，等待新推理';
         const window = branch.window || branch.capture_window;
         if (key === 'fight' && window && Number.isFinite(window.samples)) {
             return `采集连续画面 ${window.samples}/${window.required_samples || 8}`;
@@ -45,24 +44,26 @@
         const yolo = detection?.yolo || {};
         const thermal = detection?.thermal || {};
         const behavior = detection?.behavior || {};
-        const enabled = BRANCHES.some(key => behavior.enabled?.[key] === true);
-        const required = detection?.requirements || {yolo: true, thermal: true, behavior: enabled};
-        if (!required.yolo && !required.thermal && !enabled) return '识别项目已全部关闭，可在设置页开启。';
+        const enabled = ['fall', 'fight', 'smoking'].some(key => behavior.enabled?.[key] === true);
         const running = Boolean(detection?.running || yolo.running || thermal.manual_detection_enabled || behavior.running);
         if (!running) return '识别已停止。';
-        if ((required.yolo && (yolo.error || !yolo.running)) || (required.thermal && thermal.error)
+        if (yolo.suspended_by_behavior && behavior.running) {
+            const thermalNotice = thermal.error ? '热成像不可用；' : '';
+            return thermalNotice + (behavior.ready && behavior.fresh ? '行为识别运行中，普通 YOLO 因互斥暂停。' : '行为识别启动或预热中，普通 YOLO 因互斥暂停。');
+        }
+        if (yolo.error || !yolo.running || thermal.error
             || (enabled && (!behavior.running || behavior.error
                 || Object.values(behavior.branches || {}).some(branch => branch.enabled && branch.state === 'error')))) {
             return '识别部分不可用，请查看各项状态。';
         }
-        if ((required.yolo && !yolo.ready) || (required.thermal && !thermal.ready) || (enabled && !behavior.ready)) return '识别启动中，等待各项就绪。';
+        if (!yolo.ready || !thermal.ready || (enabled && !behavior.ready)) return '识别启动中，等待各项就绪。';
         return '视觉识别、高温检测及已启用行为识别已就绪。';
     }
 
     function attach(root, options = {}) {
         if (!root) return null;
         bindings.get(root)?.dispose();
-        root.innerHTML = '<div class="behavior-head"><strong>人员行为识别</strong>'
+        root.innerHTML = '<div class="behavior-head"><strong>人员行为识别 · 完整新版</strong>'
             + '<span data-behavior-state aria-live="polite">检查中</span></div>'
             + '<div class="behavior-branches">'
             + '<label><input type="checkbox" data-behavior-toggle="fall" disabled> 疑似跌倒'
@@ -71,15 +72,14 @@
             + '<span data-behavior-branch="fight">检查中</span></label>'
             + '<label><input type="checkbox" data-behavior-toggle="smoking" disabled> 疑似吸烟'
             + '<span data-behavior-branch="smoking">检查中</span></label></div>'
-            + '<p class="hint" data-behavior-note>正在读取状态；开关仅设置识别项目，启动识别或巡检后生效。</p>';
-        const inputs = BRANCHES.map(key => root.querySelector(`[data-behavior-toggle="${key}"]`));
+            + '<p class="hint" data-behavior-note>正在读取状态；行为识别开启时普通 YOLO 暂停；关闭行为识别可恢复普通 YOLO。</p>';
+        const inputs = ['fall', 'fight', 'smoking'].map(key => root.querySelector(`[data-behavior-toggle="${key}"]`));
         const image = options.image;
         const message = options.message;
         const baseUrl = options.baseUrl || '';
         const fetcher = options.fetch || global.fetch.bind(global);
         let status = null, disposed = false, previewActive = false, busy = false;
         let statusTimer = null, expiryTimer = null, statusRequest = null, frameRequest = null, configRequest = null;
-        let imageExpiryTimer = null, statusFrameDeadline = 0;
         let statusGeneration = 0, frameGeneration = 0, objectUrl = null, lastFrameKey = '';
         let lastAttemptAt = 0, sourceGeneration;
         const listeners = [];
@@ -89,8 +89,10 @@
         };
         const allowed = () => !disposed && !global.document.hidden
             && (!options.isPreviewAllowed || options.isPreviewAllowed());
-        function clearImage(text) {
-            global.clearTimeout(imageExpiryTimer);
+        function clearPreview(text = '等待当前来源的行为识别画面…') {
+            frameGeneration += 1;
+            frameRequest?.abort();
+            frameRequest = null;
             lastFrameKey = '';
             if (objectUrl) global.URL.revokeObjectURL(objectUrl);
             objectUrl = null;
@@ -99,12 +101,6 @@
                 image.classList.remove('ready');
             }
             if (message && previewActive) { message.hidden = false; message.textContent = text; }
-        }
-        function clearPreview(text = '等待当前来源的行为识别画面…') {
-            frameGeneration += 1;
-            frameRequest?.abort();
-            frameRequest = null;
-            clearImage(text);
         }
         async function request(path, options = {}, kind) {
             const controller = new global.AbortController();
@@ -135,9 +131,12 @@
             else if (status.error) stateNode.textContent = '不可用';
             else if (!status.running) stateNode.textContent = '已停止';
             else if (status.ready && status.fresh) stateNode.textContent = '就绪';
+            else if (Object.values(status.branches || {}).some(branch => branch.enabled && branch.state === 'slow')) stateNode.textContent = '连续观测性能不足';
+            else if (Object.values(status.branches || {}).some(branch => branch.enabled && branch.stale_results > 0 && branch.fresh === false)) stateNode.textContent = '部分推理超时';
             else if (Object.values(status.branches || {}).some(branch => branch.state === 'starting')) stateNode.textContent = '启动中';
+            else if (Object.values(status.branches || {}).some(branch => branch.enabled && branch.state === 'unknown')) stateNode.textContent = '部分画面条件不足';
             else stateNode.textContent = '等待连续观测';
-            BRANCHES.forEach((key, index) => {
+            ['fall', 'fight', 'smoking'].forEach((key, index) => {
                 const known = typeof status?.enabled?.[key] === 'boolean';
                 inputs[index].disabled = busy || !known;
                 if (known) inputs[index].checked = status.enabled[key];
@@ -146,10 +145,9 @@
             root.querySelector('[data-behavior-note]').textContent = !status
                 ? '行为识别服务暂不可用，正在重试。'
                 : (status.error ? `${status.error}。` : '')
-                    + '开关仅设置识别项目，启动识别或巡检后生效。疑似事件需人工核实；等待观测不代表正常。'
+                    + '行为识别开启时普通 YOLO 暂停；关闭行为识别可恢复普通 YOLO。疑似事件需人工核实；等待观测不代表正常。'
                     + (status.branches?.fight?.timing_ms?.fight != null
                         ? ` 打架推理 ${Math.round(status.branches.fight.timing_ms.fight)} 毫秒。` : '')
-                    + (status.preview_branch ? ` 当前画面：${status.preview_branch === 'fight' ? '打架' : '人物姿态与吸烟'}检测结果。` : '')
                     + (status.speech?.error ? ` 语音：${status.speech.error}` : '');
             options.onStatus?.(status);
         }
@@ -160,38 +158,31 @@
                 return;
             }
             const epoch = String(status.source_epoch), stamp = String(status.frame_stamp_ns || status.stamp_ns);
-            const view = status.preview_branch || '';
-            const key = `${epoch}:${stamp}:${view}`;
-            const deadline = statusFrameDeadline;
+            const key = `${epoch}:${stamp}`;
             if (lastFrameKey === key || Date.now() - lastAttemptAt < POLL_MS) return;
             lastAttemptAt = Date.now();
             const generation = frameGeneration;
             try {
-                const query = `epoch=${encodeURIComponent(epoch)}&stamp=${encodeURIComponent(stamp)}`
-                    + (view ? `&view=${encodeURIComponent(view)}` : '');
-                const frame = await request(`/api/behavior/frame.jpg?${query}`, {}, 'frame');
+                const frame = await request(`/api/behavior/frame.jpg?epoch=${encodeURIComponent(epoch)}&stamp=${encodeURIComponent(stamp)}`, {}, 'frame');
                 if (disposed || generation !== frameGeneration || !previewActive || !allowed()) return;
+                const frameStamp = frame.headers.get('X-Behavior-Stamp-Ns');
+                // The image carries its own annotations. Inference may advance
+                // after the status request; a newer same-source frame is valid.
                 if (String(frame.headers.get('X-Behavior-Source-Epoch')) !== epoch
-                    || String(frame.headers.get('X-Behavior-Stamp-Ns')) !== stamp
+                    || BigInt(frameStamp) < BigInt(stamp)
                     || String(status?.source_epoch) !== epoch
-                    || String(status?.frame_stamp_ns || status?.stamp_ns) !== stamp
-                    || (status?.preview_branch || '') !== view || !status?.fresh || !status?.running
-                    || Date.now() >= deadline) {
-                    if (!objectUrl) clearImage('画面已更新，正在获取当前识别结果…');
+                    || String(status?.frame_stamp_ns || status?.stamp_ns) !== stamp || !status?.fresh || !status?.running) {
+                    clearPreview('画面已更新，正在获取当前识别结果…');
                     return;
                 }
                 const previous = objectUrl;
                 objectUrl = global.URL.createObjectURL(frame.blob);
                 image.src = objectUrl;
-                lastFrameKey = key;
-                global.clearTimeout(imageExpiryTimer);
-                imageExpiryTimer = global.setTimeout(() => {
-                    if (lastFrameKey === key) clearImage('行为画面已过期，等待新的连续观测。');
-                }, Math.max(0, deadline - Date.now()));
+                lastFrameKey = `${epoch}:${frameStamp}`;
                 if (previous) global.URL.revokeObjectURL(previous);
             } catch (_error) {
                 if (disposed || generation !== frameGeneration) return;
-                if (!objectUrl) clearImage('行为画面暂不可用，正在重试…');
+                clearPreview('行为画面暂不可用，正在重试…');
             }
         }
         function schedule() {
@@ -208,11 +199,9 @@
                 if (status && String(status.source_epoch) !== String(incoming.source_epoch)) clearPreview();
                 status = incoming;
                 global.clearTimeout(expiryTimer);
-                statusFrameDeadline = 0;
                 if (status.fresh) {
                     const remaining = Math.max(0, (Number(status.max_result_age_seconds || 5)
                         - Number(status.frame_age_seconds || 0)) * 1000);
-                    statusFrameDeadline = Date.now() + remaining;
                     expiryTimer = global.setTimeout(() => {
                         if (disposed || status !== incoming) return;
                         status = { ...status, fresh: false, ready: false };
@@ -248,10 +237,12 @@
             try {
                 const incoming = await request('/api/behavior/config', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ fall_enabled: enabled.fall, fight_enabled: enabled.fight, smoking_enabled: enabled.smoking,
-                        ...(Number.isInteger(status.settings_version) ? {expected_version: status.settings_version} : {}) })
+                    body: JSON.stringify({ fall_enabled: enabled.fall, fight_enabled: enabled.fight, smoking_enabled: enabled.smoking ?? false })
                 }, 'config');
-                if (!disposed) status = incoming;
+                if (!disposed) {
+                    status = incoming;
+                    global.sessionStorage.setItem('inspection.behaviorSelection', JSON.stringify(incoming.enabled));
+                }
             } catch (_error) {
                 if (!disposed) {
                     status = { ...previous, fresh: false, ready: false };
@@ -261,7 +252,7 @@
                 if (!disposed) { busy = false; render(); refresh(); }
             }
         }
-        BRANCHES.forEach((key, index) => listen(inputs[index], 'change', () => configure(key, inputs[index])));
+        ['fall', 'fight', 'smoking'].forEach((key, index) => listen(inputs[index], 'change', () => configure(key, inputs[index])));
         if (image) {
             listen(image, 'load', () => {
                 if (!previewActive || !objectUrl || image.getAttribute('src') !== objectUrl || !allowed()) return;

@@ -18,7 +18,6 @@ from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
-from detection_switches import DetectionSettings
 
 
 DEFAULT_THRESHOLD_C = 60.0
@@ -306,14 +305,10 @@ class ThermalMonitor:
         stale_seconds: float = DEFAULT_STALE_SECONDS,
         wall_clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
-        detection_settings=None,
     ) -> None:
         if stale_seconds <= 0:
             raise ValueError("热成像帧过期时间必须大于 0")
         self.config_store = config_store
-        self._detection_settings = detection_settings or DetectionSettings()
-        self._configured_enabled = None
-        self._detection_generation = 0
         self.stale_seconds = float(stale_seconds)
         self._wall_clock = wall_clock
         self._condition = threading.Condition(threading.RLock())
@@ -372,16 +367,9 @@ class ThermalMonitor:
         return self.status()
 
     def _detection_enabled_locked(self) -> bool:
-        with self._condition:
-            configured = self._detection_settings.enabled('thermal')
-            if configured != self._configured_enabled:
-                self._detector.reset()
-                self._events.clear()
-                self._detection_generation += 1
-                self._configured_enabled = configured
-            if not configured or self._mode == "paused":
-                return False
-            return self._manual_detection_enabled or self._mode in {"transit", "inspection"}
+        if self._mode == "paused":
+            return False
+        return self._manual_detection_enabled or self._mode in {"transit", "inspection"}
 
     def ingest(self, sample: ThermalSample) -> dict[str, Any] | None:
         sample.validate()
@@ -430,31 +418,23 @@ class ThermalMonitor:
 
     def events(self, since: int) -> dict[str, Any]:
         with self._condition:
-            enabled = self._detection_enabled_locked()
-            items = [dict(item) for item in self._events if enabled and int(item["sequence"]) > int(since)]
+            items = [dict(item) for item in self._events if int(item["sequence"]) > int(since)]
             sequence = self._event_sequence
         return {"success": True, "sequence": sequence, "events": items}
 
     def capture(self, duration_seconds: float = 2.0) -> dict[str, Any]:
-        if not self._detection_settings.enabled('thermal'):
-            return dict(success=True, disabled=True, detections=[])
         duration = min(10.0, max(0.0, float(duration_seconds)))
         deadline = time.monotonic() + duration
         candidates: list[ThermalSample] = []
         with self._condition:
             starting_sequence = self._frame_sequence
             starting_generation = self._backend_generation
-            self._detection_enabled_locked()
-            detection_generation = self._detection_generation
             if self._latest is not None:
                 candidates.append(self._latest)
             observed_sequence = self._frame_sequence
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
                 self._condition.wait(min(remaining, 0.25))
-                self._detection_enabled_locked()
-                if detection_generation != self._detection_generation:
-                    return dict(success=True, disabled=True, detections=[], reason='检测开关变化，本次旧采样已作废')
                 if self._backend_generation != starting_generation:
                     raise RuntimeError("热成像采集已中断，本次抓拍作废，请恢复后重试")
                 if self._frame_sequence != observed_sequence and self._latest is not None:
@@ -515,7 +495,6 @@ class ThermalMonitor:
                 "mode": self._mode,
                 "task_id": self._task_id,
                 "detection_enabled": enabled,
-                "configured_enabled": self._configured_enabled,
                 "manual_detection_enabled": self._manual_detection_enabled,
                 "alarm_active": self._detector.active,
                 "peak_temperature_c": self._detector.peak_temperature_c,

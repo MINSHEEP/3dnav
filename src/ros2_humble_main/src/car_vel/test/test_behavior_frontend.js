@@ -28,11 +28,12 @@ class Element {
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 function harness() {
     let now = 10000, id = 0, urls = 0;
-    const timers = new Map(), requests = [], revoked = [];
+    const timers = new Map(), requests = [], revoked = [], saved = new Map();
     const window = new Element(), document = new Element();
     document.hidden = false;
     Object.assign(window, {
         document, AbortController,
+        sessionStorage: { setItem(key, value) { saved.set(key, value); }, getItem(key) { return saved.get(key) || null; } },
         setTimeout(fn, delay) { const key = ++id; timers.set(key, { fn, due: now + delay }); return key; },
         clearTimeout(key) { timers.delete(key); },
         URL: { createObjectURL: () => `blob:behavior-${++urls}`, revokeObjectURL: value => revoked.push(value) },
@@ -66,7 +67,7 @@ function harness() {
         }
         now = end; await flush();
     }
-    return { window, document, root, image, message, attach, requests, timers, pending, respond, advance, revoked };
+    return { window, document, root, image, message, attach, requests, timers, pending, respond, advance, revoked, saved };
 }
 function status(overrides = {}) {
     return { success: true, running: true, ready: true, fresh: true, error: null,
@@ -74,8 +75,7 @@ function status(overrides = {}) {
         max_result_age_seconds: 5, frame_age_seconds: 0.5,
         enabled: { fall: true, fight: true, smoking: true },
         branches: { fall: { enabled: true, state: 'valid', ready: true, label: 'fall' },
-            fight: { enabled: true, state: 'valid', ready: true, label: 'normal' },
-            smoking: { enabled: true, state: 'valid', ready: true, label: 'smoking' } }, ...overrides };
+            fight: { enabled: true, state: 'valid', ready: true, label: 'normal' } }, ...overrides };
 }
 function headers(value) { return { 'X-Behavior-Source-Epoch': String(value.source_epoch),
     'X-Behavior-Stamp-Ns': value.frame_stamp_ns }; }
@@ -108,13 +108,29 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     const fallToggle = h.root.querySelector('[data-behavior-toggle="fall"]');
     fallToggle.checked = false; fallToggle.emit('change'); await flush();
     const config = h.pending('/config')[0];
-    assert.deepStrictEqual(JSON.parse(config.options.body), { fall_enabled: false, fight_enabled: true, smoking_enabled: true }, 'one switch preserves the other branch');
+    assert.deepStrictEqual(JSON.parse(config.options.body), { fall_enabled: false, fight_enabled: true, smoking_enabled: true }, 'switching fall preserves the other branches');
     assert.strictEqual(h.image.src, '', 'config clears previous temporal evidence immediately');
     const stoppedFall = status({ source_epoch: 5, fresh: false, ready: false,
-        enabled: {fall: false, fight: true}, branches: {fall: {enabled: false, state:'disabled'}, fight:{enabled:true,state:'warming'}} });
+        enabled: {fall: false, fight: true, smoking: true}, branches: {fall: {enabled: false, state:'disabled'}, fight:{enabled:true,state:'warming'}} });
     await h.respond('/config', stoppedFall); await h.respond('/status', stoppedFall);
     assert.strictEqual(branch(h, 'fall'), '已停止（未启用）');
     assert.strictEqual(branch(h, 'fight'), '等待连续观测');
+    const fightToggle = h.root.querySelector('[data-behavior-toggle="fight"]');
+    fightToggle.checked = false; fightToggle.emit('change'); await flush();
+    assert.deepStrictEqual(JSON.parse(h.pending('/config')[0].options.body),
+        {fall_enabled: false, fight_enabled: false, smoking_enabled: true});
+    const smokingOnly = status({source_epoch: 6, fresh: false, ready: false,
+        enabled: {fall: false, fight: false, smoking: true}, branches: {}});
+    await h.respond('/config', smokingOnly); await h.respond('/status', smokingOnly);
+    const smokeToggle = h.root.querySelector('[data-behavior-toggle="smoking"]');
+    smokeToggle.checked = false; smokeToggle.emit('change'); await flush();
+    assert.deepStrictEqual(JSON.parse(h.pending('/config')[0].options.body),
+        {fall_enabled: false, fight_enabled: false, smoking_enabled: false});
+    const noneEnabled = status({source_epoch: 7, running: false, fresh: false, ready: false,
+        enabled: {fall: false, fight: false, smoking: false}, branches: {}});
+    await h.respond('/config', noneEnabled); await h.respond('/status', noneEnabled);
+    assert.deepStrictEqual(JSON.parse(h.saved.get('inspection.behaviorSelection')),
+        {fall:false, fight:false, smoking:false}, 'explicitly disabling all must clear the remembered selection');
     assert.ok(h.requests.every(r => /\/api\/behavior\/(status|config|frame\.jpg)/.test(r.url)), 'no robot motion or camera control request');
     widget.dispose(); assert.strictEqual(h.timers.size, 0);
 
@@ -132,7 +148,8 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     await race.respond('/frame.jpg', {}, { ...headers(newer), 'X-Behavior-Source-Epoch': '4' });
     assert.strictEqual(race.image.src, '', 'mismatched frame provenance is rejected');
     await race.advance(1500); await race.respond('/status', newer);
-    await race.respond('/frame.jpg', {}, headers(newer)); race.image.emit('load');
+    await race.respond('/frame.jpg', {}, { ...headers(newer), 'X-Behavior-Stamp-Ns': '1793111112000000766' }); race.image.emit('load');
+    assert.ok(race.image.src, 'newer same-source annotated frame is accepted at nanosecond precision');
     assert.ok(race.image.src);
     const runningFrame = race.image.src;
     await race.advance(1500); await race.respond('/status', status({running:false, fresh:false, ready:false}));
@@ -141,21 +158,10 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     assert.strictEqual(branch(race,'fall'), '已停止');
     widget.dispose();
 
-    // Inference may advance between status polling and JPEG delivery.
-    const advancing = harness(); widget = advancing.attach();
-    const first = status({frame_age_seconds: 0});
-    await advancing.respond('/status', first);
-    widget.setPreviewActive(true);
-    await advancing.respond('/frame.jpg', {}, headers(first)); advancing.image.emit('load');
-    const original = advancing.image.src;
-    await advancing.advance(1500);
-    const second = status({frame_stamp_ns: '1793111112000000123'});
-    await advancing.respond('/status', second);
-    await advancing.respond('/frame.jpg', {}, headers(status({frame_stamp_ns: '1793111112000000124'})));
-    assert.strictEqual(advancing.image.src, original, 'an updated frame must not blank the last still-fresh preview');
-    assert.strictEqual(advancing.message.hidden, true);
-    await advancing.advance(3500);
-    assert.strictEqual(advancing.image.src, '', 'the retained preview still expires at its own deadline');
+    const older = harness(); widget = older.attach();
+    await older.respond('/status', newer); widget.setPreviewActive(true);
+    await older.respond('/frame.jpg', {}, { ...headers(newer), 'X-Behavior-Stamp-Ns': '1793111112000000764' });
+    assert.strictEqual(older.image.src, '', 'older frames remain rejected');
     widget.dispose();
 
     // Lost status and body timeouts do not leave a convincing stale image visible.
@@ -198,7 +204,7 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
         fall:{enabled:true,state:'valid',ready:true,fresh:true,label:'no_person'},
         fight:{enabled:true,state:'warming',ready:false,fresh:false,stale_results:3}
     }}));
-    assert.strictEqual(branch(split,'fight'), '推理结果已过期（处理过慢）');
+    assert.strictEqual(branch(split,'fight'), '推理超时，结果不可用');
     await split.advance(500);
     await split.respond('/status', status({fresh:false, ready:false, branches:{
         fall:{enabled:true,state:'valid',ready:true,fresh:true,label:'no_person'},
@@ -207,9 +213,6 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     assert.ok(!branch(split,'fall').startsWith('就绪'), 'preview expiration cannot keep a cached branch ready');
     widget.dispose();
     assert.strictEqual(labels.categoryLabel('lying'), '躺卧姿态（未确认跌倒）');
-    assert.strictEqual(labels.categoryLabel('smoking'), '疑似吸烟');
-    assert.strictEqual(labels.evidenceLabel({category:'smoking', confidence:.4}), '人物关联检测分数 40%（非行为概率）');
-    assert.ok(source.includes('data-behavior-toggle="smoking"'));
     assert.strictEqual(labels.evidenceLabel({category:'fall', confidence:null}), '连续姿态规则证据');
     assert.strictEqual(labels.evidenceLabel({category:'fight',confidence:0.89}), '模型分数 89%');
     const ready = {running:true, yolo:{running:true,ready:true}, thermal:{ready:true},behavior:status()};
@@ -217,6 +220,9 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
     assert.ok(labels.recognitionLabel({...ready, yolo:{running:true,ready:false}}).includes('启动中'));
     assert.ok(labels.recognitionLabel({...ready, yolo:{running:false,error:'failed'}}).includes('部分不可用'), 'later visual-process failure cannot advertise everything ready');
     assert.ok(labels.recognitionLabel({...ready, behavior:warming}).includes('启动中'));
+    const suspended = {...ready,yolo:{running:false,suspended_by_behavior:true}};
+    assert.ok(labels.recognitionLabel(suspended).includes('YOLO 因互斥暂停'));
+    assert.ok(labels.recognitionLabel({...suspended,thermal:{error:'offline'}}).includes('热成像不可用'));
 
     for (const name of ['camera.html','inspection.html']) {
         const html = fs.readFileSync(path.join(web,name),'utf8');
@@ -226,5 +232,5 @@ const branch = (h, key) => h.root.querySelector(`[data-behavior-branch="${key}"]
         assert.ok(html.includes('/api/thermal/stream.mjpg'), 'thermal preview remains independent');
         new Function(html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>')));
     }
-    console.log('behavior frontend: independent controls, honest readiness, exact frames, bounded retry, source races, cleanup and no motion: OK');
+    console.log('behavior frontend: unified project control, honest readiness, exact frames, bounded retry, source races, cleanup and no motion: OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

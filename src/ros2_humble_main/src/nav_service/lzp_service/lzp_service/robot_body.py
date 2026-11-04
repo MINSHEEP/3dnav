@@ -148,7 +148,8 @@ class BodySupervisor:
             self.error = self.error or '本体控制进程退出；不会自动重启或恢复运动，请检查连接后重新应用'
             self.status = {}
 
-    def apply(self, body, profile, expected_version, idle_check):
+    def apply(self, body, profile, expected_version, idle_check, offline_xingji_powered_off=False,
+              switch_confirmed=False):
         if self.config is None:
             raise ValueError(self.error)
         if expected_version != self.config['version']:
@@ -162,7 +163,11 @@ class BodySupervisor:
         try:
             if self.worker and self.worker.alive():
                 # Worker processes the barrier in the same loop as ROS commands.
-                reply = self.worker.request('prepare', timeout=3.0)
+                confirmed = (offline_xingji_powered_off is True and
+                             self.config['selected'] == 'xingji' and body == 'gangben_zsl1')
+                operation = ('prepare_confirmed' if switch_confirmed else
+                             'prepare_xingji_powered_off' if confirmed else 'prepare')
+                reply = self.worker.request(operation, timeout=3.0)
                 if not reply.get('success'):
                     raise ValueError(reply.get('message', '旧本体尚未安全停放'))
                 replacing = True

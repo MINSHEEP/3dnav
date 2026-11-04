@@ -4,9 +4,10 @@ import multiprocessing
 import threading
 import time
 
-from std_msgs.msg import String
+import rclpy
+from std_msgs.msg import Empty, String
 from rclpy.qos import QoSProfile, DurabilityPolicy
-from lzp_interface.srv import SetRobotBody
+from lzp_interface.srv import ControlCampusMission, ControlInspectionTask, SetRobotBody
 
 from lzp_service.robot_body import BodySupervisor
 
@@ -138,12 +139,74 @@ class RobotBodyManager:
         if self.mode_locked:
             raise ValueError('导航、巡检或园区任务仍在运行/暂停，请先结束任务')
 
+    def stop_for_switch(self):
+        # A separate node can receive service replies while the manager's
+        # single-threaded executor is handling the switch request.
+        node = rclpy.create_node('robot_body_switch_cleanup')
+        mode = {}
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        def update(message):
+            mode.clear()
+            mode.update(json.loads(message.data))
+        node.create_subscription(String, '/navigation/mode', update, qos)
+        publisher = node.create_publisher(Empty, '/cancel_navigation', 10)
+        try:
+            deadline = time.monotonic() + 5.0
+            while not mode and time.monotonic() < deadline:
+                rclpy.spin_once(node, timeout_sec=0.1)
+            if not mode:
+                raise RuntimeError('无法读取任务状态，未切换本体')
+            for key, service_type, name, command in (
+                ('campus_mission_active', ControlCampusMission, '/control_campus_mission', 'stop'),
+                ('inspection_active', ControlInspectionTask, '/inspection/control', 'cancel'),
+            ):
+                if not mode.get(key):
+                    continue
+                client = node.create_client(service_type, name)
+                if not client.wait_for_service(timeout_sec=3.0):
+                    raise RuntimeError(f'无法连接 {name}，未切换本体')
+                request = service_type.Request()
+                request.command = command
+                future = client.call_async(request)
+                rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+                if not future.done() or future.result() is None or not future.result().success:
+                    raise RuntimeError(f'无法结束 {name} 任务，未切换本体')
+            if mode.get('execution_mode') != 'idle':
+                deadline = time.monotonic() + 3.0
+                while publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                if publisher.get_subscription_count() == 0:
+                    raise RuntimeError('无法连接导航取消接口，未切换本体')
+                publisher.publish(Empty())
+            stopped, message = self.node._stop_all_modes()
+            if not stopped:
+                raise RuntimeError(f'停止建图或导航失败：{message}')
+            self.node.publish_status()
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                rclpy.spin_once(node, timeout_sec=0.1)
+                if mode.get('locked') is False:
+                    return
+            raise RuntimeError('任务未确认停止，未切换本体')
+        finally:
+            node.destroy_node()
+
     def select(self, request, response):
         # A switch and a page-driven launch cannot interleave.
         with self.node.transition_lock:
             try:
-                self.supervisor.apply(request.body_id, json.loads(request.profile_json),
-                                      request.expected_version, self.idle_check)
+                profile = json.loads(request.profile_json)
+                confirmed = profile.pop('offline_xingji_powered_off', False)
+                switch_confirmed = profile.pop('switch_confirmed', False)
+                if type(confirmed) is not bool:
+                    raise ValueError('星玑关机确认无效')
+                if type(switch_confirmed) is not bool:
+                    raise ValueError('切换确认无效')
+                self.supervisor.apply(request.body_id, profile,
+                                      request.expected_version,
+                                      self.stop_for_switch if switch_confirmed else self.idle_check,
+                                      offline_xingji_powered_off=confirmed,
+                                      switch_confirmed=switch_confirmed)
                 response.success = True
                 response.message = '本体已切换并保存；未自动站立。更换本体后请重新确认定位'
             except Exception as error:

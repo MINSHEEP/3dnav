@@ -126,6 +126,7 @@ let cloudRenders = 0;
 let cloudClears = 0;
 const identityContext = {
   savedMapCloud: null,
+  recoverActiveRouteMap() {},
   document: { getElementById: () => cloudStatus },
   navigationPointCloudViewer: {
     setPointCloud() { cloudRenders += 1; return { renderedPoints: 3, sourcePoints: 4 }; },

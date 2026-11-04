@@ -1,0 +1,646 @@
+{
+  "version": "cpu-yolo26s-fp32-20261102",
+  "baseline_version": "cpu-openvino-speed-20261102",
+  "baseline_archive_sha256": "013aa4860f6b5189e9bf70234bad1abb11e65903aa23b096570f96092ea70ac7",
+  "date": "2026-11-02",
+  "target": "Intel i5-13500H CPU, existing environment, production recognition left running",
+  "candidate": "YOLO26s-pose OpenVINO FP32; unchanged auxiliary models and thresholds",
+  "scope": "Real models in isolated process; no ROS/display/decoding cost. Existing production recognition stays running.",
+  "aggregate": {
+    "baseline": {
+      "results": 127,
+      "wall_seconds": 55.701854406994244,
+      "results_hz": 2.2799959059182267
+    },
+    "candidate": {
+      "results": 130,
+      "wall_seconds": 56.5514647390155,
+      "results_hz": 2.2987910322031238
+    }
+  },
+  "speed_ratio": 1.0082434912431686,
+  "case_count": 6,
+  "cases": {
+    "07_fall": {
+      "source_sha256": "86a20851a1d3bfacbe11d8977972f95a256893b80cd4de66dc7bb224a4dca55b",
+      "source_seconds": 9.0254,
+      "same_frames": {
+        "fall": {
+          "baseline": [
+            1.888266667,
+            2.016366667,
+            2.1444,
+            2.288166667,
+            2.416233333,
+            2.560033333,
+            2.6883,
+            2.8164,
+            2.960166667,
+            3.0882,
+            3.2164,
+            3.360166667,
+            3.488433333,
+            3.632066667,
+            3.760233333,
+            3.8882,
+            4.032466667,
+            4.1602,
+            4.304166667,
+            4.4322,
+            4.560266667,
+            4.704466667,
+            4.832166667,
+            4.960233333,
+            5.1046,
+            5.232233333,
+            5.376166667,
+            5.504366667,
+            5.632266667,
+            5.7761,
+            5.904433333,
+            6.032366667,
+            6.176133333,
+            6.304433333,
+            6.448266667,
+            6.5763,
+            6.704266667,
+            6.8483,
+            6.976233333,
+            7.104433333,
+            7.248333333,
+            7.376333333,
+            7.520033333,
+            7.648366667,
+            7.776233333,
+            7.920066667,
+            8.048466667,
+            8.1762,
+            8.320133333,
+            8.4486,
+            8.592066667,
+            8.720166667,
+            8.848433333,
+            8.992066667
+          ],
+          "candidate": [
+            2.288166667,
+            2.416233333,
+            2.560033333,
+            2.6883,
+            2.8164,
+            2.960166667,
+            3.0882,
+            3.2164,
+            3.360166667,
+            3.488433333,
+            3.632066667,
+            3.760233333,
+            3.8882,
+            4.032466667,
+            4.560266667,
+            4.704466667,
+            4.832166667,
+            4.960233333,
+            5.1046,
+            5.232233333,
+            5.376166667,
+            5.504366667,
+            5.632266667,
+            5.7761,
+            5.904433333,
+            6.032366667,
+            6.176133333,
+            6.304433333,
+            6.448266667,
+            6.5763,
+            6.704266667,
+            6.8483,
+            6.976233333,
+            7.104433333,
+            7.248333333,
+            7.376333333,
+            7.520033333,
+            7.648366667,
+            7.776233333,
+            7.920066667,
+            8.048466667,
+            8.1762,
+            8.320133333,
+            8.4486,
+            8.592066667,
+            8.720166667,
+            8.848433333,
+            8.992066667
+          ],
+          "lost": [
+            1.888266667,
+            2.016366667,
+            2.1444,
+            4.1602,
+            4.304166667,
+            4.4322
+          ],
+          "added": []
+        },
+        "smoking": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "fight": {
+          "baseline": [
+            3.0882,
+            3.2164,
+            3.360166667,
+            3.488433333
+          ],
+          "candidate": [
+            3.0882,
+            3.2164,
+            3.360166667,
+            3.488433333
+          ],
+          "lost": [],
+          "added": []
+        }
+      },
+      "realtime": {
+        "baseline": {
+          "results": 21,
+          "wall_seconds": 9.439404523996927,
+          "results_hz": 2.2247166064992383,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            6.81396484375,
+            6.64697265625,
+            4.90673828125
+          ],
+          "load_end": [
+            7.53173828125,
+            6.80712890625,
+            4.97802734375
+          ]
+        },
+        "candidate": {
+          "results": 22,
+          "wall_seconds": 9.221068315004231,
+          "results_hz": 2.385840690953595,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            7.53173828125,
+            6.80712890625,
+            4.97802734375
+          ],
+          "load_end": [
+            7.7294921875,
+            6.8603515625,
+            5.00537109375
+          ]
+        }
+      }
+    },
+    "16_fight": {
+      "source_sha256": "1ee09f90f9e36db91885b5d9f90e981cd7fe448efcbb01ddb0cc8e4595609ec3",
+      "source_seconds": 5.333333,
+      "same_frames": {
+        "fall": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "smoking": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "fight": {
+          "baseline": [
+            1.733333333,
+            1.866666667,
+            2.0,
+            2.133333333,
+            2.266666667,
+            2.4,
+            2.533333333,
+            2.666666667,
+            2.8,
+            2.933333333,
+            3.066666667,
+            3.2,
+            3.333333333,
+            3.466666667,
+            3.6,
+            3.733333333,
+            3.866666667,
+            4.0,
+            4.133333333,
+            4.266666667,
+            4.4,
+            4.533333333,
+            4.666666667,
+            4.8,
+            4.933333333,
+            5.066666667,
+            5.2
+          ],
+          "candidate": [
+            1.733333333,
+            1.866666667,
+            2.0,
+            2.133333333,
+            2.266666667,
+            2.4,
+            2.533333333,
+            2.666666667,
+            2.8,
+            2.933333333,
+            3.066666667,
+            3.2,
+            3.333333333,
+            3.466666667,
+            3.6,
+            3.733333333,
+            3.866666667,
+            4.0,
+            4.133333333,
+            4.266666667,
+            4.4,
+            4.533333333,
+            4.666666667,
+            4.8,
+            4.933333333,
+            5.066666667,
+            5.2
+          ],
+          "lost": [],
+          "added": []
+        }
+      },
+      "realtime": {
+        "baseline": {
+          "results": 7,
+          "wall_seconds": 5.334258289003628,
+          "results_hz": 1.3122724136606274,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            7.912109375,
+            6.9306640625,
+            5.04833984375
+          ],
+          "load_end": [
+            7.7587890625,
+            6.9150390625,
+            5.0537109375
+          ]
+        },
+        "candidate": {
+          "results": 6,
+          "wall_seconds": 6.304546677005419,
+          "results_hz": 0.951694119718997,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            7.99169921875,
+            6.92919921875,
+            5.03759765625
+          ],
+          "load_end": [
+            7.912109375,
+            6.9306640625,
+            5.04833984375
+          ]
+        }
+      }
+    },
+    "38_normal": {
+      "source_sha256": "321851a458c35adff4739b93987e8262a5f76b3fc1479dfe0303f8ed47825401",
+      "source_seconds": 13.009467,
+      "same_frames": {
+        "fall": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "smoking": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "fight": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        }
+      },
+      "realtime": {
+        "baseline": {
+          "results": 23,
+          "wall_seconds": 13.069804810998903,
+          "results_hz": 1.7597814452932254,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            7.7587890625,
+            6.9150390625,
+            5.0537109375
+          ],
+          "load_end": [
+            7.89306640625,
+            6.9853515625,
+            5.107421875
+          ]
+        },
+        "candidate": {
+          "results": 23,
+          "wall_seconds": 13.058975224004826,
+          "results_hz": 1.7612408022431747,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            7.89306640625,
+            6.9853515625,
+            5.107421875
+          ],
+          "load_end": [
+            7.8359375,
+            7.0029296875,
+            5.13330078125
+          ]
+        }
+      }
+    },
+    "field_side": {
+      "source_sha256": "0d4bd2834b30deb9187413a126972602c652266e4d0fd488a24074ce64637144",
+      "source_seconds": 16.0,
+      "same_frames": {
+        "fall": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "smoking": {
+          "baseline": [
+            9.066666667,
+            9.2,
+            9.333333333,
+            9.466666667
+          ],
+          "candidate": [],
+          "lost": [
+            9.066666667,
+            9.2,
+            9.333333333,
+            9.466666667
+          ],
+          "added": []
+        },
+        "fight": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        }
+      },
+      "realtime": {
+        "baseline": {
+          "results": 39,
+          "wall_seconds": 16.06257435400039,
+          "results_hz": 2.4280043248663334,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            8.26806640625,
+            7.166015625,
+            5.2373046875
+          ],
+          "load_end": [
+            8.7880859375,
+            7.337890625,
+            5.32470703125
+          ]
+        },
+        "candidate": {
+          "results": 40,
+          "wall_seconds": 16.196515543000714,
+          "results_hz": 2.469667002992252,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            7.84912109375,
+            7.01953125,
+            5.14892578125
+          ],
+          "load_end": [
+            8.26806640625,
+            7.166015625,
+            5.2373046875
+          ]
+        }
+      }
+    },
+    "chewing": {
+      "source_sha256": "76160e7876ce50ed038b8ba7e32bc2191b5a8320461761f93c30dfb8ce8b42e3",
+      "source_seconds": 3.5,
+      "same_frames": {
+        "fall": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "smoking": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "fight": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        }
+      },
+      "realtime": {
+        "baseline": {
+          "results": 10,
+          "wall_seconds": 3.7423200409975834,
+          "results_hz": 2.672139178490549,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            8.7880859375,
+            7.337890625,
+            5.32470703125
+          ],
+          "load_end": [
+            8.484375,
+            7.298828125,
+            5.32275390625
+          ]
+        },
+        "candidate": {
+          "results": 10,
+          "wall_seconds": 3.7163377269971534,
+          "results_hz": 2.6908211079298554,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            8.484375,
+            7.298828125,
+            5.32275390625
+          ],
+          "load_end": [
+            8.484375,
+            7.298828125,
+            5.32275390625
+          ]
+        }
+      }
+    },
+    "drinking": {
+      "source_sha256": "9c4c0d23e73ad17788d095d62cb016ace7e74608f9556c8213cd6bc23b5073e6",
+      "source_seconds": 7.833333333,
+      "same_frames": {
+        "fall": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "smoking": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        },
+        "fight": {
+          "baseline": [],
+          "candidate": [],
+          "lost": [],
+          "added": []
+        }
+      },
+      "realtime": {
+        "baseline": {
+          "results": 27,
+          "wall_seconds": 8.053492387996812,
+          "results_hz": 3.3525827925586276,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            9.10546875,
+            7.470703125,
+            5.400390625
+          ],
+          "load_end": [
+            9.03466796875,
+            7.50537109375,
+            5.43359375
+          ]
+        },
+        "candidate": {
+          "results": 29,
+          "wall_seconds": 8.054021253003157,
+          "results_hz": 3.600685805141944,
+          "positive_seconds": {
+            "fall": [],
+            "smoking": [],
+            "fight": []
+          },
+          "load_start": [
+            8.484375,
+            7.298828125,
+            5.32275390625
+          ],
+          "load_end": [
+            9.10546875,
+            7.470703125,
+            5.400390625
+          ]
+        }
+      }
+    }
+  },
+  "source_files_sha256": {
+    "pphuman_runtime/yolo_backend.py": "91c8412cfc32a8d7171c38b04b8d47164af37e6beaeb690a3048657ae006a409",
+    "pphuman_runtime/runtime_yolo.py": "d7b026aeecc122f6dc5bfdc314e7dbb945455abf2132ec565f7166f635b46980",
+    "pphuman_runtime/openvino_cpu.py": "bf1e43a480a6586f6fa16bd3937f5512f6165d0dbf464f4a327d2e48b30ef427",
+    "config/inference_yolo26s_candidate.yaml": "dd27b6c0d348d6b8cc831c274ce1a08d0a5864e41c552d88165957d96ef06a06"
+  },
+  "worker_protocol": {
+    "status": "PASS",
+    "returncode": 0,
+    "result_count": 12,
+    "normal_exit": true,
+    "fight_windows_submitted": 3
+  },
+  "code_checks": {
+    "passed": 88,
+    "platform_skipped": 3
+  },
+  "promoted_to_repository_default": false,
+  "formal_service_switched": false,
+  "environment_modified": false,
+  "package_default_is_yolo26": true,
+  "regression_50_run": false,
+  "camera_ros_end_to_end_tested": false,
+  "recommendation": "Opt-in trial only: same-frame fall and side-face smoking regressions; no guaranteed improvement",
+  "limitations": [
+    "Six reused development clips, not an independent accuracy set",
+    "Fixed-frame quality replay uses synchronous fight for both profiles; not real-time speed",
+    "Real-time replay uses predecoded frames, latest-frame selection and alternating profile order",
+    "Production services stay running; load can vary, do not compare this run with earlier absolute FPS",
+    "Fall indication starts about 0.4 seconds later and has fewer positive sampled frames",
+    "Four old side-face smoking-positive sampled frames are absent with YOLO26",
+    "Both profiles retain a fight false positive on the sampled fall clip"
+  ],
+  "raw_reports_sha256": {
+    "quality_six_fp32/report.json": "5e4464c0c5a2ff40b52a172303eec4a7f98fe4a50cf2e58a5d932c14c1cfc055",
+    "realtime_six_fp32/report.json": "4a9a27a72a27e7bae5dc9fb71ada6e2197225562d59b27e783054d917ecf8bdc",
+    "worker_check.json": "6166bdd58688609befab331cd4f683bdd3dd5de3357a8a6a5c48de7cb934f284"
+  }
+}

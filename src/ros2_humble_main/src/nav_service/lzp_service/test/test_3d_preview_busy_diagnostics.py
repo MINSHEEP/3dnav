@@ -71,6 +71,10 @@ class PreviewBusyDiagnosticsTests(unittest.TestCase):
         node._lio_recovering = True
         node._auto_recovery_stage = 'failed'
         node._navigation_mode_store = NS(snapshot=lambda: {'mode': 'terrain_3d'})
+        node._navigation_speed_ready = lambda: True
+        node._preview_busy = False
+        node._speed_pending = {}
+        node._speed_error = ''
         node._navigation_mode_publisher = Mock()
         node._publish_navigation_mode.__func__.__globals__.update(
             navigation_mode_label=lambda mode: mode, String=NS)

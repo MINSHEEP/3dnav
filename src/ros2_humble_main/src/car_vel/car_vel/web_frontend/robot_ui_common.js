@@ -87,7 +87,9 @@
     }
 
     const PREVIEW_KEY = 'robot.webPreview.profile';
+    const PREVIEW_STREAMS_KEY = 'robot.webPreview.streams';
     let previewSelection = null;
+    let cameraDisplay = null;
     const DISPLAY_CLOUDS = new Set(['/global_mapping_cloud', '/global_localization_map',
         '/cloud_mapping_dynamic', '/octomap_point_cloud_centers']);
     function previewProfile() {
@@ -97,7 +99,8 @@
     function previewAllowed(source) {
         if (document.hidden) return false;
         let selection = previewProfile() === 'lan' ? 'both' : 'ordinary';
-        try { selection = window.sessionStorage.getItem('robot.webPreview.streams') || selection; }
+        try { selection = window.localStorage.getItem(PREVIEW_STREAMS_KEY)
+            || window.sessionStorage.getItem(PREVIEW_STREAMS_KEY) || selection; }
         catch (_error) { /* Storage may be disabled. */ }
         selection = previewSelection || selection;
         return selection === 'both' || selection === source;
@@ -107,17 +110,33 @@
         const source = {'/api/stream': 'raw', '/api/yolo/stream.mjpg': 'yolo',
                         '/api/thermal/stream.mjpg': 'thermal'}[url.pathname];
         if (!source) return value;
-        url.pathname = '/api/preview/stream';
+        url.pathname = '/api/display/stream';
         url.searchParams.set('source', source);
         url.searchParams.set('profile', previewProfile());
         return url.href;
+    }
+    function temperatureText(value) {
+        return value !== null && value !== undefined && value !== '' && typeof value !== 'boolean'
+            && Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)} ℃` : '-- ℃';
+    }
+    function syncPreviewVisibility() {
+        document.querySelectorAll('[data-camera-channel]').forEach(element => {
+            element.hidden = !previewAllowed(element.dataset.cameraChannel);
+        });
+        document.querySelectorAll('[data-camera-grid]').forEach(grid => {
+            const count = [...grid.querySelectorAll('[data-camera-channel]')].filter(el => !el.hidden).length;
+            grid.hidden = count === 0;
+            grid.classList.toggle('camera-single-view', count === 1);
+        });
     }
     function previewControls({thermal = true} = {}) {
         const parent = document.querySelector('.topbar-statuses');
         if (!parent || document.getElementById('web-preview-streams')) return;
         const label = document.createElement('label');
         label.className = 'web-preview-controls';
-        label.textContent = `${previewProfile() === 'remote' ? '5G低带宽' : '局域网高清'} · 预览 `;
+        const caption = document.createElement('span');
+        caption.textContent = `${previewProfile() === 'remote' ? '5G低带宽' : '局域网高清'} · 预览 `;
+        label.appendChild(caption);
         const select = document.createElement('select');
         select.id = 'web-preview-streams';
         for (const [value, title] of [['ordinary', '普通画面'], ['thermal', '热成像'],
@@ -126,17 +145,70 @@
             const option = document.createElement('option');
             option.value = value; option.textContent = title; select.appendChild(option);
         }
-        try { select.value = window.sessionStorage.getItem('robot.webPreview.streams')
+        try { select.value = window.localStorage.getItem(PREVIEW_STREAMS_KEY)
+            || window.sessionStorage.getItem(PREVIEW_STREAMS_KEY)
             || (previewProfile() === 'lan' ? 'both' : 'ordinary'); }
         catch (_error) { select.value = 'ordinary'; }
         if (!select.value) { select.value = 'ordinary'; previewSelection = 'ordinary'; }
         select.addEventListener('change', () => {
             previewSelection = select.value;
-            try { window.sessionStorage.setItem('robot.webPreview.streams', select.value); }
+            try { window.localStorage.setItem(PREVIEW_STREAMS_KEY, select.value);
+                window.sessionStorage.setItem(PREVIEW_STREAMS_KEY, select.value); }
             catch (_error) { /* Keep page controls functional without storage. */ }
+            syncPreviewVisibility();
             window.dispatchEvent(new Event('robot-preview-change'));
         });
         label.appendChild(select); parent.appendChild(label);
+        const settings = document.createElement('a');
+        settings.href = 'settings.html#ordinary-camera-title';
+        settings.textContent = '相机设置';
+        parent.appendChild(settings);
+        window.addEventListener('storage', event => {
+            if (event.key !== PREVIEW_STREAMS_KEY) return;
+            previewSelection = event.newValue || null;
+            select.value = event.newValue || (previewProfile() === 'lan' ? 'both' : 'ordinary');
+            syncPreviewVisibility();
+            window.dispatchEvent(new Event('robot-preview-change'));
+        });
+        document.addEventListener('visibilitychange', syncPreviewVisibility);
+        syncPreviewVisibility();
+        let released = false, fetching = false, timer;
+        async function refreshDisplay() {
+            if (released || fetching || document.hidden || typeof window.fetch !== 'function') return;
+            fetching = true;
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), 4000);
+            try {
+                let host = window.location.hostname || '127.0.0.1';
+                if (host.includes(':')) host = `[${host}]`;
+                const response = await window.fetch(`http://${host}:8766/api/display/status`,
+                    {cache:'no-store', signal:controller.signal});
+                if (!response.ok) return;
+                const status = await response.json();
+                if (released) return;
+                const changed = cameraDisplay && cameraDisplay.pipeline !== status.pipeline;
+                cameraDisplay = status;
+                caption.textContent = `${status.label} · ${previewProfile() === 'remote' ? '5G低带宽' : '局域网高清'} · 预览 `;
+                for (const option of select.options) {
+                    if (option.value === 'ordinary') option.textContent = status.pipeline === 'c12' ? '可见光' : '普通画面';
+                    if (option.value === 'thermal') option.textContent = status.pipeline === 'c12' ? '红外' : '热成像';
+                }
+                document.querySelectorAll('[data-camera-label]').forEach(element => {
+                    element.textContent = element.dataset.cameraLabel === 'ordinary'
+                        ? status.visible_label : status.infrared_label;
+                });
+                document.querySelectorAll('[data-camera-pipeline-label]').forEach(element => {
+                    element.textContent = status.label;
+                });
+                window.dispatchEvent(new Event('robot-camera-display'));
+                if (changed) window.dispatchEvent(new Event('robot-preview-change'));
+            } catch (_error) { /* Existing stream handlers display connection errors. */ }
+            finally { fetching = false; window.clearTimeout(timeout); }
+        }
+        function start() { released = false; refreshDisplay(); timer = window.setInterval(refreshDisplay, 2000); }
+        window.addEventListener('pagehide', () => { released = true; window.clearInterval(timer); });
+        window.addEventListener('pageshow', event => { if (event.persisted) start(); });
+        start();
     }
 
     class PreviewCloudSubscription {
@@ -1248,6 +1320,8 @@
         TYPES,
         getRosbridgeUrl,
         previewProfile, previewUrl, previewAllowed, previewControls,
+        temperatureText,
+        cameraDisplay: () => cameraDisplay,
         createLogger,
         RosSession,
         MapSnapshotRecovery,

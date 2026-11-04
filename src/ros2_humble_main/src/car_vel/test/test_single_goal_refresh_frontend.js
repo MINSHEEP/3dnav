@@ -84,7 +84,7 @@ function exercise(statuses, initialActive, pendingRequest = true, hydrated = tru
   assert.strictEqual(context.navigationActive, false,
     'refresh is not proof Nav2 accepted a goal');
   assert(events.modes.some((mode) => mode.includes('定位刷新')));
-  assert(events.logs.some((line) => line.includes('不会自动启动')));
+  assert(events.logs.some((line) => line.includes('继续执行本次目标')));
   assert(!events.clearPlans.length,
     'refresh must not hide an in-flight cancellation path');
 }
@@ -94,8 +94,8 @@ function exercise(statuses, initialActive, pendingRequest = true, hydrated = tru
     'goal_refreshing_localization', 'goal_localization_refreshed',
   ], false);
   assert.strictEqual(context.navigationActive, false);
-  assert(events.modes.at(-1).includes('重新设置目标'));
-  assert(events.logs.at(-1).includes('重新'));
+  assert(events.modes.at(-1).includes('定位已刷新'));
+  assert(events.logs.at(-1).includes('定位已刷新'));
   assert(events.clearMarkers >= 1);
 }
 
@@ -142,7 +142,7 @@ function exercise(statuses, initialActive, pendingRequest = true, hydrated = tru
   assert.strictEqual(context.mapCanvas.goalPose, null);
   callbacks['/goal_pose_status']({ data: 'goal_localization_refreshed' });
   assert.strictEqual(context.singleGoalRefreshState, 'refreshed');
-  assert(events.modes.at(-1).includes('重新设置目标'));
+  assert(events.modes.at(-1).includes('定位已刷新'));
 }
 
 {
@@ -216,7 +216,7 @@ function readiness(state, active, hydrated = true) {
     idleStaleLocalizationAllowed: () => false,
   });
 }
-assert(readiness('refreshing', false).includes('等待完成'));
+assert(readiness('refreshing', false).includes('等待本次目标预检完成'));
 assert(readiness('failed', false).includes('重新设置初始点'));
 assert(readiness('refreshed', true).includes('等待旧导航停止'));
 assert.strictEqual(readiness('refreshed', false), '');
@@ -246,4 +246,4 @@ assert(page.includes("singleGoalRefreshState === 'refreshing'"),
 assert(page.includes("singleGoalRefreshState === 'failed'"),
   'failed refresh must require re-localization');
 
-console.log('single-goal manual localization-refresh frontend: ok');
+console.log('single-goal retained-goal localization-refresh frontend: ok');

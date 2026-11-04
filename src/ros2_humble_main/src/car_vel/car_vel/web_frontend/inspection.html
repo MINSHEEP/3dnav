@@ -1,18 +1,21 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
+    <script defer src="recording_visibility.js?v=20261104-1"></script>
+    <script defer src="inspection_recording.js?v=20261104-4"></script>
+    <script defer src="c12_controls.js?v=20261104-right"></script>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>巡检任务 · 四足机器人巡检</title>
-    <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
+    <link rel="stylesheet" href="robot_ui.css?v=20261029-display">
     <link rel="stylesheet" href="inspection.css?v=20261027-behavior-controls">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
-    <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
-    <script src="velocity_guard_widget.js?v=20261103-terrain-advisory"></script>
+    <script src="robot_ui_common.js?v=20261029-display"></script>
+    <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
     <script src="pointcloud_viewer.js?v=20261022-complete-pcd"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
-    <script src="air_quality_widget.js?v=20261102-detection"></script>
-    <script src="behavior_widget.js?v=20261103-frame-cache"></script>
+    <script src="air_quality_widget.js?v=20260818-m701"></script>
+    <script src="behavior_widget.js?v=20261102-exclusive"></script>
     <script src="inspection_draft_state.js?v=20260811-page-reentry"></script>
 </head>
 <body>
@@ -43,9 +46,9 @@
         <aside class="inspection-column" aria-label="USB相机与检测点配置">
             <section class="section">
                 <div class="section-title">普通相机与热成像</div>
-                <div class="inspection-camera-grid">
-                    <div class="inspection-camera-panel">
-                        <strong>普通摄像头</strong>
+                <div class="inspection-camera-grid" data-camera-grid>
+                    <div class="inspection-camera-panel" data-camera-channel="ordinary">
+                        <strong data-camera-label="ordinary">普通摄像头</strong>
                         <div id="camera-frame" class="inspection-camera-frame">
                             <img id="camera-image" alt="普通摄像头实时画面（来源由设置页选择）">
                             <div class="camera-badges">
@@ -55,10 +58,10 @@
                             <div id="camera-message" class="inspection-camera-message">正在连接相机视频…</div>
                         </div>
                     </div>
-                    <div class="inspection-camera-panel">
-                        <strong>热成像</strong>
+                    <div class="inspection-camera-panel" data-camera-channel="thermal">
+                        <strong data-camera-label="thermal">热成像</strong>
                         <div id="thermal-camera-frame" class="inspection-camera-frame thermal">
-                            <img id="thermal-camera-image" alt="USB热成像实时画面">
+                            <img id="thermal-camera-image" alt="当前相机链路红外画面">
                             <div class="camera-badges">
                                 <span id="thermal-temperature-badge" class="camera-badge">最高温 -- ℃</span>
                                 <span id="thermal-alarm-badge" class="camera-badge">检测 --</span>
@@ -86,12 +89,17 @@
                     <p id="inspection-threshold-help" class="hint">任务未启动时修改全局巡检默认值；任务运行时仅修改本次任务。</p>
                 </form>
                 <div class="row inspection-camera-actions" style="margin-top:10px">
+                    <button id="btn-inspection-recognition" class="flex" type="button">启动识别</button>
                     <button id="btn-camera-view" class="flex" type="button">切换原始画面</button>
                     <button id="btn-behavior-view" class="flex" type="button">查看行为画面</button>
                     <button id="btn-camera-reconnect" class="flex" type="button">重连视频</button>
                     <button id="btn-camera-fullscreen" class="flex" type="button">全屏</button>
                     <button id="btn-camera-snapshot" class="flex" type="button">截图</button>
                     <button id="btn-thermal-fullscreen" class="flex" type="button">热图全屏</button>
+                </div>
+                <div id="inspection-recording-controls" hidden>
+                    <div class="row" style="margin-top:10px"><button id="inspection-record-button" type="button">开始双路录像</button></div>
+                    <p id="inspection-record-status" class="hint" role="status">正在读取录像状态…</p>
                 </div>
                 <p id="camera-hint" class="hint">任务运行时复用两路共享视频；检测点稳定 1 秒后并行进行视觉与高温精检 2 秒。</p>
             </section>
@@ -1286,7 +1294,7 @@
             if (becameReady) {
                 mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
                 mapOverlay.classList.remove('blocked');
-                refreshRoutes(taskState.route_id || pendingDraftRouteId
+                refreshRoutes((taskState.active && taskState.route_id) || pendingDraftRouteId
                     || (inspectionDraft && inspectionDraft.routeId));
             }
         }
@@ -1440,15 +1448,18 @@
     async function refreshRoutes(preferredId) {
         if (!session || !session.connected || !loadedMapName) return;
         const requestedMap = loadedMapName;
+        const selectionGeneration = routeSelectionGeneration;
         try {
             const result = await session.call('/list_routes', UI.TYPES.listRoutes, {
                 map_name: requestedMap
             });
-            if (requestedMap !== loadedMapName) return;
+            if (requestedMap !== loadedMapName
+                || selectionGeneration !== routeSelectionGeneration) return;
             if (!result.success) throw new Error(result.message || '读取路线失败');
             routes = (result.routes || []).map(routeFromMessage);
             const select = document.getElementById('route-selector');
-            const wanted = Number(preferredId || selectedRouteId() || taskState.route_id || 0);
+            const wanted = Number(preferredId || selectedRouteId()
+                || (taskState.active && taskState.route_id) || 0);
             select.innerHTML = '<option value="">请选择已保存巡检路线</option>';
             routes.forEach((item) => {
                 const floors = new Set(item.points.map((point) => point.floor_id).filter(Boolean));
@@ -1984,6 +1995,7 @@
     }
 
     let latestCameraStatus = null;
+    let recognitionBusy = false;
     const behaviorWidget = window.RobotBehavior.attach(document.getElementById('inspection-behavior'), {
         baseUrl: CAMERA_BASE, image: document.getElementById('camera-image'),
         message: document.getElementById('camera-message'),
@@ -1996,14 +2008,15 @@
         const behavior = behaviorWidget.status;
         const behaviorEnabled = behavior && ['fall', 'fight', 'smoking'].some(key => behavior.enabled?.[key]);
         const behaviorReady = behavior && (!behaviorEnabled || (behavior.running && behavior.ready && behavior.fresh));
-        const visualReady = Boolean(status.running && status.ready === true && !status.error);
-        const required = status.requirements || {yolo: true, thermal: true};
-        const fullyReady = Boolean((!required.yolo || visualReady) && (!required.thermal || thermal.ready) && behaviorReady);
+        const visualReady = behaviorEnabled ? Boolean(behaviorReady) : Boolean(status.running && status.ready === true && !status.error);
+        const fullyReady = Boolean(visualReady && thermal.ready && behaviorReady);
         const available = visualReady || thermal.ready || (behavior?.running && behavior?.fresh);
         document.getElementById('camera-top-status').textContent = fullyReady
-            ? (!required.yolo && !required.thermal && !behaviorEnabled ? '○ 检测项目已关闭' : '● 巡检识别已就绪')
+            ? '● 巡检识别已就绪'
             : (available ? '◐ 巡检识别部分可用' : '○ 巡检识别未就绪');
         document.getElementById('camera-top-status').className = `page-status ${fullyReady ? 'connected' : (available ? '' : 'error')}`;
+        if (!recognitionBusy) document.getElementById('btn-inspection-recognition').textContent =
+            status.running || thermal.manual_detection_enabled ? '停止识别' : '启动识别';
     }
     function cameraStreamUrl() {
         const path = cameraView === 'yolo'
@@ -2065,8 +2078,9 @@
             if (pageReleased) return;
             latestCameraStatus = status;
             behaviorWidget.observeSource(status.camera_source?.generation ?? status.behavior?.source_epoch);
-            const thermal = status.thermal || {};
-            const infraredOnly = thermal.supports_temperature === false;
+            const thermal = status.display?.thermal || status.thermal || {};
+            const videoOnly = thermal.supports_temperature === false;
+            document.getElementById('inspection-thermal-config').hidden = videoOnly;
             renderCameraReadiness();
             document.getElementById('camera-mode-badge').textContent = `模式 ${stateLabels[status.mode] || status.mode}`;
             document.getElementById('camera-device').textContent = status.device || '/dev/video0';
@@ -2076,8 +2090,7 @@
             document.getElementById('thermal-camera-state').textContent = thermal.ready
                 ? (thermal.alarm_active ? '高温报警' : '在线')
                 : (thermal.error ? '异常' : '等待首帧');
-            document.getElementById('thermal-camera-temperature').textContent = infraredOnly ? '未接入' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
-                ? `${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '-- ℃';
+            document.getElementById('thermal-camera-temperature').textContent = videoOnly ? '测温数据未接入' : UI.temperatureText(thermal.max_temperature_c);
             const config = thermal.config || {};
             const wantsTaskScope = Boolean(taskState.active && taskState.task_id);
             const hasCurrentTaskScope = wantsTaskScope
@@ -2088,12 +2101,9 @@
                 : Number(config.global_threshold_c ?? config.threshold_c);
             document.getElementById('thermal-camera-threshold').textContent = Number.isFinite(editorThreshold)
                 ? `${editorThreshold.toFixed(1)} ℃` : '-- ℃';
-            document.getElementById('thermal-temperature-badge').textContent = infraredOnly ? 'C12 · 仅红外画面' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
-                ? `最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '最高温 -- ℃';
-            document.getElementById('thermal-alarm-badge').textContent = infraredOnly ? '测温未接入' : thermal.detection_enabled
+            document.getElementById('thermal-temperature-badge').textContent = videoOnly ? '红外视频 · 测温数据未接入' : `最高温 ${UI.temperatureText(thermal.max_temperature_c)}`;
+            document.getElementById('thermal-alarm-badge').textContent = videoOnly ? '仅视频' : thermal.detection_enabled
                 ? (thermal.alarm_active ? '高温报警' : '检测中') : '检测暂停';
-            document.getElementById('inspection-thermal-threshold').disabled = infraredOnly;
-            document.getElementById('btn-inspection-threshold').disabled = infraredOnly;
             if (document.activeElement !== document.getElementById('inspection-thermal-threshold')
                 && Number.isFinite(editorThreshold)) {
                 const input = document.getElementById('inspection-thermal-threshold');
@@ -2123,7 +2133,7 @@
         if (cameraView === 'behavior' || pageReleased) return;
         const message = document.getElementById('camera-message');
         message.hidden = false;
-        message.textContent = '视频暂不可用，正在自动重连。请确认 USB 相机、YOLO 状态，或关闭多余的视频页面。';
+        message.textContent = '视频暂不可用，正在重连；请核对设置中的相机链路与识别状态。';
         cameraRetryTimer = window.setTimeout(reconnectCamera, 2500);
     });
     const thermalCameraImage = document.getElementById('thermal-camera-image');
@@ -2268,7 +2278,7 @@
                     mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
                     mapOverlay.classList.remove('blocked');
                 }
-                if (changed && mapReady) await refreshRoutes(taskState.route_id);
+                if (changed && mapReady) await refreshRoutes(taskState.active ? taskState.route_id : 0);
                 tryAcceptGlobalCloud();
                 updateUi();
             });
@@ -2319,11 +2329,12 @@
                 taskState = parseJson(message && message.data, taskState);
                 if (!taskState.active) clearGlobalPath();
                 if (taskState.active) clearInspectionDraft();
-                if (taskState.map_name && !loadedMapName) {
+                if (taskState.active && taskState.map_name && !loadedMapName) {
                     loadedMapName = taskState.map_name;
                     refreshMaps(loadedMapName);
                 }
-                if (taskState.route_id && (!route || route.id !== Number(taskState.route_id))) {
+                if (taskState.active && taskState.route_id
+                    && (!route || route.id !== Number(taskState.route_id))) {
                     refreshRoutes(taskState.route_id);
                 }
                 renderTaskState();
@@ -2347,9 +2358,9 @@
             }
             if (taskState.active) clearInspectionDraft();
             else applyInspectionDraftForm(inspectionDraft);
-            await refreshMaps(taskState.map_name
+            await refreshMaps((taskState.active && taskState.map_name)
                 || (inspectionDraft && inspectionDraft.mapName));
-            if (taskState.map_name) {
+            if (taskState.active && taskState.map_name) {
                 loadedMapName = taskState.map_name;
                 mapReady = Boolean(mapCanvas.mapInfo && mapCanvas.mapData);
                 if (mapReady) {
@@ -2358,7 +2369,7 @@
                     await refreshRoutes(taskState.route_id);
                 }
             }
-            if (!taskState.map_name) await restoreInspectionDraft();
+            if (!taskState.active) await restoreInspectionDraft();
             renderTaskState();
             refreshHistory();
         }
@@ -2416,23 +2427,103 @@
     document.getElementById('btn-skip-task').addEventListener('click', () => controlTask('skip'));
     document.getElementById('btn-cancel-task').addEventListener('click', () => controlTask('cancel'));
     document.getElementById('btn-refresh-history').addEventListener('click', refreshHistory);
-    document.getElementById('btn-camera-view').addEventListener('click', () => {
-        cameraView = cameraView === 'yolo' ? 'raw' : 'yolo';
+    async function cameraApi(path, body) {
+        const controller = new window.AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 30000);
+        try {
+            const options = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {cache:'no-store'};
+            const response = await fetch(`${CAMERA_BASE}${path}`, {...options, signal:controller.signal});
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            return result;
+        } catch (error) {
+            if (error.name === 'AbortError') throw new Error('请求超时，请检查识别状态后重试');
+            throw error;
+        } finally { window.clearTimeout(timer); }
+    }
+
+    function setInspectionRecognitionBusy(value) {
+        recognitionBusy = value;
+        for (const id of ['btn-inspection-recognition', 'btn-camera-view', 'btn-behavior-view']) {
+            document.getElementById(id).disabled = value;
+        }
+        if (value) document.getElementById('btn-inspection-recognition').textContent = '正在处理…';
+    }
+    function updateInspectionViewUi() {
         document.getElementById('camera-view-badge').textContent = cameraView === 'yolo'
-            ? 'YOLO 结果' : '原始画面';
+            ? 'YOLO 结果' : cameraView === 'behavior' ? '行为识别 · 对应推理帧' : '原始画面';
         document.getElementById('btn-camera-view').textContent = cameraView === 'yolo'
             ? '切换原始画面' : '切换 YOLO 结果';
-        document.getElementById('btn-behavior-view').textContent = '查看行为画面';
-        reconnectCamera();
-    });
-    document.getElementById('btn-behavior-view').addEventListener('click', () => {
-        cameraView = cameraView === 'behavior' ? 'raw' : 'behavior';
-        document.getElementById('camera-view-badge').textContent = cameraView === 'behavior'
-            ? '行为识别 · 对应推理帧' : '原始画面';
         document.getElementById('btn-behavior-view').textContent = cameraView === 'behavior'
             ? '返回原始画面' : '查看行为画面';
-        document.getElementById('btn-camera-view').textContent = '切换 YOLO 结果';
-        reconnectCamera();
+    }
+    async function switchInspectionView(target) {
+        if (recognitionBusy) return;
+        setInspectionRecognitionBusy(true);
+        if (target !== 'raw') {
+            const message = document.getElementById('camera-message');
+            message.hidden = false;
+            message.textContent = target === 'yolo' ? '正在切换普通 YOLO 识别…' : '正在切换行为识别…';
+        }
+        try {
+            if (target !== 'raw') {
+                const detection = await cameraApi('/api/detection');
+                const behavior = detection.behavior;
+                if (target === 'yolo' && !detection.yolo?.running) {
+                    if (Object.values(behavior.enabled).some(Boolean)) {
+                        window.sessionStorage.setItem('inspection.behaviorSelection', JSON.stringify(behavior.enabled));
+                    }
+                    const started = await cameraApi('/api/yolo', { operation: 'start' });
+                    if (!started.running) throw new Error(started.error || '普通 YOLO 未启动');
+                } else if (target === 'behavior' && !behavior.running) {
+                    let enabled = behavior.enabled;
+                    if (!Object.values(enabled).some(Boolean)) {
+                        enabled = JSON.parse(window.sessionStorage.getItem('inspection.behaviorSelection') || 'null')
+                            || {};
+                        if (!Object.values(enabled).some(Boolean)) throw new Error('请先勾选需要的行为识别类别');
+                        await cameraApi('/api/behavior/config', {
+                            fall_enabled: enabled.fall, fight_enabled: enabled.fight, smoking_enabled: enabled.smoking
+                        });
+                    }
+                    const started = await cameraApi('/api/detection', { operation: 'start' });
+                    if (!started.behavior?.running) throw new Error(started.errors?.behavior || '行为识别未启动');
+                }
+            }
+            cameraView = target;
+            behaviorWidget.refreshNow();
+            reconnectCamera();
+        } catch (error) {
+            const message = `切换画面失败：${error.message || error}`;
+            log(message);
+            document.getElementById('camera-message').textContent = message;
+            document.getElementById('camera-message').hidden = false;
+        } finally {
+            setInspectionRecognitionBusy(false);
+            refreshCameraState();
+        }
+        updateInspectionViewUi();
+    }
+    async function toggleInspectionRecognition() {
+        if (recognitionBusy) return;
+        setInspectionRecognitionBusy(true);
+        try {
+            const result = await cameraApi('/api/detection', {operation:'toggle'});
+            if (Object.keys(result.errors || {}).length) log(`识别部分不可用：${Object.values(result.errors).join('；')}`);
+            cameraView = result.behavior?.running ? 'behavior' : result.yolo?.running ? 'yolo' : 'raw';
+            updateInspectionViewUi(); behaviorWidget.refreshNow(); reconnectCamera();
+        } catch (error) {
+            log(`识别操作失败：${error.message || error}`);
+        } finally {
+            setInspectionRecognitionBusy(false);
+            refreshCameraState();
+        }
+    }
+    document.getElementById('btn-inspection-recognition').addEventListener('click', toggleInspectionRecognition);
+    document.getElementById('btn-camera-view').addEventListener('click', () => {
+        switchInspectionView(cameraView === 'yolo' ? 'raw' : 'yolo');
+    });
+    document.getElementById('btn-behavior-view').addEventListener('click', () => {
+        switchInspectionView(cameraView === 'behavior' ? 'raw' : 'behavior');
     });
     document.getElementById('btn-camera-reconnect').addEventListener('click', reconnectCamera);
     document.getElementById('btn-camera-fullscreen').addEventListener('click', () => {
@@ -2442,7 +2533,7 @@
         document.getElementById('thermal-camera-frame').requestFullscreen?.();
     });
     document.getElementById('btn-camera-snapshot').addEventListener('click', () => {
-        const path = cameraView === 'behavior' ? '/api/behavior/frame.jpg' : '/api/snapshot';
+        const path = cameraView === 'behavior' ? '/api/behavior/frame.jpg' : cameraView === 'yolo' ? '/api/yolo/frame.jpg' : '/api/snapshot';
         window.open(`${CAMERA_BASE}${path}?t=${Date.now()}`, '_blank', 'noopener');
     });
     document.getElementById('inspection-thermal-config').addEventListener('submit', async event => {

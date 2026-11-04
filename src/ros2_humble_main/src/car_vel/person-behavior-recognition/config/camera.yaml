@@ -1,0 +1,10 @@
+pphuman_camera:
+  ros__parameters:
+    device: /dev/video0
+    width: 1280
+    height: 720
+    fps: 30.0
+    fourcc: MJPG
+    image_topic: /pp_human/image_raw
+    frame_id: usb_camera
+    reconnect_seconds: 2.0

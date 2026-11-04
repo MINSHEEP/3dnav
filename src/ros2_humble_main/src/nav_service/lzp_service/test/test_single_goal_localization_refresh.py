@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Web single-goal localization refresh never retains or starts a stale goal.
+"""Web single-goal refresh revalidates the explicit goal before dispatch.
 
 Exercise the production ROS callback methods with fake ROS boundary objects so
 these safety regressions can also run on a development machine without ROS.
@@ -141,7 +141,7 @@ def load_manager_methods():
         '_request_stop', '_finish_task', '_clear_preflight_wait', '_send_pose',
         '_send_zero_velocity', '_dispatch_web_single_pose',
         '_begin_single_localization_refresh',
-        '_drive_single_localization_refresh',
+        '_drive_single_localization_refresh', '_drive_stationary_localization_update',
         '_clear_single_localization_refresh',
         '_fail_single_localization_refresh',
     )
@@ -247,6 +247,9 @@ def manager():
     node._nomotion_update_client = FakeNomotionClient()
     node._goal_status_publisher = FakePublisher()
     node._zero_velocity_publisher = FakePublisher()
+    node._navigation_speed_ready = lambda: True
+    node._drive_navigation_speed_sync = lambda: None
+    node._speed_applied = set()
     node._inflation_ready_for_navigation = lambda: True
     # These tests isolate the legacy AMCL refresh protocol. The authority
     # adapter has its own integration tests; do not omit its preflight seam.
@@ -263,7 +266,7 @@ def manager():
     return node
 
 
-def test_stale_click_refreshes_but_never_sends_without_second_click():
+def test_stale_click_dispatches_retained_goal_only_after_new_sample():
     node = manager()
     old = amcl(10_000_000_000)
     node._latest_amcl_pose = old
@@ -281,13 +284,11 @@ def test_stale_click_refreshes_but_never_sends_without_second_click():
     node._amcl_pose_callback(amcl(10_000_000_001))
     node._drive_single_localization_refresh()
 
-    assert node._goal_status_publisher.values[-1] == (
-        'goal_localization_refreshed')
-    assert node._action_client.sent == []
-    assert node._pending_single_pose is None
-    assert node._mode == 'idle'
-
-    node._single_goal_callback(pose(x=3.0))
+    assert len(node._action_client.sent) == 1
+    assert node._action_client.sent[0].pose.pose.position.x == 3.0
+    assert node._single_refresh_pose is None
+    assert node._mode == 'single'
+    node._drive_single_localization_refresh()
     assert len(node._action_client.sent) == 1
 
 
@@ -412,18 +413,13 @@ def test_repeated_clicks_do_not_restart_refresh_or_start_goal():
     assert node._action_client.sent == []
 
     node._amcl_pose_callback(amcl(10_000_000_001))
-    # This click was made before refresh completion was announced.  It cannot
-    # serve as the user's confirmation even if it triggers completion now.
+    # A second click cannot replace the explicit goal already being refreshed.
     node._single_goal_callback(pose(x=5.0))
-    assert node._goal_status_publisher.values[-1] == (
-        'goal_localization_refreshed')
-    assert node._action_client.sent == []
-    node._single_goal_callback(pose(x=6.0))
     assert len(node._action_client.sent) == 1
-    assert node._action_client.sent[0].pose.pose.position.x == 6.0
+    assert node._action_client.sent[0].pose.pose.position.x == 3.0
 
 
-def test_stale_replacement_waits_for_old_async_cancel_then_only_prompts():
+def test_stale_replacement_waits_for_old_async_cancel_then_revalidates():
     node = manager()
     old_handle = FakeGoalHandle()
     node._mode = 'single'
@@ -451,10 +447,9 @@ def test_stale_replacement_waits_for_old_async_cancel_then_only_prompts():
     node._goal_result_callback(FakeFuture(
         result=SimpleNamespace(status=GoalStatus.STATUS_CANCELED)),
         old_handle)
-    assert node._mode == 'idle'
-    assert node._goal_status_publisher.values[-1] == (
-        'goal_localization_refreshed')
-    assert node._action_client.sent == []
+    assert node._mode == 'single'
+    assert len(node._action_client.sent) == 1
+    assert node._action_client.sent[0].pose.pose.position.x == 3.0
     assert 'goal_canceled' not in node._goal_status_publisher.values
 
 
@@ -574,3 +569,24 @@ if __name__ == '__main__':
         if name.startswith('test_') and callable(test):
             test()
             print(f'PASS {name}')
+
+
+def test_stationary_updates_are_only_for_idle_2d_localization():
+    for mode, execution, expected in [
+        ('map_2d', 'idle', 1), ('terrain_3d', 'idle', 0),
+        ('map_2d', 'route', 0), ('map_2d', 'single', 0),
+    ]:
+        node = manager()
+        node._navigation_mode, node._mode = mode, execution
+        node._latest_amcl_pose = amcl(20_000_000_000)
+        node._drive_stationary_localization_update()
+        node._drive_stationary_localization_update()
+        assert node._nomotion_update_client.requests == expected
+
+
+def test_stationary_update_does_not_compete_with_explicit_refresh():
+    node = manager()
+    node._latest_amcl_pose = amcl(20_000_000_000)
+    node._single_refresh_map_name = node._current_map_name
+    node._drive_stationary_localization_update()
+    assert node._nomotion_update_client.requests == 0

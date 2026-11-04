@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>相机视频</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20261029-display">
+    <link rel="stylesheet" href="c12_camera.css?v=20261029-display">
+    <script src="robot_ui_common.js?v=20261029-display"></script>
+    <script defer src="c12_camera.js?v=20261029-display"></script>
+    <script defer src="c12_controls.js?v=20261031"></script>
+</head>
+<body>
+<div class="app-shell">
+    <header class="topbar">
+        <div class="brand" data-camera-pipeline-label>相机视频</div>
+        <nav class="page-nav"><a href="camera.html">USB相机</a></nav>
+        <div class="topbar-statuses"></div>
+    </header>
+    <main class="standalone-camera" data-camera-grid>
+        <figure data-camera-channel="ordinary">
+            <figcaption data-camera-label="ordinary">普通画面</figcaption>
+            <div class="standalone-camera-frame"><img id="standalone-visible" alt="当前链路普通画面"><span id="visible-message" role="status">正在连接…</span></div>
+        </figure>
+        <figure data-camera-channel="thermal" hidden>
+            <figcaption data-camera-label="thermal">红外画面</figcaption>
+            <div class="standalone-camera-frame"><img id="standalone-infrared" alt="当前链路红外画面"><span id="infrared-message" role="status">正在连接…</span></div>
+            <p id="infrared-measurement"></p>
+        </figure>
+    </main>
+</div>
+</body>
+</html>

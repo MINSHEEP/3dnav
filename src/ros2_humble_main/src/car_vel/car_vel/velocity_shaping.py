@@ -55,7 +55,7 @@ class TurnCommandShaper:
 
     def __init__(self, *, linear_scale=1.5, angular_scale=1.0,
                  allow_lateral=False, deadband=0.02, release_deadband=0.01,
-                 turn_floor=0.15, angular_accel=0.4):
+                 turn_floor=0.25, angular_accel=0.4):
         if not all(math.isfinite(float(value)) for value in (
                 linear_scale, angular_scale, deadband, release_deadband,
                 turn_floor, angular_accel)):

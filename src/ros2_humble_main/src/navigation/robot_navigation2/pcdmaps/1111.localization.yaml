@@ -1,0 +1,129 @@
+schema: ros2_mid360_localization_map
+version: 1
+map_name: '1111'
+frame_id: map
+pcd_file: 1111.pcd
+point_count: 18322
+pcd_size_bytes: 220036
+pcd_sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1
+voxel_size: 0.1
+created_at_utc: '2026-10-30T09:04:54.300409+00:00'
+map_geometry:
+  image: 1111.pgm
+  width: 200
+  height: 526
+  resolution: 0.05000000074505806
+  origin:
+  - -0.9
+  - -11.4
+  - 0.0
+  negate: 0
+  occupied_thresh: 0.65
+  free_thresh: 0.196
+terrain_grid:
+  schema: quadruped_terrain_grid
+  version: 2
+  filename: 1111.terrain.npz
+  map_name: '1111'
+  frame_id: map
+  source_pcd_sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1
+  size_bytes: 43584
+  sha256: 346e315bb88cf37415c0f5850d144a976371ca5cb8c933ee409f5b16b032e47b
+  resolution: 0.25
+  width: 73
+  height: 106
+  origin_x: -7.0
+  origin_y: -12.5
+  cell_count: 7738
+  known_cells: 1871
+  blocked_cells: 559
+  generation:
+    algorithm: clustered_measured_ground_v3
+    parameters:
+      blocked_slope_deg: 28.0
+      blocked_step_m: 0.18
+      caution_slope_deg: 12.0
+      caution_step_m: 0.08
+      maximum_cells: 400000
+      minimum_confidence: 0.35
+      overhead_min_clearance_m: 0.75
+      overhead_search_radius_m: 1.0
+      resolution: 0.25
+      roughness_caution_m: 0.05
+      special_slope_deg: 18.0
+      special_step_m: 0.12
+    quality:
+      blocked_supported_cells: 201
+      component_count: 22
+      coverage_ratio: 0.557396
+      known_supported_cells: 942
+      largest_component_cells: 534
+      largest_component_ratio: 0.720648
+      state: ready
+      supported_free_cells: 1690
+      traversable_supported_cells: 741
+      warnings: []
+    source: complete_localization_pcd
+    source_pcd_sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1
+coordinate_system:
+  map_frame: map
+  pcd_frame: map
+  capture_frame: odom
+  projected_map_frame: odom
+  pcd_to_map: identity
+  compatibility: The saved 2D map and PCD share mapping-session odom coordinates,
+    which become the saved map frame on reload.
+pcd:
+  file: 1111.pcd
+  point_count: 18322
+  size_bytes: 220036
+  sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1
+localization_pcd:
+  filename: 1111.pcd
+  point_count: 18322
+  size_bytes: 220036
+  sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1
+  format: binary
+  fields:
+  - x
+  - y
+  - z
+  voxel_size: 0.1
+  filter:
+    type: distinct_frame_voxel_persistence
+    mode: protected
+    min_observations: 6
+    observation_stride: 3
+    received_frames: 219
+    sampled_frames: 73
+    tracked_voxels: 78343
+    ground_preservation:
+      enabled: true
+      cell_size: 0.2
+      max_height_above_envelope: 0.08
+      max_slope_deg: 30.0
+      min_neighbor_cells: 3
+      min_observations: 3
+      min_stable_span_frames: 6
+      protected_voxels_at_save: 2139
+capture:
+  source_topic: /cloud_registered
+  projected_map_topic: /projected_map
+  projected_map_stamp_ns: 1793350869003848552
+  pcd_capture_unix_ns: 1793351094203946398
+files:
+  map_yaml:
+    filename: 1111.yaml
+    size_bytes: 142
+  map_image:
+    filename: 1111.pgm
+    size_bytes_at_creation: 105215
+  localization_pcd:
+    filename: 1111.pcd
+    size_bytes: 220036
+    sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1
+  terrain_grid:
+    filename: 1111.terrain.npz
+    size_bytes: 43584
+    sha256: 346e315bb88cf37415c0f5850d144a976371ca5cb8c933ee409f5b16b032e47b
+    source_pcd_sha256: 4cdffe57efc395c85b28eb689cbc21062f49068d90552bc28431e90faa439bd1

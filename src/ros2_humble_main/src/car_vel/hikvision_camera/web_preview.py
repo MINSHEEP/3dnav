@@ -42,10 +42,11 @@ class PreviewCache:
     Slow clients cannot queue old frames or block a different preview. Internal
     consumers continue using the original endpoints, without touching this cache.
     """
-    def __init__(self, readers, *, encoder=encode_preview, clock=time.monotonic):
+    def __init__(self, readers, *, encoder=encode_preview, clock=time.monotonic, generation=lambda: 0):
         self.readers, self.encoder, self.clock = readers, encoder, clock
+        self.generation = generation
         self.entries = {(source, name): {'lock': threading.Lock(), 'at': None,
-                        'jpeg': None, 'sequence': 0}
+                        'jpeg': None, 'sequence': 0, 'generation': None}
                         for source in readers for name in PROFILES}
 
     def frame(self, source, profile_name):
@@ -55,11 +56,16 @@ class PreviewCache:
         entry = self.entries[source, profile_name]
         with entry['lock']:
             now = self.clock()
-            if entry['at'] is None or now - entry['at'] >= 1.0 / profile.fps:
+            generation = self.generation()
+            if (entry['at'] is None or entry['generation'] != generation
+                    or now - entry['at'] >= 1.0 / profile.fps):
                 original = self.readers[source]()
                 if not original:
                     raise RuntimeError('预览源尚无有效帧')
                 image = self.encoder(original, profile)
+                if self.generation() != generation:
+                    raise RuntimeError('相机链路已切换，请重新连接画面')
                 # Failure must never turn a stale frame into a fresh one.
-                entry.update(jpeg=image, at=self.clock(), sequence=entry['sequence'] + 1)
+                entry.update(jpeg=image, at=self.clock(), sequence=entry['sequence'] + 1,
+                             generation=generation)
             return entry['sequence'], entry['jpeg']

@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "downloaded_at_utc": "2026-10-15T11:09:16.366882+00:00",
+  "hash_scope": "local SHA256 integrity only; not an upstream signature",
+  "upstream": {
+    "repository": "https://github.com/PaddlePaddle/PaddleDetection",
+    "branch": "release/2.9",
+    "commit": "b25522a0f4bde8c80603f3ba5e3472059972e3b5"
+  },
+  "models": [
+    {
+      "id": "mot",
+      "url": "https://bj.bcebos.com/v1/paddledet/models/pipeline/mot_ppyoloe_s_36e_pipeline.zip",
+      "archive": "模型下载/mot_ppyoloe_s_36e_pipeline.zip",
+      "archive_bytes": 27850617,
+      "archive_sha256": "33221117050792b9fe36e13736f7c7d7880ff3ec0f6f72c872bde4b830a2bef7",
+      "model_dir": "output_inference/mot_ppyoloe_s_36e_pipeline",
+      "model_dirs": [
+        "output_inference/mot_ppyoloe_s_36e_pipeline"
+      ],
+      "files": [
+        {
+          "path": "output_inference/mot_ppyoloe_s_36e_pipeline/infer_cfg.yml",
+          "bytes": 234,
+          "sha256": "5d411ed4dc3dcc777559423f6b1cb0703ede1c7e9b9edcab4101b34a87456051"
+        },
+        {
+          "path": "output_inference/mot_ppyoloe_s_36e_pipeline/model.pdmodel",
+          "bytes": 2397921,
+          "sha256": "f8e6220866b772bf08131584dc8d9a917b75403043269a1f8e8b7063a6c1ab87"
+        },
+        {
+          "path": "output_inference/mot_ppyoloe_s_36e_pipeline/model.pdiparams",
+          "bytes": 29968263,
+          "sha256": "386c22e88c7b87a38e1eff8a8d5e10bfe672ebff70c1ee85822412c3175ce5a6"
+        },
+        {
+          "path": "output_inference/mot_ppyoloe_s_36e_pipeline/model.pdiparams.info",
+          "bytes": 29235,
+          "sha256": "93798491d7414a632efd71ff2f81a44b83d8b4fa1a1d4c50c06540e6e801ed94"
+        }
+      ]
+    },
+    {
+      "id": "pose",
+      "url": "https://bj.bcebos.com/v1/paddledet/models/pipeline/dark_hrnet_w32_256x192.zip",
+      "archive": "模型下载/dark_hrnet_w32_256x192.zip",
+      "archive_bytes": 106364080,
+      "archive_sha256": "ca64affb9fe6092ef3ce205e824abecae709e8c329267be99cfcd724a73225b3",
+      "model_dir": "output_inference/dark_hrnet_w32_256x192",
+      "model_dirs": [
+        "output_inference/dark_hrnet_w32_256x192"
+      ],
+      "files": [
+        {
+          "path": "output_inference/dark_hrnet_w32_256x192/infer_cfg.yml",
+          "bytes": 228,
+          "sha256": "7e13100b524398c086d1e134b94e9c8f6c33418e72ee8ef744891229f56e0810"
+        },
+        {
+          "path": "output_inference/dark_hrnet_w32_256x192/model.pdiparams.info",
+          "bytes": 191933,
+          "sha256": "480e3043de24f3464df2389170d29ce9b89c8434bf6c2209f22d36bfe858cd23"
+        },
+        {
+          "path": "output_inference/dark_hrnet_w32_256x192/model.pdiparams",
+          "bytes": 114399369,
+          "sha256": "36ef43b1aaafddcdfcfbd3f71559bc96d48e1a57d19cc84d3d7941c7ad10ac68"
+        },
+        {
+          "path": "output_inference/dark_hrnet_w32_256x192/model.pdmodel",
+          "bytes": 8538600,
+          "sha256": "df75af8dbdb97ca07e39746728338dc4f96c0e7f06a782d0666334955997f180"
+        }
+      ]
+    },
+    {
+      "id": "fall",
+      "url": "https://bj.bcebos.com/v1/paddledet/models/pipeline/STGCN.zip",
+      "archive": "模型下载/STGCN.zip",
+      "archive_bytes": 22876940,
+      "archive_sha256": "be51c0b557c12c4cb5ce2a0740a92b86db7538d59e08c49670c9bc26aa1722fd",
+      "model_dir": "output_inference/STGCN",
+      "model_dirs": [
+        "output_inference/STGCN"
+      ],
+      "files": [
+        {
+          "path": "output_inference/STGCN/STGCN.pdiparams.info",
+          "bytes": 12689,
+          "sha256": "617456d533fb4aa66e335b51498c94bede15ed64533f205d9f75f8a06eb2de60"
+        },
+        {
+          "path": "output_inference/STGCN/STGCN.pdmodel",
+          "bytes": 1199455,
+          "sha256": "256a6e743a6cd7008a19cf34bcc9a8bb8cb52a8324ce7bc106887b08863cf5e8"
+        },
+        {
+          "path": "output_inference/STGCN/infer_cfg.yml",
+          "bytes": 143,
+          "sha256": "2ece9e2edd587851e29f378ea69f787c8d0c269384259e7d1eea76d8db602e3b"
+        },
+        {
+          "path": "output_inference/STGCN/model.pdiparams",
+          "bytes": 12327491,
+          "sha256": "3d694896bfb08e5d419a169df393b17a11f1ed5a05905ed6515fd3f209858538"
+        },
+        {
+          "path": "output_inference/STGCN/model.pdmodel",
+          "bytes": 1199455,
+          "sha256": "256a6e743a6cd7008a19cf34bcc9a8bb8cb52a8324ce7bc106887b08863cf5e8"
+        },
+        {
+          "path": "output_inference/STGCN/STGCN.pdiparams",
+          "bytes": 12327491,
+          "sha256": "3d694896bfb08e5d419a169df393b17a11f1ed5a05905ed6515fd3f209858538"
+        }
+      ]
+    },
+    {
+      "id": "smoking",
+      "url": "https://bj.bcebos.com/v1/paddledet/models/pipeline/ppyoloe_crn_s_80e_smoking_visdrone.zip",
+      "archive": "模型下载/ppyoloe_crn_s_80e_smoking_visdrone.zip",
+      "archive_bytes": 27846181,
+      "archive_sha256": "81919c2730d77be8eaf845d43fadf2b252eaabc77fb0bea0c52b1d678c929fff",
+      "model_dir": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone",
+      "model_dirs": [
+        "output_inference/ppyoloe_crn_s_80e_smoking_visdrone"
+      ],
+      "files": [
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/infer_cfg.yml",
+          "bytes": 1117,
+          "sha256": "16577ec5a93a1f92cd6daea652cbb9597955b438cf0061d9e907d8de0bb34a81"
+        },
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdiparams.info",
+          "bytes": 29260,
+          "sha256": "9250995bbaae69053d7e7c37c0541da6c1b3d1a7c5b85c481a948c20ec84f158"
+        },
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdiparams",
+          "bytes": 29968179,
+          "sha256": "3136b301bc46098aa7fbe3511a6919cb885ca1c8f8070ec73ad573c05eac4db9"
+        },
+        {
+          "path": "output_inference/ppyoloe_crn_s_80e_smoking_visdrone/model.pdmodel",
+          "bytes": 2406689,
+          "sha256": "e58d54a287d78a9fccd3d832853a6f778c3109a88abbc7d910c92002c7fc5428"
+        }
+      ]
+    },
+    {
+      "id": "fight",
+      "url": "https://videotag.bj.bcebos.com/PaddleVideo-release2.3/ppTSM_fight.zip",
+      "archive": "模型下载/ppTSM_fight.zip",
+      "archive_bytes": 87616865,
+      "archive_sha256": "a58a13c904b9b0fa9e101663826e6a003ecf5e61e3648dd51666c2d6702fbdfd",
+      "model_dir": "output_inference/ppTSM",
+      "model_dirs": [
+        "output_inference/ppTSM"
+      ],
+      "files": [
+        {
+          "path": "output_inference/ppTSM/model.pdiparams",
+          "bytes": 94345695,
+          "sha256": "9a72ef1a4de9d480aeb3701e290c7913a9edc9db4add0953c6e6a972b6c6a637"
+        },
+        {
+          "path": "output_inference/ppTSM/model.pdmodel",
+          "bytes": 1960764,
+          "sha256": "05861bd52d349991b9e5998a87178eadd1fa3d875e7e1b71383e8f4bcd7df925"
+        },
+        {
+          "path": "output_inference/ppTSM/model.pdiparams.info",
+          "bytes": 25263,
+          "sha256": "5ca139690ed8ed7ee6a9bd179618e3c26aeb40582c7232eb4f355cdd7956ece5"
+        }
+      ]
+    },
+    {
+      "id": "shared_pose",
+      "format": "onnx",
+      "role": "shared_person_detection_and_coco17_pose",
+      "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8m-pose.pt",
+      "source_weight_sha256": "dbe539ea268db2534390942cfdf206e521f376f19e5415967a57f6a2ddfa3c90",
+      "model_dir": "output_inference/yolov8m_pose_640",
+      "source": "Existing official weights copied after SHA256 verification; exported locally without training",
+      "export": {
+        "ultralytics": "8.3.228",
+        "onnx": "1.16.1",
+        "imgsz": 640,
+        "dynamic": false,
+        "half": false,
+        "opset": 17,
+        "nms": false,
+        "simplify": false
+      },
+      "validation": {
+        "cpu": "verification/optimization/A/cpu_parity_and_linkage.json",
+        "gpu": "verification/optimization/A/gpu_coexistence.json",
+        "scope": "Serialization/color/letterbox/model coexistence; fall effectiveness and complete pipeline acceptance separate"
+      },
+      "files": [
+        {
+          "path": "output_inference/yolov8m_pose_640/contract.json",
+          "bytes": 2949,
+          "sha256": "4d67e067e2187f8bf43d64de4ca744dbc92993dd6b56f924eca05ab0a7696682"
+        },
+        {
+          "path": "output_inference/yolov8m_pose_640/yolov8m-pose.onnx",
+          "bytes": 106128038,
+          "sha256": "f9912166b51d88e4fe356792b491bf1ef845f65da03f3048ec751d61cc0b4377"
+        },
+        {
+          "path": "output_inference/yolov8m_pose_640/yolov8m-pose.pt",
+          "bytes": 53266977,
+          "sha256": "dbe539ea268db2534390942cfdf206e521f376f19e5415967a57f6a2ddfa3c90"
+        }
+      ]
+    }
+  ],
+  "optimization_updated_at_utc": "2026-10-15T12:49:34.525110+00:00"
+}

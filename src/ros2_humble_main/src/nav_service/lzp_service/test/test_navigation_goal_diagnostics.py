@@ -56,7 +56,7 @@ class NavigationGoalDiagnosticsTests(unittest.TestCase):
                        if item['event'] == 'goal_refreshing_localization')
         self.assertEqual(refresh['map_name'], 'ceshi3_remap1')
         self.assertGreaterEqual(refresh['amcl_age_sec'], 3.0)
-        self.assertIn('重新', refresh['reason'])
+        self.assertIn('继续执行本次目标', refresh['reason'])
         self.assertEqual(self.node._action_client.sent, [])
 
     def test_hardware_emergency_rejects_goal_without_reset_or_queue(self):

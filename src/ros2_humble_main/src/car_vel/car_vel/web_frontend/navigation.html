@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
-    <script src="velocity_guard_widget.js?v=20261103-terrain-advisory"></script>
+    <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
     <script src="pointcloud_viewer.js?v=20261023-draft-marker-scale"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
 </head>
@@ -69,6 +69,7 @@
                     <button id="btn-single-navigation" class="choice-active flex" type="button">单点导航</button>
                     <button id="btn-multi-navigation" class="flex" type="button">多点导航</button>
                 </div>
+                <button id="btn-stop-active-route" class="danger" type="button" hidden disabled>停止当前路径，重新开始</button>
                 <p id="navigation-startup-detail" class="hint" aria-live="polite">等待导航启动诊断…</p>
                 <button id="btn-retry-navigation-startup" type="button" hidden disabled>重试导航服务（不运动）</button>
             </section>
@@ -935,8 +936,8 @@
         goal_rejected_terrain_not_ready: '当前地图的地形代价图尚未就绪，请等待后重试',
         goal_rejected_localization_stale: '定位时间戳已过期，本次目标未启动；请重新确认初始定位',
         goal_rejected_navigation_stopping: '旧导航目标仍在取消中，新目标未启动；请确认机器人安全并等待停止结果',
-        goal_refreshing_localization: '定位时间戳已过期，本次目标未启动；正在自动刷新定位，不会自动启动导航',
-        goal_localization_refreshed: '定位已刷新；请重新在地图上设置目标，本次目标不会自动启动',
+        goal_refreshing_localization: '正在更新定位，更新通过后将继续执行本次目标',
+        goal_localization_refreshed: '定位已刷新',
         goal_localization_refresh_failed: '定位刷新失败，本次目标未启动；请重新定位后再设置目标',
         goal_refreshing_3d_localization: '3D定位刷新中：正在等待真实新采样，不会启动导航',
         goal_3d_localization_refreshed: '3D定位已刷新；预览和人工启动仍需分别确认',
@@ -1445,6 +1446,9 @@
             !active || routeExecutionStatus.paused || routeServiceBusy;
         document.getElementById('btn-stop-route').disabled =
             !active || routeServiceBusy;
+        const stopActiveRoute = document.getElementById('btn-stop-active-route');
+        stopActiveRoute.hidden = !active;
+        stopActiveRoute.disabled = !active || routeServiceBusy || !session || !session.connected;
         document.getElementById('route-loop-count').disabled =
             active || routeServiceBusy
             || continuousInput.checked;
@@ -1914,6 +1918,7 @@
                 }
                 updateMapReadyUi();
             }
+            recoverActiveRouteMap();
             if ((routeListMapName !== loadedMapName
                 || !routeDraft
                 || Number(routeDraft.id) !== routeExecutionStatus.route_id)
@@ -2270,7 +2275,7 @@
             return '急停后自动准备已暂停；请到遥控页单独站立，确认安全后重新进入导航';
         }
         if (singleGoalRefreshState === 'refreshing') {
-            return '定位刷新中，本次目标未启动；请等待完成后重新设置目标';
+            return '正在更新定位，请等待本次目标预检完成';
         }
         if (singleGoalRefreshState === 'failed') {
             return '定位自动刷新失败；请重新设置初始点并确认定位';
@@ -3129,6 +3134,18 @@
         tryCompletePendingMapLoad();
     }
 
+    function recoverActiveRouteMap() {
+        if (!routeIsActive() || navigationMapReady || pendingMapName
+            || !mapSnapshotRecovery || !currentMapLoadId
+            || currentMapLoadName !== loadedMapName
+            || routeExecutionStatus.map_name !== loadedMapName) return;
+        const name = loadedMapName, identity = currentMapLoadId;
+        mapSnapshotRecovery.request(`${name}|${identity}`, () =>
+            routeIsActive() && !navigationMapReady && !pendingMapName
+            && loadedMapName === name && routeExecutionStatus.map_name === name
+            && currentMapLoadName === name && currentMapLoadId === identity);
+    }
+
     function trackCurrentMapLoadIdentity(message) {
         const mapName = String(message && message.map_name || '');
         const loadId = typeof (message && message.load_id) === 'string'
@@ -3150,6 +3167,7 @@
         }
         currentMapLoadName = mapName;
         currentMapLoadId = loadId;
+        recoverActiveRouteMap();
         if (terrainReloadRequired && mapName === terrainReloadRequired.mapName
             && loadId !== terrainReloadRequired.loadId) terrainReloadRequired = null;
         tryAcceptNavigationGlobalCloud();
@@ -3727,8 +3745,8 @@
             overlay.classList.toggle('blocked', Boolean(threeDIssue));
             if (singleGoalRefreshState === 'refreshing') {
                 overlay.textContent = singleGoalHadActiveNavigation && navigationActive
-                    ? '定位刷新中，本次目标不会自动启动；旧导航取消尚未确认，请先关注机器人安全，等待后端结果。'
-                    : '定位刷新中，本次目标不会自动启动；请等待刷新结果。';
+                    ? '正在刷新定位并等待旧导航停止确认；通过预检后继续本次目标，可取消导航。'
+                    : '正在刷新定位；通过预检后继续本次目标，可取消导航。';
             } else if (singleGoalRefreshState === 'failed') {
                 overlay.textContent = singleGoalHadActiveNavigation && navigationActive
                     ? '定位刷新失败，旧导航停止尚未确认；请先安全停止机器人并确认导航已结束。'
@@ -3772,9 +3790,8 @@
             } else if (singleGoalRefreshState === 'refreshing') {
                 overlay.textContent = singleGoalHadActiveNavigation && navigationActive
                     ? '定位时间戳已过期，本次目标未启动；旧导航取消尚未确认。'
-                        + '正在自动刷新定位，请关注机器人安全；不会自动启动本次目标。'
-                    : '定位时间戳已过期，本次目标未启动；正在自动刷新定位。'
-                        + '不会自动开始导航，请等待结果后重新在地图上设置目标。';
+                        + '通过定位预检且确认旧导航已停止后继续本次目标；可取消导航。'
+                    : '正在更新定位，更新通过后将继续执行本次目标；可取消导航。';
             } else if (singleGoalRefreshState === 'failed') {
                 overlay.textContent = singleGoalHadActiveNavigation && navigationActive
                     ? '定位刷新失败，旧导航停止尚未确认；请先安全停止机器人并确认导航已结束，再重新定位。'
@@ -4919,7 +4936,11 @@
                 } else if (status === 'goal_succeeded' || status === 'goal_canceled') {
                     setMode(status === 'goal_canceled' && singleGoalRefreshState === 'failed'
                         ? '定位刷新失败，请重定位' : '导航就绪');
+                } else if (status === 'sending_goal' || status === 'goal_queued') {
+                    singleGoalRefreshState = '';
+                    setMode('正在规划目标');
                 } else if (status === 'navigating') {
+                    singleGoalRefreshState = '';
                     setMode('导航执行中');
                 } else if (status === 'goal_refreshing_localization') {
                     singleGoalRefreshState = 'refreshing';
@@ -4929,7 +4950,7 @@
                     singleGoalRefreshState = 'refreshed';
                     singleGoalRequestPending = false;
                     restorePreviousSingleGoalMarker();
-                    setMode('请重新设置目标');
+                    setMode('定位已刷新');
                 } else if (status === 'goal_localization_refresh_failed'
                     || status === 'goal_rejected_localization_stale') {
                     singleGoalRefreshState = 'failed';
@@ -5172,6 +5193,7 @@
     document.getElementById('btn-resume-route').addEventListener('click', () => controlRoute('resume'));
     document.getElementById('btn-skip-route').addEventListener('click', () => controlRoute('skip'));
     document.getElementById('btn-stop-route').addEventListener('click', () => controlRoute('stop'));
+    document.getElementById('btn-stop-active-route').addEventListener('click', () => controlRoute('stop'));
     cancelRelocalizationButton.addEventListener('click', () => {
         requestRelocalizationCancel('用户已请求取消本次三维初始定位精修。');
         updateMapReadyUi();

@@ -263,19 +263,47 @@ class BridgeTests(unittest.TestCase):
         self.node._poll(); self.assertIsNotNone(self.node._first_opened_at)
         self.node._close_serial(); self.assertIsNone(self.node._first_opened_at)
 
-    def test_poll_keeps_warmup_on_bad_response_but_closes_on_io_failure(self):
-        self.node._poll()
-        port, opened = self.node._serial, self.node._first_opened_at
-        for error in (TimeoutError('no reply'), ConnectionError('invalid_response', 'bad CRC')):
-            with patch.object(self.node, '_read_response', side_effect=error):
+    def test_bad_frame_and_timeout_preserve_warmup_and_never_publish_old_values(self):
+        for error in (ConnectionError('invalid_response', 'bad CRC'), TimeoutError('no response')):
+            with self.subTest(error=error), patch.object(self.module.time, 'monotonic', return_value=1000):
+                self.node._close_serial()
                 self.node._poll()
-            self.assertIs(self.node._serial, port)
-            self.assertEqual(self.node._first_opened_at, opened)
-            self.assertFalse(port.closed)
-        with patch.object(self.node, '_read_response', side_effect=OSError('device removed')):
+                connection = self.node._serial
+                opened = len(self.opens)
+                with patch.object(self.module.time, 'monotonic', return_value=1010), \
+                        patch.object(self.node, '_read_response', side_effect=error):
+                    self.node._poll()
+                invalid = json.loads(self.node.publisher.publish.call_args.args[0].data)
+                self.assertFalse(invalid['valid'])
+                self.assertIsNone(invalid['values'])
+                self.assertIs(self.node._serial, connection)
+                self.assertFalse(connection.closed)
+                self.assertEqual(self.node._first_opened_at, 1000)
+                with patch.object(self.module.time, 'monotonic', return_value=1020):
+                    self.node._poll()
+                valid = json.loads(self.node.publisher.publish.call_args.args[0].data)
+                self.assertTrue(valid['valid'])
+                self.assertEqual(valid['warmup_remaining_sec'], 280)
+                self.assertEqual(len(self.opens), opened)
+                with patch.object(self.module.time, 'monotonic', return_value=1310):
+                    self.node._poll()
+                self.assertFalse(json.loads(self.node.publisher.publish.call_args.args[0].data)['warming_up'])
+
+    def test_usb_io_failure_closes_port_and_restarts_warmup_on_reconnect(self):
+        with patch.object(self.module.time, 'monotonic', return_value=1000):
             self.node._poll()
+        connection = self.node._serial
+        with patch.object(self.node, '_read_response', side_effect=OSError(5, 'USB disconnected')):
+            self.node._poll()
+        self.assertTrue(connection.closed)
         self.assertIsNone(self.node._serial)
-        self.assertTrue(port.closed)
+        self.assertIsNone(self.node._first_opened_at)
+        with patch.object(self.module.time, 'monotonic', return_value=1400):
+            self.node._poll()
+        payload = json.loads(self.node.publisher.publish.call_args.args[0].data)
+        self.assertTrue(payload['valid'])
+        self.assertTrue(payload['warming_up'])
+        self.assertEqual(payload['warmup_remaining_sec'], 300)
 
     def test_error_categories(self):
         for error, code in [(OSError('[Errno 13] Permission denied'), 'permission_denied'),

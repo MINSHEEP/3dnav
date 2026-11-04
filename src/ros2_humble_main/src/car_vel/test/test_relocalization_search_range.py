@@ -77,7 +77,7 @@ class RelocalizationSearchRangeTests(unittest.TestCase):
         config = (ICP_ROOT / 'config' / 'icp.yaml').read_text(encoding='utf-8')
         for setting in ('accumulation_frames: 5', 'minimum_consistent_frames: 5',
                         'fine_leaf_size: 0.15', 'minimum_source_points: 700',
-                        'minimum_rough_source_points: 300', 'source_max_range: 8.0',
+                        'minimum_rough_source_points: 250', 'source_max_range: 8.0',
                         'default_timeout_sec: 30.0', 'maximum_timeout_sec: 30.0'):
             self.assertIn(setting, config)
         coordinator = (CAR_VEL_ROOT / 'car_vel' / 'relocalization_coordinator.py').read_text(encoding='utf-8')
