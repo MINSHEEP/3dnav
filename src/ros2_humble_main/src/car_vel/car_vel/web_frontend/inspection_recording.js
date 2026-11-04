@@ -10,7 +10,7 @@
         state = data.state;
         const active = state === 'starting' || state === 'recording';
         controls.hidden = !window.RecordingVisibility.get() && !active && state !== 'stopping';
-        button.textContent = active ? '停止录像' : '开始双路录像';
+        button.textContent = state === 'stopping' ? '正在保存录像…' : active ? '停止录像' : '开始双路录像';
         button.disabled = busy || state === 'stopping';
         const files = data.files || {};
         const paths = files.visible && files.infrared
@@ -26,9 +26,9 @@
             const response = await fetch(url, {cache:'no-store'});
             if (!response.ok) throw new Error('录像服务不可用');
             const data = await response.json();
-            if (!busy && current === revision) render(data);
+            if (current === revision) render(data);
         } catch (error) {
-            if (!busy && current === revision) message.textContent = `录像状态读取失败：${error.message}`;
+            if (current === revision) message.textContent = `录像状态读取失败：${error.message}`;
         }
     }
     button.addEventListener('click', async () => {
@@ -46,7 +46,7 @@
             message.textContent = `录像操作失败：${error.message}`;
         } finally {
             busy = false;
-            button.disabled = false;
+            button.disabled = state === 'stopping';
         }
     });
     window.addEventListener('storage', event => {

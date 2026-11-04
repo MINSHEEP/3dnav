@@ -17,6 +17,7 @@ class C12Recorder:
         self.files = {}
         self.state = 'idle'
         self.error = ''
+        self.worker = None
 
     def status(self):
         with self.lock:
@@ -48,31 +49,33 @@ class C12Recorder:
                 self.state = 'error'
                 self.error = '无法启动录像进程'
                 raise
-            threading.Thread(target=self._monitor, daemon=True, name='c12-recording').start()
+            self.worker = threading.Thread(target=self._monitor, daemon=True, name='c12-recording')
+            self.worker.start()
             return self.status()
 
     def _monitor(self):
         started = time.monotonic()
         while True:
-            threading.Event().wait(0.5)
+            time.sleep(0.5)
             with self.lock:
-                if self.state not in ('starting', 'recording'):
-                    return
-                failed = [name for name, proc in self.processes.items() if proc.poll() is not None]
-                if failed:
-                    self.error = f"{'、'.join(failed)} 录像流中断，已停止两路录像"
-                    self.state = 'stopping'
-                    self._finish()
-                    self.state = 'error'
-                    return
-                if all(path.exists() and path.stat().st_size > 4096 for path in self.files.values()):
-                    self.state = 'recording'
-                elif self.state == 'starting' and time.monotonic() - started > 20:
-                    self.error = '等待双路视频超时，已停止录像'
-                    self.state = 'stopping'
-                    self._finish()
-                    self.state = 'error'
-                    return
+                if self.state != 'stopping':
+                    failed = [name for name, proc in self.processes.items() if proc.poll() is not None]
+                    if failed:
+                        self.error = f"{'、'.join(failed)} 录像流中断，已停止两路录像"
+                        self.state = 'stopping'
+                    elif all(path.exists() and path.stat().st_size > 4096 for path in self.files.values()):
+                        self.state = 'recording'
+                    elif self.state == 'starting' and time.monotonic() - started > 20:
+                        self.error = '等待双路视频超时，已停止录像'
+                        self.state = 'stopping'
+                stopping = self.state == 'stopping'
+            if stopping:
+                # FFmpeg may need several seconds to finalize MP4. Keep status
+                # requests responsive while the existing worker waits for it.
+                self._finish()
+                with self.lock:
+                    self.state = 'error' if self.error else 'idle'
+                return
 
     def _finish(self):
         for proc in self.processes.values():
@@ -91,12 +94,12 @@ class C12Recorder:
             if self.state not in ('starting', 'recording'):
                 raise ValueError('当前没有正在进行的录像')
             self.state = 'stopping'
-            self._finish()
-            self.state = 'idle'
             return self.status()
 
     def close(self):
         with self.lock:
-            if self.processes:
-                self._finish()
-                self.state = 'idle'
+            worker = self.worker
+            if self.state in ('starting', 'recording'):
+                self.state = 'stopping'
+        if worker is not None:
+            worker.join()

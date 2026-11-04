@@ -22,7 +22,9 @@ def wait_for(predicate):
 @pytest.fixture
 def recorder(tmp_path, monkeypatch):
     executable = tmp_path / 'ffmpeg'
-    executable.write_text(f'#!{sys.executable}\nimport pathlib, sys, time\n'
+    executable.write_text(f'#!{sys.executable}\nimport os, pathlib, signal, sys, time\n'
+                          'def stop(*_):\n    time.sleep(float(os.environ.get("C12_TEST_STOP_DELAY", "0")))\n    sys.exit(0)\n'
+                          'signal.signal(signal.SIGINT, stop)\n'
                           'pathlib.Path(sys.argv[-1]).write_bytes(b"x" * 5000)\n'
                           'while True: time.sleep(.1)\n')
     executable.chmod(0o755)
@@ -39,7 +41,8 @@ def test_two_files_start_stop_and_duplicate(recorder):
         recorder.start()
     wait_for(lambda: recorder.status()['state'] == 'recording')
     assert all(Path(path).stat().st_size == 5000 for path in recorder.status()['files'].values())
-    assert recorder.stop()['state'] == 'idle'
+    assert recorder.stop()['state'] == 'stopping'
+    wait_for(lambda: recorder.status()['state'] == 'idle')
     assert not recorder.processes
 
 
@@ -53,7 +56,8 @@ def test_one_stream_failure_stops_other(recorder):
     assert other.poll() is not None
 
 
-def test_recording_http_api(recorder):
+def test_recording_http_api(recorder, monkeypatch):
+    monkeypatch.setenv('C12_TEST_STOP_DELAY', '2')
     from http.server import ThreadingHTTPServer
     from types import SimpleNamespace
     from urllib.request import Request, urlopen
@@ -70,15 +74,46 @@ def test_recording_http_api(recorder):
     def post(operation):
         request = Request(url, data=json.dumps({'operation': operation}).encode(),
                           headers={'Content-Type': 'application/json'})
-        with urlopen(request, timeout=5) as response:
+        with urlopen(request, timeout=1) as response:
             return json.load(response)
     try:
         assert post('start')['state'] == 'starting'
         wait_for(lambda: recorder.status()['state'] == 'recording')
         with urlopen(url, timeout=5) as response:
             assert json.load(response)['state'] == 'recording'
-        assert post('stop')['state'] == 'idle'
+        assert post('stop')['state'] == 'stopping'
+        with urlopen(url, timeout=1) as response:
+            assert json.load(response)['state'] == 'stopping'
+        wait_for(lambda: recorder.status()['state'] == 'idle')
     finally:
         server.shutdown()
         server.server_close()
         worker.join()
+
+
+def test_slow_encoder_shutdown_does_not_block_stop_or_status(recorder, monkeypatch):
+    monkeypatch.setenv('C12_TEST_STOP_DELAY', '2')
+    recorder.start()
+    wait_for(lambda: recorder.status()['state'] == 'recording')
+    started = time.monotonic()
+    assert recorder.stop()['state'] == 'stopping'
+    assert recorder.status()['state'] == 'stopping'
+    assert time.monotonic() - started < 0.5
+    with pytest.raises(ValueError):
+        recorder.start()
+    wait_for(lambda: recorder.status()['state'] == 'idle')
+    assert not recorder.processes
+
+
+def test_stop_during_start_and_restart_uses_new_files(recorder):
+    first = recorder.start()['files']
+    recorder.stop()
+    wait_for(lambda: recorder.status()['state'] == 'idle')
+    second = recorder.start()['files']
+    assert first != second
+    wait_for(lambda: recorder.status()['state'] == 'recording')
+    children = list(recorder.processes.values())
+    recorder.close()
+    assert recorder.status()['state'] == 'idle'
+    assert not recorder.processes
+    assert all(child.poll() is not None for child in children)
