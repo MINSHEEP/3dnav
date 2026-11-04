@@ -224,7 +224,7 @@ def generate_launch_description():
             description='Automatic retries before a failed route point is skipped'),
         DeclareLaunchArgument(
             'settled_xy_tolerance',
-            default_value='0.25',
+            default_value='0.30',
             description='Stable near-goal fallback position tolerance in metres'),
         DeclareLaunchArgument(
             'settled_yaw_tolerance_deg',

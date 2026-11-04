@@ -43,6 +43,19 @@ class CmdVelTurnFloorTests(unittest.TestCase):
     def test_turns_already_above_the_floor_are_preserved(self):
         self.assertEqual(self.shape(angular_z=0.20), (0.0, 0.0, 0.20))
 
+    def test_field_turn_floor_ramps_then_stops_without_changing_walking_arcs(self):
+        shaper = TurnCommandShaper()
+        shaper.set_target(0.0, 0.0, 0.08)
+        values = [shaper.step(0.05)[2] for _ in range(20)]
+        self.assertAlmostEqual(values[-1], 0.25)
+        self.assertTrue(all(abs(b - a) <= 0.020001 for a, b in zip([0.0] + values, values)))
+        shaper.set_target(0.0, 0.0, 0.0)
+        self.assertEqual(shaper.step(0.05), (0.0, 0.0, 0.0))
+        shaper.set_target(0.05, 0.0, 0.08)
+        for _ in range(20):
+            output = shaper.step(0.05)
+        self.assertAlmostEqual(output[2], 0.08)
+
     def test_bridge_and_launch_use_the_calibrated_floor(self):
         bridge = (CAR_VEL_ROOT / 'car_vel' / 'cmdvel_bridge_ros2.py').read_text(
             encoding='utf-8')
@@ -53,7 +66,7 @@ class CmdVelTurnFloorTests(unittest.TestCase):
         self.assertIn("'min_in_place_turn_command'", bridge)
         selected = (CAR_VEL_ROOT / 'car_vel' / 'robot_body_bridge.py').read_text(encoding='utf-8')
         self.assertIn('self.shaper = TurnCommandShaper()', selected)
-        self.assertEqual(TurnCommandShaper().turn_floor, 0.15)
+        self.assertEqual(TurnCommandShaper().turn_floor, 0.25)
         self.assertNotIn("executable='cmdvel_bridge_ros2'", launch)
 
 

@@ -262,7 +262,7 @@ class RouteNavigationManager(Node):
                 'route_point_retry_count', 1).value))
         self._settled_xy_tolerance = max(
             0.05, float(self.declare_parameter(
-                'settled_xy_tolerance', 0.25).value))
+                'settled_xy_tolerance', 0.30).value))
         self._settled_yaw_tolerance = math.radians(max(
             1.0, float(self.declare_parameter(
                 'settled_yaw_tolerance_deg', 20.0).value)))
