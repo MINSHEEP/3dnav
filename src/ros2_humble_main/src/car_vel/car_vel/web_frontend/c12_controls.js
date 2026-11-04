@@ -147,8 +147,9 @@
         await send(payload);
     });
     read.onclick=()=>act(()=>send({command:select.value,read:true}));
-    const container=document.querySelector('aside') || document.querySelector('main') || document.body;const cameraSection=container.querySelector('.inspection-camera-panel')?.closest('section');
-    if(cameraSection)cameraSection.after(panel);else container.append(panel);
+    const inspectionControls = document.querySelector('.inspection-controls');
+    const container = document.querySelector('aside') || document.querySelector('main') || document.body;
+    if (inspectionControls) inspectionControls.after(panel); else container.append(panel);
     async function refresh(){
         if(document.hidden)return;
         try{
