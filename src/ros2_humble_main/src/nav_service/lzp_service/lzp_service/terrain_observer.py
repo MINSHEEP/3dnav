@@ -50,8 +50,7 @@ def corridor_return_diagnostics(
 def estimate_local_terrain(
         points, *, robot_x, robot_y, yaw,
         forward_min=0.10, forward_max=1.30, half_width=0.45,
-        resolution=0.12, minimum_points=30, ground_anchor=None,
-        separate_missing_returns=False):
+        resolution=0.12, minimum_points=30, ground_anchor=None):
     """Estimate the floor and hazards in a robot-aligned forward corridor.
 
     This estimator is deliberately conservative. Missing or sparse geometry
@@ -191,10 +190,9 @@ def estimate_local_terrain(
         slope_deg=slope_deg,
         cross_slope_deg=cross_slope_deg,
         step_height_m=step_height,
-        gap_width_m=(gap_width if negative_obstacle or not separate_missing_returns else 0.0),
+        gap_width_m=gap_width,
         roughness_m=roughness,
         clearance_width_m=clearance,
         confidence=confidence,
         negative_obstacle=negative_obstacle,
-        slippery=False,
-        sampling_gap_width_m=gap_width if separate_missing_returns else 0.0)
+        slippery=False)

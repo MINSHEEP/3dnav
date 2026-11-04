@@ -51,7 +51,7 @@ function fixture() {
 
     f=fixture(); f.app.connection(true); f.emit();
     f.payload.locked=true; f.emit();
-    assert.equal(f.get('apply').disabled,true,'backend task lock');
+    assert.equal(f.get('apply').disabled,false,'confirmed switch stops active tasks');
     f.payload.locked=false; f.emit();
     f.get('select').value='gangben_zsl1'; f.get('select').events.change();
     assert.equal(f.get('sdk-options').hidden,false);
@@ -68,6 +68,18 @@ function fixture() {
     assert.equal(saved.local_ip,'192.168.168.15');
     assert.equal(saved.max_vx,0.5);
     assert.equal(saved.navigation_verified,false);
+
+    f=fixture(); f.app.connection(true); f.payload.connected=false; f.emit();
+    f.get('select').value='gangben_zsl1'; f.get('select').events.change();
+    const prompts=[]; f.window.confirm=text=>{prompts.push(text); return true;};
+    await f.get('apply').events.click();
+    assert.equal(prompts.length,1);
+    assert.equal(JSON.parse(f.calls[0][2].profile_json).switch_confirmed,true);
+
+    f=fixture(); f.app.connection(true); f.payload.connected=false; f.emit();
+    f.get('select').value='gangben_zsl1'; f.get('select').events.change();
+    f.window.confirm=()=>false;
+    await f.get('apply').events.click(); assert.equal(f.calls.length,0);
 
     f=fixture(); f.app.connection(true); f.emit();
     f.get('ip').events.input();

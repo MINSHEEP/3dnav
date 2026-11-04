@@ -11,69 +11,34 @@ import unittest
 SETUP_PATH = Path(__file__).resolve().parents[1] / 'setup.py'
 
 
-def load_install_tree(name='install_tree'):
-    """Load the packaging helpers without executing setuptools.setup()."""
+def load_install_tree():
+    """Load only install_tree without executing setuptools.setup()."""
     tree = ast.parse(SETUP_PATH.read_text(encoding='utf-8'))
-    functions = [
+    function = next(
         node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in {'install_tree', 'install_behavior_tree'}
-    ]
-    namespace = {'os': __import__('os'), 'json': json}
-    module = ast.Module(body=functions, type_ignores=[])
+        if isinstance(node, ast.FunctionDef) and node.name == 'install_tree'
+    )
+    namespace = {'os': __import__('os')}
+    module = ast.Module(body=[function], type_ignores=[])
     exec(compile(module, str(SETUP_PATH), 'exec'), namespace)
-    return namespace[name]
+    return namespace['install_tree']
 
 
 class SetupRuntimeTreeTests(unittest.TestCase):
 
     def test_behavior_model_assets_keep_deployment_subdirectories(self):
-        root = SETUP_PATH.parent / 'person_behavior'
+        root = SETUP_PATH.parent / 'person-behavior-recognition'
         manifest = json.loads((root / 'assets/runtime_assets.json').read_text(encoding='utf-8'))
-        entries = load_install_tree('install_behavior_tree')(str(root), 'share/car_vel/person_behavior')
+        entries = load_install_tree()(str(root), 'share/car_vel/person-behavior-recognition')
         installed = {
             Path(source).relative_to(root).as_posix():
             (Path(destination) / Path(source).name).as_posix()
             for destination, files in entries for source in files
         }
         for asset in manifest['files']:
-            self.assertEqual(installed[asset['path']], 'share/car_vel/person_behavior/' + asset['path'])
-        self.assertIn('pphuman_runtime/self_check.py', installed)
-        self.assertIn('environment/source_provenance.json', installed)
-
-    def test_packages_manifest_models_and_fails_for_missing_active_model(self):
-        install = load_install_tree('install_behavior_tree')
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'assets').mkdir()
-            active = root / 'output_inference' / 'current' / 'model.bin'
-            old = root / 'output_inference' / 'ppTSM' / 'model.pdiparams'
-            for model in (active, old):
-                model.parent.mkdir(parents=True)
-                model.write_bytes(b'model')
-            asset = active.relative_to(root).as_posix()
-            (root / 'assets' / 'runtime_assets.json').write_text(
-                json.dumps({'files': [{'path': asset}]}), encoding='utf-8')
-            installed = [Path(file) for _, files in install(str(root), 'share/runtime') for file in files]
-            self.assertIn(active, installed)
-            self.assertNotIn(old, installed)
-            active.unlink()
-            with self.assertRaisesRegex(FileNotFoundError, 'output_inference/current/model.bin'):
-                install(str(root), 'share/runtime')
-
-    def test_ignores_dangling_build_symlink(self):
-        install = load_install_tree()
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            model = root / 'model.bin'
-            model.write_bytes(b'model')
-            for name, target in [('active.bin', model), ('stale.bin', root / 'removed.bin')]:
-                try:
-                    (root / name).symlink_to(target)
-                except OSError as error:
-                    self.skipTest(f'Cannot create a test symlink: {error}')
-            installed = [Path(file).name for _, files in install(str(root), 'share/runtime') for file in files]
-            self.assertIn('active.bin', installed)
-            self.assertNotIn('stale.bin', installed)
+            self.assertEqual(installed[asset['path']], 'share/car_vel/person-behavior-recognition/' + asset['path'])
+        self.assertIn('pphuman_runtime/worker.py', installed)
+        self.assertIn('environment/upstream_source.json', installed)
 
     def test_ignores_python_cache_artifacts(self):
         install_tree = load_install_tree()

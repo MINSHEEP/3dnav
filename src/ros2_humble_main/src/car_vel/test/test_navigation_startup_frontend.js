@@ -50,25 +50,5 @@ function harness() {
     h.pending[0].resolve({success:true, map_names:['old-map']});
     await first; // DOM stub throws if a stale response is applied.
     assert.equal(h.logs.length, 0);
-    const elements = {'navigation-startup-detail': {}, 'btn-retry-navigation-startup': {}};
-    const startupContext = {navigationStartupStatus: {state: 'process_conflict',
-        message: '两个容器 PID 975382、980502', elapsed_sec: 2},
-        navigationStartupReceivedAt: Date.now(), Date,
-        document: {getElementById: id => elements[id]},
-        initialLocalizationStartupHint: () => '', session: {connected: true},
-        navigationStartRequest: null, navigationActiveKnown: true, navigationActive: false,
-        routeIsActive: () => false, relocalizationActive: false,
-        navigationSafetyPending: false, nav2Ready: false};
-    vm.createContext(startupContext);
-    vm.runInContext(page.slice(page.indexOf('    function renderNavigationStartup()'),
-        page.indexOf('    async function retryNavigationStartup()')), startupContext);
-    startupContext.renderNavigationStartup();
-    assert.equal(elements['btn-retry-navigation-startup'].hidden, false);
-    assert.equal(elements['btn-retry-navigation-startup'].disabled, false);
-    assert(elements['navigation-startup-detail'].textContent.includes('975382'));
-    startupContext.navigationActive = true;
-    startupContext.renderNavigationStartup();
-    assert.equal(elements['btn-retry-navigation-startup'].disabled, true,
-        'conflict retry must still be blocked while a task is active');
     console.log('PASS: deduplicated start, late-ready, stale failure/finally and stale map response');
 })().catch(error => { console.error(error); process.exitCode = 1; });

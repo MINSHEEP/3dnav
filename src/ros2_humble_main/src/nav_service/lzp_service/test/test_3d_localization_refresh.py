@@ -41,7 +41,6 @@ def harness():
     node = fixtures._guard_harness()
     names = ('_goal_preflight', '_preview_3d_goal_callback', '_amcl_pose_callback',
              '_start_previewed_3d_goal_callback', '_refresh_3d_preview_pose',
-             '_recheck_3d_start', '_validate_3d_route_segments',
              '_cancel_navigation_callback')
     implementation = fixtures._load_manager_methods(*names)
     clock = Clock()
@@ -82,9 +81,7 @@ def harness():
     node._publish_all_status = Mock()
     node._pose_yaw = lambda pose: 0.0
     node._preview_3d_snapshot = lambda: {'map_name': node._current_map_name,
-        'map_load_id': node._current_map_load_id,
-        'start_x': node._latest_amcl_pose.pose.pose.position.x,
-        'start_y': node._latest_amcl_pose.pose.pose.position.y, 'start_yaw': 0.,
+        'map_load_id': node._current_map_load_id, 'start_x': 1.2, 'start_y': 1.2,
         'body_generation': node._robot_body_status['generation']}
     node._preview_3d_identity_matches = lambda snapshot: (
         snapshot['map_load_id'] == node._current_map_load_id
@@ -177,7 +174,7 @@ class ThreeDLocalizationRefreshTests(unittest.TestCase):
         self.assertTrue(lock_states)
         self.assertFalse(any(lock_states))
 
-    def test_explicit_start_refresh_rechecks_same_preview_and_consumes_token(self):
+    def test_start_refresh_invalidates_old_token_without_starting_motion(self):
         node, request, clock = harness()
         node._latest_amcl_received_at = clock.now
         node._latest_amcl_stamp_ns = 20_000_000_000
@@ -185,12 +182,11 @@ class ThreeDLocalizationRefreshTests(unittest.TestCase):
         node._latest_amcl_received_at -= 5.133
         node._nomotion_update_client.call_async.side_effect = lambda _req: (
             node._amcl_pose_callback(sample(20_000_000_001)), Future())[1]
-        node._single_goal_callback.side_effect = lambda _:setattr(node,'_mode','single')
         result = node._start_previewed_3d_goal_callback(NS(preview_id=first.preview_id), NS())
-        self.assertTrue(result.success,result.message)
-        self.assertEqual(result.code, 'accepted')
+        self.assertFalse(result.success)
+        self.assertEqual(result.code, 'localization_refreshed_repreview')
         self.assertIsNone(node._preview_token)
-        node._single_goal_callback.assert_called_once()
+        node._single_goal_callback.assert_not_called()
         node._action_client.send_goal_async.assert_not_called()
         replay = node._start_previewed_3d_goal_callback(NS(preview_id=first.preview_id), NS())
         self.assertFalse(replay.success)
@@ -247,19 +243,22 @@ class ThreeDLocalizationRefreshTests(unittest.TestCase):
                 self.assertFalse(result.valid)
                 node._preview_action_client.send_goal_async.assert_not_called()
 
-    def test_cancel_during_explicit_start_refresh_prevents_late_navigation(self):
+    def test_refreshed_start_needs_repreview_and_a_new_explicit_start(self):
         node, request, clock = harness()
         preview = node._preview_3d_goal_callback(request, NS())
         node._latest_amcl_received_at = clock.now - 5.133
-        def update(_):
-            node._amcl_pose_callback(sample(20_000_000_001))
-            node._cancel_navigation_callback(NS())
-            return Future()
-        node._nomotion_update_client.call_async.side_effect = update
+        node._nomotion_update_client.call_async.side_effect = lambda _req: (
+            node._amcl_pose_callback(sample(20_000_000_001)), Future())[1]
         blocked = node._start_previewed_3d_goal_callback(NS(preview_id=preview.preview_id), NS())
         self.assertFalse(blocked.success)
         node._single_goal_callback.assert_not_called()
-        self.assertIsNone(node._preview_token)
+        new_preview = node._preview_3d_goal_callback(request, NS())
+        self.assertTrue(new_preview.valid)
+        self.assertNotEqual(new_preview.preview_id, preview.preview_id)
+        node._single_goal_callback.side_effect = lambda _pose: setattr(node, '_mode', 'single')
+        started = node._start_previewed_3d_goal_callback(NS(preview_id=new_preview.preview_id), NS())
+        self.assertTrue(started.success)
+        node._single_goal_callback.assert_called_once()
 
 
 if __name__ == '__main__':

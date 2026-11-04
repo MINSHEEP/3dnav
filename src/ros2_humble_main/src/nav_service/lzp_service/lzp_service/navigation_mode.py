@@ -18,11 +18,6 @@ import uuid
 MAP_2D = 'map_2d'
 TERRAIN_3D = 'terrain_3d'
 DEFAULT_NAVIGATION_MODE = TERRAIN_3D
-DEFAULT_NAVIGATION_SPEED = 0.25
-NAVIGATION_SPEED_GEARS = (DEFAULT_NAVIGATION_SPEED, 0.45)
-# Keep saved settings and older clients compatible without automatically
-# raising the speed of a robot already configured for a legacy gear.
-_SUPPORTED_NAVIGATION_SPEEDS = (*NAVIGATION_SPEED_GEARS, 0.15, 0.30)
 
 MODE_LABELS = {
     MAP_2D: '2D地图导航',
@@ -59,12 +54,6 @@ def navigation_mode_label(mode) -> str:
     return MODE_LABELS[normalize_navigation_mode(mode)]
 
 
-def normalize_navigation_speed(value) -> float:
-    if type(value) not in (int, float) or value not in _SUPPORTED_NAVIGATION_SPEEDS:
-        raise ValueError('请选择 0.25 或 0.45 m/s 导航速度挡位')
-    return float(value)
-
-
 class NavigationModeStore:
     """Thread-safe, atomic JSON storage for the globally selected mode."""
 
@@ -86,7 +75,6 @@ class NavigationModeStore:
             'updated_at': '',
             'updated_by': 'system-default',
             'load_error': str(load_error),
-            'speed_mps': DEFAULT_NAVIGATION_SPEED,
         }
 
     def _load(self):
@@ -96,18 +84,12 @@ class NavigationModeStore:
             payload = json.loads(self._path.read_text(encoding='utf-8'))
             mode = normalize_navigation_mode(payload.get('mode'))
             version = max(0, int(payload.get('version', 0)))
-            try:
-                speed_mps = normalize_navigation_speed(
-                    payload.get('speed_mps', DEFAULT_NAVIGATION_SPEED))
-            except ValueError:
-                speed_mps = DEFAULT_NAVIGATION_SPEED
             self._state = {
                 'mode': mode,
                 'version': version,
                 'updated_at': str(payload.get('updated_at', '')),
                 'updated_by': str(payload.get('updated_by', 'persisted')),
                 'load_error': '',
-                'speed_mps': speed_mps,
             }
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
             # Terrain mode is the conservative fallback: it never silently
@@ -125,7 +107,6 @@ class NavigationModeStore:
             if canonical == self._state['mode']:
                 return dict(self._state)
             state = {
-                **self._state,
                 'mode': canonical,
                 'version': int(self._state['version']) + 1,
                 'updated_at': datetime.now(timezone.utc).isoformat(),
@@ -135,15 +116,6 @@ class NavigationModeStore:
             self._write_atomic(state)
             self._state = state
             return dict(self._state)
-
-    def set_speed(self, speed_mps):
-        speed = normalize_navigation_speed(speed_mps)
-        with self._lock:
-            if speed != self._state['speed_mps']:
-                state = {**self._state, 'speed_mps': speed}
-                self._write_atomic(state)
-                self._state = state
-            return speed
 
     def _write_atomic(self, state):
         self._path.parent.mkdir(parents=True, exist_ok=True)

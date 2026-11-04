@@ -1,11 +1,10 @@
 from setuptools import find_packages, setup
-import json
 import os
 from glob import glob
 package_name = 'car_vel'
 
 
-def install_tree(source_dir, destination_dir, *, model_assets=None):
+def install_tree(source_dir, destination_dir):
     """Install a bundled runtime tree while preserving its subdirectories."""
     entries = []
     for root, directories, files in os.walk(source_dir):
@@ -13,48 +12,29 @@ def install_tree(source_dir, destination_dir, *, model_assets=None):
             name for name in directories
             if name not in {'__pycache__', '.pytest_cache'}
         ]
-        relative = os.path.relpath(root, source_dir)
-        runtime_files = []
-        for name in files:
-            path = os.path.join(root, name)
-            if os.path.splitext(name)[1].lower() in {'.pyc', '.pyo'} or not os.path.isfile(path):
-                continue
-            asset = os.path.join(relative, name).replace(os.sep, '/')
-            if model_assets is not None and asset.startswith('output_inference/') and asset not in model_assets:
-                continue
-            runtime_files.append(path)
+        runtime_files = [
+            name for name in files
+            if os.path.splitext(name)[1].lower() not in {'.pyc', '.pyo'}
+        ]
         if not runtime_files:
             continue
+        relative = os.path.relpath(root, source_dir)
         destination = destination_dir
         if relative != '.':
             destination = os.path.join(destination_dir, relative)
-        entries.append((destination, runtime_files))
+        entries.append((destination, [
+            os.path.join(root, name) for name in runtime_files
+        ]))
     return entries
-
-
-def install_behavior_tree(source_dir, destination_dir):
-    manifest_path = os.path.join(source_dir, 'assets', 'runtime_assets.json')
-    with open(manifest_path, encoding='utf-8') as stream:
-        assets = {item['path'] for item in json.load(stream)['files']}
-    for asset in sorted(assets):
-        if not os.path.isfile(os.path.join(source_dir, asset)):
-            raise FileNotFoundError(f'Behavior runtime asset missing: {asset}')
-    return install_tree(source_dir, destination_dir, model_assets=assets)
 
 
 hikvision_runtime_files = install_tree(
     'hikvision_camera',
     os.path.join('share', package_name, 'hikvision_camera'),
 )
-# Standalone camera scripts use the same policy implementation as ROS nodes.
-# Source of truth remains lzp_service; ship a data-file copy for share-only runs.
-hikvision_runtime_files.append((
-    os.path.join('share', package_name, 'hikvision_camera'),
-    ['../nav_service/lzp_service/lzp_service/detection_settings.py'],
-))
-behavior_runtime_files = install_behavior_tree(
-    'person_behavior',
-    os.path.join('share', package_name, 'person_behavior'),
+behavior_runtime_files = install_tree(
+    'person-behavior-recognition',
+    os.path.join('share', package_name, 'person-behavior-recognition'),
 )
 
 setup(
@@ -69,7 +49,7 @@ setup(
             'HIKVISION_CAMERA.md',
             'USB_CAMERA.md',
             'BEHAVIOR_RECOGNITION.md',
-            'DETECTION_SETTINGS.md',
+            'behavior_source_manifest.json',
             'WEB_PREVIEW.md',
             'XINGJI_FIXED_OBSTACLE.md',
             'NAVIGATION_MOTION_LOGS.md',

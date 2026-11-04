@@ -5,8 +5,8 @@ const vm = require('vm');
 
 function fixture() {
     const elements = {};
-    for (const id of ['source','device','path','url','width','height','fps','refresh','save',
-        'usb-fields','body-fields','c12-fields','c12-visible','c12-infrared','state','form','result']) elements['ordinary-camera-'+id] = {
+    for (const id of ['pipeline','legacy-fields','c12-fields','source','device','path','url','width','height','fps','refresh','save',
+        'usb-fields','body-fields','state','form','result']) elements['ordinary-camera-'+id] = {
         value:'', disabled:false, hidden:false, textContent:'', children:[], events:{},
         addEventListener(type,fn){this.events[type]=fn;},
         replaceChildren(){this.children=[];this.value='';},
@@ -52,15 +52,6 @@ function fixture() {
     let payload=JSON.parse(f.calls[1].options.body);
     assert.equal(payload.expected_version,0); assert.equal(payload.config.source,'body');
     assert.equal(payload.config.body_url,'http://127.0.0.1:8081/camera');
-    f.get('source').value='c12';f.get('source').events.change();
-    assert(f.get('usb-fields').hidden && f.get('body-fields').hidden && !f.get('c12-fields').hidden);
-    f.get('c12-visible').value='rtsp://192.168.144.108:554/stream=1';
-    f.get('c12-infrared').value='rtsp://192.168.144.108:555/stream=2';
-    await f.app.save();
-    payload=JSON.parse(f.calls.at(-1).options.body);
-    assert.equal(payload.config.source,'c12');
-    assert.equal(payload.config.c12_infrared_url,'rtsp://192.168.144.108:555/stream=2');
-    assert.equal(payload.config.body_url,'http://127.0.0.1:8081/camera');
 
     f=fixture();await f.app.refresh();
     f.get('path').value='/dev/video8';f.get('path').events.input();
@@ -70,6 +61,22 @@ function fixture() {
     assert.equal(JSON.parse(f.calls.at(-1).options.body).expected_version,0,'dirty version cannot silently authorize an overwrite');
     assert(f.get('result').textContent.includes('配置已更新'));
     await f.app.refresh(true);assert.equal(f.get('path').value,f.status.config.usb_device);
+
+    f=fixture();await f.app.refresh();
+    const original = {...f.status.config};
+    f.get('pipeline').value='c12';f.get('pipeline').events.change();
+    assert(f.get('legacy-fields').hidden && !f.get('c12-fields').hidden);
+    assert(f.get('source').disabled && f.get('path').disabled && f.get('url').disabled);
+    await f.app.save();
+    assert.equal(f.status.config.pipeline,'c12');
+    assert.equal(f.status.config.source,original.source);
+    assert.equal(f.status.config.usb_device,original.usb_device);
+    assert.equal(f.status.config.body_url,original.body_url);
+    assert(f.get('state').textContent.includes('C12'));
+    f.get('pipeline').value='legacy';f.get('pipeline').events.change();
+    await f.app.save();
+    assert.equal(f.status.config.pipeline,'legacy');
+    assert.equal(f.status.config.usb_device,original.usb_device);
 
     f=fixture();await f.app.refresh();f.status.locked_reason='请先结束巡检任务';await f.app.refresh();
     assert(f.get('save').disabled && f.get('state').textContent.includes('巡检'));

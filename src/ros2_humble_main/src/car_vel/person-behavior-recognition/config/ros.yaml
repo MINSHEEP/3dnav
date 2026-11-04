@@ -1,0 +1,29 @@
+pphuman_recognition:
+  ros__parameters:
+    image_topic: /pp_human/image_raw
+    result_topic: /pp_human/results
+    annotated_topic: /pp_human/annotated_image
+    status_topic: /pp_human/status
+    preview_status_topic: /pp_human/preview_status
+    worker_python: python3
+    worker_module: pphuman_runtime.worker
+    worker_config: config/inference.yaml
+    worker_env_script: environment/runtime_cpu_env.sh
+    processing_fps: 15.0
+    stream_timeout_seconds: 2.0
+    worker_timeout_seconds: 30.0
+    worker_startup_seconds: 180.0
+    result_max_age_seconds: 5.0
+    prediction_max_age_seconds: 5.0
+    restart_seconds: 5.0
+    preview: true
+    preview_fps: 20.0
+    preview_overlay_max_age_seconds: 0.35
+    preview_max_width: 1280
+    font_path: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+pphuman_view:
+  ros__parameters:
+    annotated_topic: /pp_human/annotated_image
+    stale_seconds: 3.0
+    display_fps: 20.0
+    display_max_width: 1280

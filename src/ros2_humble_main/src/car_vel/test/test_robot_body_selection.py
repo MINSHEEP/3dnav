@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parent / 'nav_service' / 'lzp_service'))
 from car_vel.zsl1_adapter import Zsl1Adapter
 from car_vel.velocity_shaping import TurnCommandShaper
-from car_vel.motion_diagnostics import CommandStreamTiming, MotionTrace, age, velocity, body_reason
+from car_vel.motion_diagnostics import MotionTrace, age, velocity, body_reason
 from lzp_service.robot_body import BodyConfigStore, BodySupervisor, default_config, validate_profile
 
 
@@ -165,10 +165,22 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(self.created[0].alive())
         self.assertEqual(len(self.created), 1)
         self.assertEqual(self.supervisor.error, '')
+    def test_powered_off_confirmation_only_applies_to_xingji_to_zsl1(self):
+        self.apply(offline_xingji_powered_off=True)
+        self.assertIn(('prepare_xingji_powered_off', 'xingji'), self.events)
+        self.assertNotIn('offline_xingji_powered_off', self.store.load()['profiles']['gangben_zsl1'])
+        self.events.clear()
+        self.apply(body='xingji', profile=default_config()['profiles']['xingji'],
+                   expected_version=2, offline_xingji_powered_off=True)
+        self.assertIn(('prepare', 'gangben_zsl1'), self.events)
     def test_busy_tasks_rejected_before_touching_worker(self):
         def busy(): raise ValueError('busy')
         with self.assertRaises(ValueError): self.apply(idle_check=busy)
         self.assertEqual(len(self.events), 1)
+    def test_confirmed_switch_freezes_old_worker_before_starting_target(self):
+        self.apply(switch_confirmed=True)
+        self.assertEqual(self.events[1:4], [('prepare_confirmed','xingji'),
+                         ('close','xingji'), ('start','gangben_zsl1',True)])
     def test_stale_browser_version_rejected(self):
         with self.assertRaises(ValueError): self.apply(expected_version=9)
         self.assertEqual(len(self.events), 1)
@@ -273,7 +285,6 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
                 self.sent = []
                 self.received = []
                 self.subscriptions = {}
-                self.subscription_qos = {}
                 self.state_lock = threading.RLock()
                 self.requested_velocity = (0, 0, 0)
                 self.last_velocity_command = 0.0
@@ -282,7 +293,6 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
             def get_clock(self):return types.SimpleNamespace(now=lambda:types.SimpleNamespace(nanoseconds=int(self.last_status_time*1e9)))
             def create_subscription(self, _type, topic, callback, _qos):
                 self.subscriptions[topic] = callback
-                self.subscription_qos[topic] = _qos
             def _send_velocity(self, values): self.sent.append(values);return True
             def _send_zero_burst(self): self.sent.append((0, 0, 0))
             def _control_tick(self): self.sent.append('remote')
@@ -302,11 +312,6 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
                          profile=default_config()['profiles']['xingji'], frozen=False,
                          Parameter=lambda *args, **kwargs: None, Twist=object,
                          Bool=object, Empty=object,
-                         QoSProfile=types.SimpleNamespace,
-                         HistoryPolicy=types.SimpleNamespace(KEEP_LAST='keep_last'),
-                         ReliabilityPolicy=types.SimpleNamespace(BEST_EFFORT='best_effort'),
-                         DurabilityPolicy=types.SimpleNamespace(VOLATILE='volatile'),
-                         CommandStreamTiming=CommandStreamTiming,
                          MotionTrace=MotionTrace,age=age,velocity=velocity,body_reason=body_reason,generation=1,
                          json=json,
                          time=types.SimpleNamespace(monotonic=lambda: self.now))
@@ -334,32 +339,6 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
         self.assertAlmostEqual(values[-1], 0.15)
         self.now += 0.31; self.node._control_tick()
         self.assertEqual(self.node.sent[-1], (0, 0, 0))
-    def test_safe_velocity_prefers_latest_and_reports_a_receive_gap(self):
-        qos = self.node.subscription_qos['/cmd_vel_safe']
-        self.assertEqual((qos.history, qos.depth, qos.reliability, qos.durability),
-                         ('keep_last', 1, 'best_effort', 'volatile'))
-        self.arm()
-        self.node.nav_velocity(self.command())
-        self.node._control_tick()
-        first_yaw = self.node.sent[-1][2]
-        self.now += 0.15
-        self.node._control_tick()
-        self.assertGreater(self.node.sent[-1][2], first_yaw)
-        self.node.nav_velocity(self.command())
-        self.node._control_tick()
-        self.assertGreater(self.node.sent[-1][0], 0)
-        self.now += 0.36
-        self.node._control_tick()
-        self.assertEqual(self.node.sent[-1], (0, 0, 0))
-        record = self.node._motion_trace.last_record
-        self.assertEqual(record['reason_code'], 'safe_command_stale')
-        stream = record['safe_velocity_stream']
-        self.assertFalse(stream['fresh'])
-        self.assertAlmostEqual(stream['max_gap_sec'], 0.36)
-        self.node.nav_velocity(self.command())
-        self.node._control_tick()
-        self.assertGreater(self.node.sent[-1][0], 0)
-        self.assertAlmostEqual(self.node.sent[-1][2], first_yaw)
     def test_remote_excludes_navigation_and_drops_old_target(self):
         self.arm(); self.node.nav_velocity(self.command())
         self.node._enable_callback(types.SimpleNamespace(data=True))
@@ -392,6 +371,43 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
         self.assertFalse(self.node.prepare_switch()[0])
         self.node.body_status = {'connected': True, 'motion_mode': 2}
         self.assertFalse(self.node.prepare_switch()[0])
+
+    def test_confirmed_switch_freezes_even_with_remote_session(self):
+        self.node.body_status = {'connected': False}
+        self.node.ever_controlled = True
+        self.node.remote_active = True
+        self.assertTrue(self.node.prepare_switch(switch_confirmed=True)[0])
+        self.assertTrue(self.node.frozen)
+        self.assertFalse(self.node.remote_active)
+
+    def test_remote_zero_velocity_does_not_mark_unused_offline_body_controlled(self):
+        self.node.body_status = {'connected': False}
+        self.node._enable_callback(types.SimpleNamespace(data=True))
+        self.node._velocity_callback(self.command(0, 0))
+        self.node._enable_callback(types.SimpleNamespace(data=False))
+        self.node._velocity_callback(self.command(0, 0))
+        self.assertFalse(self.node.ever_controlled)
+        self.assertTrue(self.node.prepare_switch()[0])
+
+    def test_remote_nonzero_velocity_keeps_offline_switch_barrier(self):
+        self.node.body_status = {'connected': False}
+        self.node._velocity_callback(self.command())
+        self.assertTrue(self.node.ever_controlled)
+        self.assertFalse(self.node.prepare_switch()[0])
+
+    def test_confirmed_powered_off_xingji_can_switch_only_when_disconnected(self):
+        self.node.ever_controlled = True
+        self.node.body_status = {'connected': False}
+        self.assertFalse(self.node.prepare_switch()[0])
+        self.assertTrue(self.node.prepare_switch(powered_off_confirmed=True)[0])
+
+    def test_powered_off_confirmation_does_not_override_online_or_active_session(self):
+        self.node.ever_controlled = True
+        self.node.body_status = {'connected': True, 'motion_mode': 2}
+        self.assertFalse(self.node.prepare_switch(powered_off_confirmed=True)[0])
+        self.node.body_status = {'connected': False}
+        self.node.remote_active = True
+        self.assertFalse(self.node.prepare_switch(powered_off_confirmed=True)[0])
 
     def test_mapping_lio_pause_sends_zero_without_hardware_emergency(self):
         self.arm_mapping(); self.node.nav_velocity(self.command()); self.node._control_tick()
@@ -675,6 +691,15 @@ class Zsl1RosCallbacksTests(unittest.TestCase):
         self.node.activate()
         self.assertEqual(len(self.sdk.calls), 1)
         self.assertFalse(self.node.motion_authorized)
+
+    def test_confirmed_switch_cancels_remote_and_stand_wait(self):
+        self.node.stand()
+        self.node.remote_active = True
+        self.assertTrue(self.node.prepare_switch(switch_confirmed=True)[0])
+        self.assertTrue(self.node.frozen)
+        self.assertFalse(self.node.remote_active)
+        self.assertFalse(self.node.motion_authorized)
+        self.assertIsNone(self.node.stand_future)
 
     def test_mapping_lio_stop_uses_normal_zero_move_not_passive(self):
         self.warm()

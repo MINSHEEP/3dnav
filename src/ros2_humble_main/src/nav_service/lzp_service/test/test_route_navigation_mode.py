@@ -20,11 +20,10 @@ def _harness(mode, *, pose_age=0.0, with_grid=False):
         node for node in tree.body
         if isinstance(node, ast.ClassDef)
         and node.name == 'RouteNavigationManager')
-    methods = [
+    method = next(
         node for node in manager.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in ('_goal_preflight', '_global_localization_required',
-                          '_global_localization_check')]
+        and node.name == '_goal_preflight')
 
     class Result:
         def __init__(self, allowed, code, message):
@@ -36,15 +35,14 @@ def _harness(mode, *, pose_age=0.0, with_grid=False):
         'PoseStamped': object,
         'GoalValidationResult': Result,
         'MAP_2D': 'map_2d',
-        'TERRAIN_3D': 'terrain_3d',
         'uses_terrain': lambda value: value == 'terrain_3d',
         'validate_navigation_goal': lambda *_args, **_kwargs: Result(
             True, 'allowed_3d', 'terrain validation passed'),
         'math': math,
         'time': time,
     }
-    body = 'class Harness:\n' + '\n'.join(textwrap.indent(
-        ast.get_source_segment(source, method), '    ') for method in methods)
+    body = 'class Harness:\n' + textwrap.indent(
+        ast.get_source_segment(source, method), '    ')
     exec(body, namespace)
     value = namespace['Harness']()
     value._current_map_name = 'garden'
@@ -60,11 +58,6 @@ def _harness(mode, *, pose_age=0.0, with_grid=False):
     value._goal_preflight_tolerance = 0.1
     value._goal_preflight_start_tolerance = 0.35
     value._effective_navigation_mode = lambda: mode
-    value._robot_body_status = {'config': {'selected': 'xingji'}, 'generation': 1}
-    value._global_localization_status = (dict(ready=True, scope='xingji_3d',
-        map_name='garden', map_load_id='load-1', body_generation=1)
-        if mode == 'terrain_3d' else {})
-    value._global_localization_at = time.monotonic()
     return value
 
 

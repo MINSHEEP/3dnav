@@ -1,6 +1,5 @@
 """Shared, on-demand C12 RTSP previews. No gimbal or camera-setting commands."""
 import os
-from contextlib import suppress
 import select
 import shutil
 import subprocess
@@ -37,7 +36,7 @@ class C12Source:
     FRAME_TIMEOUT = 8
 
     def __init__(self, url, frame_factory):
-        self.url = url
+        self.url, self._frame_factory = url, frame_factory
         self.frames = frame_factory()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -53,7 +52,8 @@ class C12Source:
                 raise RuntimeError('C12 视频服务已关闭')
             self._requested = time.monotonic()
             if self._worker is None or not self._worker.is_alive():
-                # Preserve the sequence across decoder restarts.
+                # A new external request waits for this connection's first frame.
+                self.frames = self._frame_factory()
                 self._frame_at, self._error = 0.0, ''
                 self._worker = threading.Thread(target=self._run, daemon=True,
                                                 name='c12-rtsp')
@@ -124,8 +124,7 @@ class C12Source:
             finally:
                 if process is not None:
                     if process.poll() is None:
-                        with suppress(ProcessLookupError):
-                            process.terminate()
+                        process.terminate()
                         try:
                             process.wait(timeout=2)
                         except subprocess.TimeoutExpired:
@@ -147,11 +146,26 @@ class C12Source:
         with self._lock:
             process, worker = self._process, self._worker
         if process is not None and process.poll() is None:
-            with suppress(ProcessLookupError):
-                process.terminate()
+            process.terminate()
         if worker is not None:
             worker.join(timeout=self.FRAME_TIMEOUT + 3)
         self._failed('C12 视频服务已关闭')
+
+
+class C12Streams:
+    def __init__(self, frame_factory, visible_url=VISIBLE_URL, infrared_url=INFRARED_URL):
+        self.sources = {name: C12Source(url, frame_factory) for name, url in (
+            ('visible', visible_url), ('infrared', infrared_url))}
+
+    def status(self):
+        return {name: {**source.status(),
+                       'stream_url': f'/api/c12/{name}/stream.mjpg',
+                       'frame_url': f'/api/c12/{name}/frame.jpg'}
+                for name, source in self.sources.items()}
+
+    def close(self):
+        for source in self.sources.values():
+            source.close()
 
 
 class C12OrdinarySource:
@@ -212,63 +226,4 @@ class C12OrdinarySource:
         self._stop.set()
         if self._worker is not None:
             self._worker.join(timeout=2)
-        self.source.close()
         self.frames.invalidate('C12 普通画面来源已释放')
-
-
-class C12InfraredPreview:
-    MESSAGE = 'C12 仅提供红外画面，暂未接入测温与高温检测'
-
-    def __init__(self, source):
-        self.source = source
-
-    def status(self):
-        return {**self.source.status(), 'pipeline': 'c12', 'supports_temperature': False,
-                'detection_enabled': False, 'manual_detection_enabled': False,
-                'alarm_active': False, 'max_temperature_c': None,
-                'temperature_error': self.MESSAGE}
-
-    def frame(self, *, raw=False):
-        return self.source.next_frame()[1]
-
-    def open_stream(self):
-        return C12MjpegStream(self.source)
-
-    def config(self, task_id=''):
-        return {'success': True, 'supports_temperature': False, 'error': self.MESSAGE}
-
-    def update_config(self, payload):
-        raise ValueError(self.MESSAGE)
-
-    def set_detection(self, enabled):
-        return self.status()
-
-    def set_mode(self, mode, task_id=''):
-        return {**self.status(), 'mode': mode, 'task_id': task_id}
-
-    def capture(self, duration_seconds):
-        raise RuntimeError(self.MESSAGE)
-
-    def events(self, since):
-        return {'events': [], 'sequence': since}
-
-
-class C12MjpegStream:
-    headers = {'Content-Type': 'multipart/x-mixed-replace; boundary=frame'}
-
-    def __init__(self, source):
-        self.source = source
-        self.sequence, self.pending = source.next_frame()
-        self.closed = False
-
-    def read(self, _size):
-        if self.closed:
-            return b''
-        if self.pending is None:
-            self.sequence, self.pending = self.source.next_frame(self.sequence)
-        image, self.pending = self.pending, None
-        return (b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
-                + str(len(image)).encode() + b'\r\n\r\n' + image + b'\r\n')
-
-    def close(self):
-        self.closed = True

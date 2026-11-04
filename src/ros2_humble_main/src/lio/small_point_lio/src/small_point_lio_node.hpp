@@ -43,8 +43,6 @@ namespace small_point_lio {
         std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>>
             global_mapping_cloud_publisher;
         std::shared_ptr<rclcpp::Publisher<std_msgs::msg::String>> lio_health_publisher;
-        rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr interval_policy_subscription;
-        IntervalCompensationLease interval_policy;
         std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>> motion_stop_publisher;
         std::shared_ptr<rclcpp::Publisher<std_msgs::msg::Empty>>
             clear_emergency_stop_publisher;

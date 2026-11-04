@@ -137,7 +137,6 @@ small_point_lio:
         odometry_guard_max_linear_speed: 0.8       # m/s
         odometry_guard_max_vertical_speed: 0.8     # m/s，单帧超限先软隔离
         odometry_guard_max_angular_speed: 2.0      # rad/s
-        # Legacy门槛不变；活动星玑3D在新鲜授权下按dt补偿，最多0.3m/0.5s。
         odometry_guard_max_position_step: 0.15     # m，仅用于 <= 0.5 s 的间隔
         odometry_guard_max_vertical_step: 0.20     # m，仅用于 <= 0.5 s 的间隔
         odometry_guard_max_yaw_step: 0.80          # rad，仅用于 <= 0.5 s 的间隔

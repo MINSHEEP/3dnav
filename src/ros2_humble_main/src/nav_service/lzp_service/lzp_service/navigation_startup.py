@@ -1,7 +1,6 @@
 """Read-only navigation startup diagnosis. Never activates nodes or moves a body."""
 import json
 import time
-from .launch_process import nav2_process_conflicts
 
 
 class StartupTracker:
@@ -22,7 +21,7 @@ class StartupTracker:
         self.last_launch = now
         return changed
 
-    def snapshot(self, now, states, action_ready, *, containers=()):
+    def snapshot(self, now, states, action_ready):
         elapsed = max(0, now - self.started) if self.pid else 0
         missing = [n for n in self.REQUIRED if n not in states]
         inactive = [f'{n}={states[n]}' for n in self.REQUIRED
@@ -42,15 +41,9 @@ class StartupTracker:
         if self.pid and elapsed >= self.timeout and state in (
                 'loading_nodes', 'activating', 'waiting_action'):
             state, message = 'timeout', '导航启动超时；' + message
-        if len(containers) > 1 or (containers and not self.pid):
-            pids = '、'.join(str(item['pid']) for item in containers)
-            state = 'process_conflict'
-            message = (f'导航容器冲突或残留（PID {pids}）；'
-                       '请停止旧后台并清理残留，再重试导航服务')
         return dict(state=state, message=message, pid=self.pid,
                     elapsed_sec=round(elapsed, 1), missing_nodes=missing,
-                    lifecycle=states, action_ready=bool(action_ready),
-                    container_processes=list(containers))
+                    lifecycle=states, action_ready=bool(action_ready))
 
 
 def main(args=None):
@@ -113,14 +106,7 @@ def main(args=None):
             states = {n: self.states[n][0] if n in self.states
                       and now - self.states[n][1] <= 4 else '状态查询无响应'
                       for n in self.tracker.REQUIRED if n in names}
-            try:
-                containers = nav2_process_conflicts()
-                process_error = ''
-            except (OSError, RuntimeError) as error:
-                containers, process_error = [], str(error)
-            data = self.tracker.snapshot(now, states, self.action.server_is_ready(),
-                                         containers=containers)
-            data['process_inspection_error'] = process_error
+            data = self.tracker.snapshot(now, states, self.action.server_is_ready())
             # Heartbeat rather than a retained one-shot: browser reconnect gets
             # fresh state and never needs to trust a previous launch generation.
             self.pub.publish(String(data=json.dumps(data, ensure_ascii=False)))

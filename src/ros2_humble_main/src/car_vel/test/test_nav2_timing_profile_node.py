@@ -12,7 +12,7 @@ from car_vel.nav2_timing_profile import TimingProfilePolicy
 SOURCE = Path(__file__).resolve().parents[1] / 'car_vel/nav2_timing_profile_node.py'
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 node = next(n for n in tree.body if isinstance(n, ast.ClassDef))
-names = {'_tick', '_finish', '_observe_controller_instance', '_mode_callback'}
+names = {'_tick', '_finish', '_observe_controller_instance'}
 methods = [n for n in node.body if isinstance(n, ast.FunctionDef) and n.name in names]
 clock = SimpleNamespace(value=5.0)
 namespace = dict(time=SimpleNamespace(monotonic=lambda: clock.value), json=__import__('json'),

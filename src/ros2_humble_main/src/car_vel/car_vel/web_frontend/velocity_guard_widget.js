@@ -2,10 +2,6 @@
 (function (root) {
     'use strict';
     const slots = new WeakMap();
-    const REPEATING_STOP_CODES = new Set([
-        'global_localization_recovering', 'upstream_discarded', 'upstream_zero',
-        'upstream_stale', 'lio_paused_or_stale', 'navigation_paused_or_stale'
-    ]);
     const STOP_TEXT = Object.freeze({
         upstream_stale: '导航速度消息已过期，已零速停车',
         upstream_zero: '导航控制器当前给出零速',
@@ -29,8 +25,7 @@
     function attach(session, element, messageType, options = {}) {
         const previous = slots.get(element);
         if (previous) root.clearInterval(previous.timer);
-        const slot = { at: 0, blocked: false, warning: false, warningCode: '', reasonCode: '',
-            stoppedLogs: new Map(), timer: null };
+        const slot = { at: 0, blocked: false, warning: false, warningCode: '', reasonCode: '', timer: null };
         const motion = options.motionElement;
         if (motion) {
             motion.hidden = true;
@@ -82,7 +77,6 @@
                 if (typeof rate === 'number' && Number.isFinite(rate) && rate >= 0) streamNode.textContent += ` · 最近窗口 ${rate.toFixed(1)} Hz`;
             }
             const sources = {
-                terrain_advisory: '地形观测仅供参考，速度遵循设置页的导航挡位。',
                 restricted_map: '受限场地地图先验仍使用独立低速上限。',
                 unanchored_observation: '地面高度证据尚未充分确认，保留独立低速上限。',
                 safety_stop: '危险或必要状态无效，已零速停车。',
@@ -127,20 +121,8 @@
                 const stop = baseReason && streamReason && !baseReason.includes(streamReason)
                     ? `${baseReason}；${streamReason}` : baseReason;
                 const reasonCode = stop ? String(value.reason_code || value.reason || 'blocked') : '';
-                const command = vector(value.commanded_velocity);
-                if (value.navigation_active === false || (!value.blocked && command
-                        && command.some(number => Math.abs(number) > 1e-6))) {
-                    slot.stoppedLogs.clear();
-                }
                 if (value.schema_version >= 2 && value.navigation_active === true
-                        && stop && reasonCode !== slot.reasonCode) {
-                    const last = slot.stoppedLogs.get(reasonCode);
-                    if (!REPEATING_STOP_CODES.has(reasonCode) || last === undefined
-                            || slot.at-last >= 10000) {
-                        record(`零速原因：${stop}`);
-                        if (REPEATING_STOP_CODES.has(reasonCode)) slot.stoppedLogs.set(reasonCode, slot.at);
-                    }
-                }
+                        && stop && reasonCode !== slot.reasonCode) record(`零速原因：${stop}`);
                 slot.reasonCode = reasonCode;
                 element.hidden = !(stop || warning);
                 element.textContent = stop || (warning ? warningText : '');

@@ -1,42 +1,11 @@
 #pragma once
 
 #include <algorithm>
-#include <atomic>
-#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace small_point_lio {
-
-    // Expiring scope selection, independent of permission to send motion.
-    class IntervalCompensationLease {
-    public:
-        void observe(const bool enabled, const int64_t now_ns) {
-            deadline_ns_.store(enabled ? now_ns + 1000000000LL : 0);
-        }
-        [[nodiscard]] bool enabled(const int64_t now_ns) const {
-            const auto deadline = deadline_ns_.load();
-            return deadline > now_ns && deadline - now_ns <= 1000000000LL;
-        }
-    private:
-        std::atomic<int64_t> deadline_ns_{0};
-    };
-
-    [[nodiscard]] inline bool exceeds_position_step(
-            const double dt, const double step, const double original_limit,
-            const double configured_speed_limit, const bool compensated) {
-        if (!std::isfinite(dt) || !std::isfinite(step) || dt <= 0.) {
-            return true;
-        }
-        // Preserve the exact legacy gate outside the scoped lease. Numerical
-        // and non-monotonic failures are checked before this kinematic gate.
-        const double limit = compensated && std::isfinite(dt) && dt > 0.
-            ? std::max(original_limit,
-                       std::min(.6, configured_speed_limit) * std::min(dt, .5))
-            : original_limit;
-        return dt <= .5 && step > limit;
-    }
 
     enum class OdometryDecision {
         Accept,

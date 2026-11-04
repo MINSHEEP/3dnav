@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>建图 · 四足机器人巡检</title>
-    <link rel="stylesheet" href="robot_ui.css?v=20260820-mapping-camera">
+    <link rel="stylesheet" href="robot_ui.css?v=20261029-display">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
-    <script src="robot_ui_common.js?v=20261022-web-preview"></script>
+    <script src="robot_ui_common.js?v=20261029-display"></script>
     <script src="pointcloud_viewer.js?v=20260820-global-path"></script>
     <script src="mapping_cloud_health.js?v=20260812-session-health-2"></script>
 </head>
@@ -99,18 +99,24 @@
                 </div>
                 <div id="mapping-camera-panel" class="mapping-camera-panel" aria-label="USB相机实时画面" hidden>
                     <div class="mapping-camera-header">
-                        <span><strong>USB相机</strong><small>原始画面</small></span>
+                        <span><strong data-camera-pipeline-label>当前相机</strong><small>原始画面</small></span>
                         <button id="btn-camera-close" type="button" aria-label="关闭摄像头画面">关闭</button>
                     </div>
-                    <div class="mapping-camera-frame">
-                        <img id="mapping-camera-stream" class="mapping-camera-stream" alt="USB相机实时画面">
-                        <div id="mapping-camera-status" class="mapping-camera-status" role="status" aria-live="polite">摄像头已关闭</div>
+                    <div class="mapping-camera-grid" data-camera-grid>
+                        <div class="mapping-camera-frame" data-camera-channel="ordinary">
+                            <img id="mapping-camera-stream" class="mapping-camera-stream" alt="USB相机实时画面">
+                            <div id="mapping-camera-status" class="mapping-camera-status" role="status" aria-live="polite">摄像头已关闭</div>
+                        </div>
+                        <div class="mapping-camera-frame" data-camera-channel="thermal" hidden>
+                            <img id="mapping-infrared-stream" class="mapping-camera-stream" alt="当前相机链路红外画面">
+                            <div id="mapping-infrared-status" class="mapping-camera-status" role="status">红外预览已暂停</div>
+                        </div>
                     </div>
                 </div>
                 <p class="hint">默认关闭以节省带宽；关闭、切到后台或离开页面后会停止视频拉流，不影响点云建图和键盘遥控。</p>
             </section>
 
-            <section class="section">
+<section class="section">
                 <div class="section-title">保存地图</div>
                 <div class="row">
                     <input id="map-name" type="text" maxlength="64" placeholder="手动输入地图名称，例如 office_a">
@@ -158,6 +164,8 @@
     const cameraPanel = document.getElementById('mapping-camera-panel');
     const cameraStream = document.getElementById('mapping-camera-stream');
     const cameraStatus = document.getElementById('mapping-camera-status');
+    const infraredStream = document.getElementById('mapping-infrared-stream');
+    const infraredStatus = document.getElementById('mapping-infrared-status');
     const cameraDisplay = document.getElementById('camera-display');
     const mapCanvas = new UI.MapCanvas(document.getElementById('map-canvas'), document.getElementById('map-wrapper'));
     let pointCloudViewer = null;
@@ -207,6 +215,7 @@
     let rosConnected = false;
     let cameraEnabled = false;
     let cameraRetryTimer = null;
+    let infraredRetryTimer = null;
     let activeLargeMappingTopic = null;
     let activeLargeMappingTopicName = '';
 
@@ -495,6 +504,11 @@
     }
 
     function suspendCameraStream(message = '摄像头已暂停') {
+        window.clearTimeout(infraredRetryTimer);
+        infraredStream.removeAttribute('src');
+        infraredStream.classList.remove('ready');
+        infraredStatus.hidden = false;
+        infraredStatus.textContent = message;
         window.clearTimeout(cameraRetryTimer);
         cameraRetryTimer = null;
         cameraStream.classList.remove('ready');
@@ -503,6 +517,7 @@
     }
 
     function connectCameraStream(delay = 0) {
+        connectInfraredStream(delay);
         window.clearTimeout(cameraRetryTimer);
         cameraRetryTimer = null;
         if (!cameraEnabled || !UI.previewAllowed('ordinary')) return;
@@ -511,7 +526,7 @@
             if (!cameraEnabled || !UI.previewAllowed('ordinary')) return;
             cameraStream.classList.remove('ready');
             cameraStream.removeAttribute('src');
-            setCameraStatus('正在连接 USB 相机画面…');
+            setCameraStatus('正在连接当前相机链路…');
             cameraDisplay.textContent = '连接中';
             cameraStream.src = UI.previewUrl(`${CAMERA_STREAM_URL}?t=${Date.now()}`);
         }, Math.max(0, Number(delay) || 0));
@@ -539,7 +554,30 @@
         }
     }
 
-    UI.previewControls({thermal: false});
+    function connectInfraredStream(delay = 0) {
+        window.clearTimeout(infraredRetryTimer);
+        if (!cameraEnabled || !UI.previewAllowed('thermal')) return;
+        infraredRetryTimer = window.setTimeout(() => {
+            if (!cameraEnabled || !UI.previewAllowed('thermal')) return;
+            infraredStatus.hidden = false;
+            infraredStatus.textContent = '正在连接当前链路红外画面…';
+            infraredStream.src = UI.previewUrl(`${cameraServiceOrigin()}/api/thermal/stream.mjpg?t=${Date.now()}`);
+        }, delay);
+    }
+    infraredStream.addEventListener('load', () => {
+        if (!cameraEnabled || document.hidden) return;
+        infraredStream.classList.add('ready');
+        infraredStatus.hidden = true;
+        cameraDisplay.textContent = '在线';
+    });
+    infraredStream.addEventListener('error', () => {
+        if (!cameraEnabled || !UI.previewAllowed('thermal')) return;
+        infraredStream.classList.remove('ready');
+        infraredStatus.hidden = false;
+        infraredStatus.textContent = '红外画面暂不可用，正在重连…';
+        connectInfraredStream(2000);
+    });
+    UI.previewControls();
     window.addEventListener('robot-preview-change', () => {
         suspendCameraStream('网页预览已关闭或切换');
         connectCameraStream();
@@ -999,7 +1037,7 @@
         if (!cameraEnabled || document.hidden) return;
         cameraStream.classList.remove('ready');
         cameraDisplay.textContent = '重连中';
-        setCameraStatus('视频暂不可用，正在自动重连；请确认 USB 相机服务，或关闭多余的视频页面。', true);
+        setCameraStatus('视频暂不可用，正在重连；请核对设置中所选的相机链路与设备连接。', true);
         connectCameraStream(2000);
     });
     document.addEventListener('visibilitychange', () => {

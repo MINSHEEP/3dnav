@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "storage": "Full binary payloads bundled; no Git LFS required",
+  "active_models": [
+    "shared_pose",
+    "smoking",
+    "fight"
+  ],
+  "files": [
+    {
+      "path": "output_inference/ppTSM_int8_224_cpu_candidate/model.bin",
+      "bytes": 24024984,
+      "sha256": "d0c5d684daf18bb205565de8bd62e6ccf2f27b6d8b8dd8a86e8d4379f10abd76"
+    },
+    {
+      "path": "output_inference/ppTSM_int8_224_cpu_candidate/model.xml",
+      "bytes": 898272,
+      "sha256": "0418be215b16b995cdf0f47b8f94d6717c3bc0a5acb18923941af5703475e6d6"
+    },
+    {
+      "path": "output_inference/ppTSM_int8_224_cpu_candidate/quantization.json",
+      "bytes": 8471,
+      "sha256": "d7a20d7f8416fb4e428756bad4e0cc456c82e138f3c3d80db1cd08c6fda5cdac"
+    },
+    {
+      "path": "output_inference/ppyoloe_smoking_openvino_fp32/conversion.json",
+      "bytes": 254,
+      "sha256": "b1f09e982cc17667551f4bc75c3f6e04ca1c2f90369fccbf425fc359ad4ca2da"
+    },
+    {
+      "path": "output_inference/ppyoloe_smoking_openvino_fp32/infer_cfg.yml",
+      "bytes": 1117,
+      "sha256": "16577ec5a93a1f92cd6daea652cbb9597955b438cf0061d9e907d8de0bb34a81"
+    },
+    {
+      "path": "output_inference/ppyoloe_smoking_openvino_fp32/model.bin",
+      "bytes": 29959848,
+      "sha256": "5067e9a4543f2f4fb65c7dfd354f0a6de8b7b96203d238667b0f682fdd2b7457"
+    },
+    {
+      "path": "output_inference/ppyoloe_smoking_openvino_fp32/model.xml",
+      "bytes": 592881,
+      "sha256": "9f6e1ec7ce81a08a210de6f8650e0438309a847f011b84ef08b0b1794850bcdc"
+    },
+    {
+      "path": "output_inference/yolo26s_pose_openvino_fp32/export.json",
+      "bytes": 1186,
+      "sha256": "6493be60bc36016050ed864a519d5f7df26b59cd4d87046d88e987afbff4ce54"
+    },
+    {
+      "path": "output_inference/yolo26s_pose_openvino_fp32/model.bin",
+      "bytes": 41540260,
+      "sha256": "8afd917c80f3519c6f86506d892f7f5b2d933e00158f1d4531a3578abab5c38d"
+    },
+    {
+      "path": "output_inference/yolo26s_pose_openvino_fp32/model.xml",
+      "bytes": 961528,
+      "sha256": "eb37986fcdd594d16cad2c1c64e752d048abbb5b72744e3be13d2c5a6c527779"
+    }
+  ]
+}

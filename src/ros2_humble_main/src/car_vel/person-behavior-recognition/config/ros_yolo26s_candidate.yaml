@@ -1,0 +1,4 @@
+pphuman_recognition:
+  ros__parameters:
+    worker_config: config/inference_yolo26s_candidate.yaml
+    worker_env_script: environment/runtime_cpu_env.sh

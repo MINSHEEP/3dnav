@@ -13,10 +13,6 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Empty, Float32, String
 from lzp_interface.msg import RouteExecutionStatus
-from lzp_service.navigation_mode import (
-    DEFAULT_NAVIGATION_SPEED, NAVIGATION_SPEED_GEARS, TERRAIN_3D,
-    normalize_navigation_speed,
-)
 from .motion_diagnostics import (
     MotionTrace, CommandStreamTiming, age, velocity, arbiter_reason, velocity_guard_status)
 from .navigation_motion_progress import NavigationMotionProgress
@@ -37,8 +33,6 @@ class VelocityArbiter(Node):
             'command_timeout_sec', 0.3).value))
         self.terrain_timeout = max(0.2, float(self.declare_parameter(
             'terrain_guard_timeout_sec', 0.5).value))
-        self._xingji_3d_terrain_stop_enabled = self.declare_parameter(
-            'xingji_3d_terrain_stop_enabled', True).value is not False
         self.lio_pause_timeout = max(0.5, float(self.declare_parameter(
             'lio_pause_timeout_sec', 2.5).value))
         self.navigation_input_topic = str(self.declare_parameter(
@@ -89,9 +83,8 @@ class VelocityArbiter(Node):
             String, '/navigation/mode', self._navigation_mode_callback, latched)
         self.create_subscription(
             String, '/robot_body/status', self._body_callback, latched)
-        # Keep task ownership independent of live terrain assessment.
-        self.create_subscription(Bool, '/navigation_active', self._navigation_active_callback, latched)
         # Observations only: these callbacks never set a motion gate.
+        self.create_subscription(Bool, '/navigation_active', self._navigation_active_callback, latched)
         self.create_subscription(RouteExecutionStatus, '/route_execution_status', self._route_diagnostic_callback, latched)
         self.create_subscription(String, '/terrain_observation/status', self._observer_diagnostic_callback, reliable)
         self.create_subscription(Odometry, '/Odometry', self._progress_odometry_callback, sensor)
@@ -120,8 +113,6 @@ class VelocityArbiter(Node):
         self._terrain_speed_limit = 0.0
         self._terrain_guard_at = 0.0
         self._terrain_guard_enabled = True
-        self._campus_mission_active = True  # Keep the guard until scope is known.
-        self._navigation_speed_mps = DEFAULT_NAVIGATION_SPEED
         self._require_atomic_terrain_status = True
         self._restricted_terrain = False
         self._terrain_evidence = ''
@@ -175,8 +166,6 @@ class VelocityArbiter(Node):
             active = getattr(message,'data',None) is True
             if active != self._diag_navigation_active:
                 self._progress_epoch += 1
-                if self._terrain_stop_bypassed():
-                    self._nav_at = 0.0
             self._diag_navigation_active = active
 
     def _progress_odometry_callback(self, message):
@@ -257,8 +246,7 @@ class VelocityArbiter(Node):
                 terrain_safe=self._terrain_safe,
                 connector_active=self._campus_active,
                 teleop_fresh=now - self._teleop_at <= self.timeout,
-                terrain_guard_enabled=(self._terrain_guard_enabled
-                                       and not self._terrain_stop_bypassed()))
+                terrain_guard_enabled=self._terrain_guard_enabled)
             if stop_navigation:
                 self._progress_epoch = getattr(self, '_progress_epoch', 0)+1
         if stop_navigation:
@@ -284,18 +272,8 @@ class VelocityArbiter(Node):
             safe=data['safe']
             speed=float(data['speed_limit_mps'])
             age=(self.get_clock().now().nanoseconds-int(data['stamp_ns']))/1e9
-            if type(safe) is not bool:
+            if type(safe) is not bool or not math.isfinite(speed) or not 0 <= speed <= .35:
                 raise ValueError('invalid terrain status')
-            # Fixed Xingji traversal reports the configured Nav2 gear, while
-            # other terrain policies still report their own adaptive limit.
-            fixed_xingji = (
-                self._body_id == 'xingji'
-                and data.get('navigation_mode') == TERRAIN_3D
-                and data.get('speed_policy') == 'nav2_body_limits'
-                and data.get('terrain_speed_limit_enabled') is False)
-            max_speed = max(NAVIGATION_SPEED_GEARS) if fixed_xingji else .35
-            if not math.isfinite(speed) or not 0 <= speed <= max_speed:
-                raise ValueError(f'地形速度上限 {speed:.3g} m/s 超出 0–{max_speed:.2f} m/s')
             if not 0 <= age <= self.terrain_timeout:
                 raise ValueError('stale terrain status')
             if self._terrain_guard_enabled and (
@@ -321,17 +299,11 @@ class VelocityArbiter(Node):
             stop=should_stop_for_terrain_update(terrain_safe=safe,
                 connector_active=self._campus_active,
                 teleop_fresh=now-self._teleop_at<=self.timeout,
-                terrain_guard_enabled=(self._terrain_guard_enabled
-                                       and not self._terrain_stop_bypassed()))
+                terrain_guard_enabled=self._terrain_guard_enabled)
             if stop:
                 self._progress_epoch = getattr(self, '_progress_epoch', 0)+1
         if stop:
             self.publisher.publish(Twist())
-
-    def _terrain_stop_bypassed(self):
-        return (self._terrain_guard_enabled and self._body_id == 'xingji'
-                and not self._xingji_3d_terrain_stop_enabled
-                and not self._campus_mission_active)
 
     def _navigation_mode_callback(self, message):
         try:
@@ -344,25 +316,16 @@ class VelocityArbiter(Node):
                 f'Navigation mode rejected by velocity arbiter: {error}')
             with self._lock:
                 self._terrain_guard_enabled = True
-                self._campus_mission_active = True
                 self._progress_epoch += 1
                 self._nav_at = 0.0
             self.publisher.publish(Twist())
             return
         with self._lock:
             guard_enabled = mode != 'map_2d'
-            old_bypass = self._terrain_stop_bypassed()
-            self._campus_mission_active = payload.get('campus_mission_active') is not False
-            try:
-                self._navigation_speed_mps = normalize_navigation_speed(
-                    payload.get('speed_mps', DEFAULT_NAVIGATION_SPEED))
-            except ValueError:
-                self._navigation_speed_mps = DEFAULT_NAVIGATION_SPEED
             # The route manager republishes this state at 5 Hz. Only a real
-            # policy transition invalidates commands; a heartbeat must neither
+            # mode transition invalidates commands; a heartbeat must neither
             # stop a fresh command nor extend an old command's lifetime.
-            if (guard_enabled == self._terrain_guard_enabled
-                    and old_bypass == self._terrain_stop_bypassed()):
+            if guard_enabled == self._terrain_guard_enabled:
                 return
             self._terrain_guard_enabled = guard_enabled
             self._progress_epoch += 1
@@ -463,17 +426,8 @@ class VelocityArbiter(Node):
         except (ValueError, TypeError):
             status = {}
         with self._lock:
-            previous = self._global_localization or {}
-            previous_age = time.monotonic()-self._global_localization_at
             self._global_localization = status
             self._global_localization_at = time.monotonic()
-            if (self._body_id == 'xingji' and self._terrain_guard_enabled
-                    and previous and ((previous.get('ready') is True)
-                    != (status.get('ready') is True) or previous_age > .3)):
-                if status.get('ready') is True:
-                    self._nav_at = self._campus_at = 0.
-                    self._progress_epoch += 1
-                self.publisher.publish(Twist())
 
     def _global_localization_ready(self, now):
         data = getattr(self, '_global_localization', None) or {}
@@ -486,9 +440,6 @@ class VelocityArbiter(Node):
         diagnostic=None
         with self._lock:
             now = time.monotonic()
-            terrain_stop_bypassed = self._terrain_stop_bypassed()
-            speed_limit = (self._navigation_speed_mps if terrain_stop_bypassed
-                           else self._terrain_speed_limit)
             lio_ready = (self._lio_pause_at is not None
                          and now - self._lio_pause_at <= self.lio_pause_timeout
                          and not self._lio_paused)
@@ -520,25 +471,21 @@ class VelocityArbiter(Node):
                 if self._terrain_guard_enabled and not body_known:
                     guard_fresh = False
                     reason = '3D导航本体身份无效或过期，已保持停车'
-                elif (forward_only and not terrain_stop_bypassed
-                      and self._terrain_evidence not in (
-                          'current_anchored', 'recent_measured_anchored', 'restricted_map')):
+                elif forward_only and self._terrain_evidence not in (
+                        'current_anchored', 'recent_measured_anchored', 'restricted_map'):
                     guard_fresh = False
                     reason = '星玑3D等待通过高度校验的地面证据，已保持停车'
                 elif forward_only and (self._latest_nav.linear.x < -1e-6
                                        or abs(self._latest_nav.linear.y) > 1e-6):
-                    reason = '星玑3D导航禁止自动倒退或横移；请停止任务后安全遥控调整'
-                motion_allowed = (
-                    body_known and self._diag_navigation_active
-                    if terrain_stop_bypassed else self._terrain_safe and guard_fresh)
+                    reason = '星玑3D仅有前方地形证据，禁止自动倒退或横移；请停止任务后安全遥控调整'
                 x_value, y_value, yaw_value = constrain_navigation_velocity(
                     self._latest_nav.linear.x,
                     self._latest_nav.linear.y,
                     self._latest_nav.angular.z,
-                    terrain_safe=motion_allowed,
-                    speed_limit_mps=speed_limit,
+                    terrain_safe=self._terrain_safe and guard_fresh,
+                    speed_limit_mps=self._terrain_speed_limit,
                     terrain_guard_enabled=self._terrain_guard_enabled,
-                    restricted_flat_site=self._restricted_terrain and not terrain_stop_bypassed,
+                    restricted_flat_site=getattr(self, '_restricted_terrain', False),
                     forward_only=forward_only)
                 output = Twist()
                 output.linear.x = x_value
@@ -549,9 +496,7 @@ class VelocityArbiter(Node):
             if (source in ('nav', 'campus') and self._terrain_guard_enabled
                     and self._body_id == 'xingji' and not self._global_localization_ready(now)):
                 output = Twist()
-                reason = ('三维定位正在限时复核，保持零速等待连续可信匹配'
-                          if (self._global_localization or {}).get('recovering') is True else
-                          '统一三维定位未确认、过期或失去有效匹配，已零速停车；请检查定位状态')
+                reason = '统一三维定位未确认、过期或失去有效匹配，已零速停车；请检查定位状态'
             # Serialize with pause callbacks: a pre-pause nonzero command
             # must never be enqueued after the callback's zero command.
             self.publisher.publish(output)
@@ -565,7 +510,6 @@ class VelocityArbiter(Node):
                         and self._terrain_guard_enabled and self._body_id == 'xingji'
                         and not self._global_localization_ready(now)),
                     global_localization=dict(self._global_localization or {}),
-                    global_localization_age_sec=age(now,self._global_localization_at),
                     source=source,navigation_active=self._diag_navigation_active,
                     connector_active=self._campus_active,
                     route=dict(self._diag_route),route_age_sec=age(now,self._diag_route_at),
@@ -579,13 +523,12 @@ class VelocityArbiter(Node):
                     lio_ready=lio_ready,navigation_ready=navigation_ready,emergency=self._emergency,
                     lio_age_sec=age(now,self._lio_pause_at),navigation_pause_age_sec=age(now,self._navigation_pause_at),
                     terrain_enabled=self._terrain_guard_enabled,body_id=self._body_id,
-                    terrain_stop_bypassed=terrain_stop_bypassed,
                     body_generation=self._body_generation,body_age_sec=age(now,self._body_at),
                     body_known=self._body_id in ('xingji','gangben_zsl1') and now-self._body_at<=2.,
                     terrain_fresh=now-self._terrain_guard_at<=self.terrain_timeout,
                     terrain_status_age_sec=age(now,self._terrain_guard_at),
                     terrain_safe=self._terrain_safe,evidence=self._terrain_evidence,
-                    speed_limit_mps=speed_limit,terrain=dict(self._diag_terrain),
+                    speed_limit_mps=self._terrain_speed_limit,terrain=dict(self._diag_terrain),
                     controller_stream=self._controller_timing.snapshot(now, self.timeout),
                     observer=dict(self._diag_observer),observer_age_sec=age(now,self._diag_observer_at))
                 diagnostic['reason_code']=arbiter_reason(diagnostic)

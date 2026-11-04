@@ -80,30 +80,3 @@ for (const page of ['navigation.html', 'inspection.html']) {
     assert(/onEvent:\s*log/.test(html), 'motion warning is recorded on both pages');
 }
 console.log('final velocity guard display, expiry and reconnect: ok');
-
-// Alternating recovery/cache/zero statuses belong to one stopped episode.
-const stoppedEvents = [];
-root.VelocityGuardWidget.attach(session, element, 'std_msgs/msg/String', {
-    onEvent: text => stoppedEvents.push(text),
-});
-const cycleCallback = callbacks[4];
-const sendStop = (code, text) => cycleCallback({data: JSON.stringify({
-    schema_version: 2, navigation_active: true, blocked: code !== 'upstream_zero',
-    reason_code: code, reason: text, commanded_velocity: [0,0,0],
-})});
-for (let i=0;i<5;i++) {
-    now += 100;
-    sendStop('global_localization_recovering','定位复核中');
-    now += 100;
-    sendStop('upstream_discarded','等待新速度');
-    now += 100;
-    sendStop('upstream_zero','控制器零速');
-}
-assert.strictEqual(stoppedEvents.length,3,'same stopped episode must not flood alternating reasons');
-sendStop('global_localization_untrusted','定位真正失效');
-assert(element.textContent.includes('真正失效'));
-assert(stoppedEvents.at(-1).includes('真正失效'),'new terminal failure must log immediately');
-cycleCallback({data:JSON.stringify({schema_version:2,navigation_active:true,
-    blocked:false,reason_code:'forwarded',commanded_velocity:[.2,0,0]})});
-sendStop('global_localization_recovering','再次复核');
-assert(stoppedEvents.at(-1).includes('再次复核'),'new stop after movement must log immediately');

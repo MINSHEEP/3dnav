@@ -26,9 +26,13 @@ const ui=window.RobotUi;
 assert.strictEqual(ui.previewProfile(),'remote');
 for(const [url,kind] of [['/api/stream','raw'],['/api/yolo/stream.mjpg','yolo'],['/api/thermal/stream.mjpg','thermal']]) {
     const u=new URL(ui.previewUrl('http://100.109.124.106:8766'+url+'?t=1'));
-    assert.strictEqual(u.pathname,'/api/preview/stream');
+    assert.strictEqual(u.pathname,'/api/display/stream');
     assert.strictEqual(u.searchParams.get('source'),kind);assert.strictEqual(u.searchParams.get('profile'),'remote');
 }
+assert.strictEqual(ui.temperatureText(null),'-- ℃');
+assert.strictEqual(ui.temperatureText(undefined),'-- ℃');
+assert.strictEqual(ui.temperatureText(0),'0.0 ℃');
+assert.strictEqual(ui.temperatureText(36.5),'36.5 ℃');
 assert.strictEqual(ui.previewUrl('/api/snapshot'),'/api/snapshot','explicit full-resolution still is unchanged');
 assert.strictEqual(ui.previewAllowed('ordinary'),true);assert.strictEqual(ui.previewAllowed('thermal'),false);
 tab.set('robot.webPreview.streams','both');assert.strictEqual(ui.previewAllowed('thermal'),true);

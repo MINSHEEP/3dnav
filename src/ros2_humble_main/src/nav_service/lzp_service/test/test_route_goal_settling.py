@@ -26,12 +26,12 @@ def load_goal_feedback_harness():
         if isinstance(node, ast.ClassDef) and node.name == 'RouteNavigationManager'
     )
     methods = []
-    for name in ('_pose_yaw', '_goal_feedback_callback', '_launch_status_callback'):
+    for name in ('_pose_yaw', '_goal_feedback_callback'):
         methods.append(next(
             node for node in manager.body
             if isinstance(node, ast.FunctionDef) and node.name == name
         ))
-    namespace = {'math': math, 'time': time, 'LaunchStatus': object}
+    namespace = {'math': math, 'time': time}
     body = 'class RouteHarness:\n' + ''.join(
         textwrap.indent(ast.get_source_segment(source, method), '    ') + '\n'
         for method in methods
@@ -75,32 +75,6 @@ def make_harness(require_yaw):
     cancelled = []
     harness._cancel_active_goal = lambda: cancelled.append(True)
     return harness, cancelled
-
-
-def test_stuck_route_stops_only_on_fresh_exit_and_missing_action_server():
-    harness, _ = make_harness(require_yaw=False)
-    harness._state, harness._mode = 'stopping', 'route'
-    harness._route_stop_requested_at_ns = 9_000_000_000
-    harness.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=10_000_000_000))
-    server_ready = [False]
-    harness._action_client = SimpleNamespace(server_is_ready=lambda: server_ready[0])
-    harness._publish_route_log = lambda message: None
-    finished = []
-    harness._finish_task = lambda state, message: finished.append(state)
-    status = SimpleNamespace(navigation_running=False, navigation_pid=0,
-                             timestamp=SimpleNamespace(sec=8, nanosec=0))
-    harness._launch_status_callback(status)
-    status.timestamp.sec = 9
-    server_ready[0] = True
-    harness._launch_status_callback(status)
-    server_ready[0] = False
-    status.navigation_pid = 123
-    harness._launch_status_callback(status)
-    assert finished == []
-    status.navigation_pid = 0
-    harness._launch_status_callback(status)
-    assert finished == ['stopped']
-    assert harness._goal_token == 8
 
 
 def test_position_stable_patrol_point_completes_despite_heading_error():

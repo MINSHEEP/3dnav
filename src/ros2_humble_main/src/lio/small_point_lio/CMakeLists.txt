@@ -151,10 +151,6 @@ if(BUILD_TESTING)
         src
     )
 
-    add_executable(test_interval_guard test/test_interval_guard.cpp)
-    target_include_directories(test_interval_guard PRIVATE src)
-    add_test(NAME test_interval_guard COMMAND test_interval_guard)
-
     ament_add_gtest(
         test_pointcloud_mapping
         test/test_pointcloud_mapping.cpp

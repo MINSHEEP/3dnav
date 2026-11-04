@@ -48,9 +48,6 @@ float32 correction_xy
 float32 correction_yaw
 bool candidate_verified
 uint32 candidates_checked
-# Geometry used by the returned pose and its quality metrics. Robust Xingji
-# 3D clients require se3_map_odom_v1; legacy output remains planar.
-string transform_model
 ---
 string stage
 float32 progress

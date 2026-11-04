@@ -21,7 +21,7 @@ from std_srvs.srv import Empty as EmptyService
 from lzp_interface.msg import TerrainObservation, CurrentMap, TerrainGrid
 from .rolling_terrain import RollingGroundMemory, matched_pose
 from .restricted_ground import restricted_flat_ground
-from .terrain_pose import propagate_localization, rigid_transform_matrix
+from .terrain_pose import propagate_localization
 from .terrain_navigation import TerrainCapabilityModel
 
 from .terrain_observer import (
@@ -341,24 +341,6 @@ class TerrainObserverNode(Node):
             return None
         self._map_pose_age = mapped.source_age
         map_yaw=mapped.yaw
-        if self._body == 'xingji' and self._navigation_mode == 'terrain_3d':
-            try:
-                capture = Time(nanoseconds=int(round(stamp*1e9)))
-                tf = self._tf_buffer.lookup_transform('map', 'odom', capture).transform
-                base = self._tf_buffer.lookup_transform('map', 'base_footprint', capture).transform
-                t, q = tf.translation, tf.rotation
-                matrix = np.asarray(rigid_transform_matrix((t.x, t.y, t.z),
-                                                          (q.x, q.y, q.z, q.w)))
-                bx, by = float(base.translation.x), float(base.translation.y)
-                if (not math.isfinite(bx) or not math.isfinite(by)
-                        or math.hypot(bx-mapped.x, by-mapped.y) > .35):
-                    return None
-                live = np.asarray(points) @ matrix[:, :3].T + matrix[:, 3]
-                return restricted_flat_ground(grid, robot_x=bx, robot_y=by,
-                    yaw=_yaw(base.rotation), live_points_map=live,
-                    uncertainty_radius_m=2*mapped.position_sigma+1.75*math.sin(2*mapped.yaw_sigma))
-            except Exception:
-                return None  # Missing exact-time TF cannot certify a map prior.
         angle=map_yaw-yaw; c,s=math.cos(angle),math.sin(angle)
         live=np.asarray(points).copy(); dx=live[:,0]-robot_x; dy=live[:,1]-robot_y
         live[:,0]=mapped.x+c*dx-s*dy
@@ -443,7 +425,6 @@ class TerrainObserverNode(Node):
                     raise ValueError('LIO状态异常或过期，暂停使用历史地面和地图先验')
                 anchor = self._ground_anchor(message)
                 geometry['ground_anchor'] = anchor
-                geometry['separate_missing_returns'] = True
                 evidence_source = 'current_anchored'
                 self._memory.update(points, stamp_seconds=stamp,
                                     robot_x=robot_x, robot_y=robot_y, yaw=yaw,
@@ -477,7 +458,6 @@ class TerrainObserverNode(Node):
                 'confidence': value.confidence,
                 'slope_deg': value.slope_deg,
                 'step_height_m': value.step_height_m,
-                'sampling_gap_width_m': value.sampling_gap_width_m,
                 'recent_ground_cells': len(self._memory.cells),
                 'evidence_source': evidence_source,
                 'restricted_flat_site_enabled': self._restricted_enabled,

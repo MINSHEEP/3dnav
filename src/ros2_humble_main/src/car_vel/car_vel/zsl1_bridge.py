@@ -374,13 +374,16 @@ class Zsl1Bridge(Node):
     def ready(self):
         return self.adapter.state().get('connected') is True
 
-    def prepare_switch(self):
-        state = self.adapter.state()
-        unused = not self.ever_connected and not self.ever_controlled
-        if self.stand_future is not None or self.remote_active or not (state.get('parked') or unused):
-            return False, '请先让钢镚趴下并退出遥控；失联或站立中的本体不能切换'
+    def prepare_switch(self, switch_confirmed=False):
+        if not switch_confirmed:
+            state = self.adapter.state()
+            unused = not self.ever_connected and not self.ever_controlled
+            if self.stand_future is not None or self.remote_active or not (state.get('parked') or unused):
+                return False, '请先让钢镚趴下并退出遥控；失联或站立中的本体不能切换'
         self.frozen = True
         self.motion_authorized = False
+        self.remote_active = False
+        self._cancel_stand('本体切换，站立等待已取消')
         self.stop()
         return True, '钢镚已安全停放并锁定'
 

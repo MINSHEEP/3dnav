@@ -45,9 +45,6 @@ CHECK_PLAN = _load_plan_check()
 
 def _load_manager_methods(*names):
     names = list(names)
-    if '_start_previewed_3d_goal_callback' in names:
-        names.extend(name for name in ('_recheck_3d_start','_validate_3d_route_segments')
-                     if name not in names)
     if any(name in names for name in ('_preview_3d_guard', '_publish_navigation_mode')):
         if '_navigation_busy_details' not in names:
             names.append('_navigation_busy_details')
@@ -146,11 +143,8 @@ def test_single_goal_uses_footprint_on_preview_and_confirmation():
                    '_start_previewed_3d_goal_callback'):
         source = next(item for item in MANAGER.body if (
             isinstance(item, ast.FunctionDef) and item.name == method))
-        text=ast.get_source_segment(SOURCE, source)
-        assert ('footprint_radius_m=0.45' in text or '_recheck_3d_start' in text)
-    helper=next(item for item in MANAGER.body if isinstance(item,ast.FunctionDef)
-                and item.name=='_validate_3d_route_segments')
-    assert 'footprint_radius_m=0.45' in ast.get_source_segment(SOURCE,helper)
+        assert 'footprint_radius_m=0.45' in ast.get_source_segment(
+            SOURCE, source)
 
 
 def test_preview_path_rejects_special_lethal_and_map_exit():
@@ -344,8 +338,7 @@ def test_preview_only_plans_then_confirm_consumes_one_token():
         True, 'ok', 'ready')
     value._preview_3d_snapshot = lambda: {
         'map_name': 'garden', 'map_load_id': 'load-1',
-        'start_x': 1.2, 'start_y': 1.2, 'start_yaw': 0.}
-    value._preview_3d_identity_matches = lambda _snapshot: True
+        'start_x': 1.2, 'start_y': 1.2}
     value._preview_3d_snapshot_matches = lambda _snapshot: True
     value._await_preview_future = lambda _future, _timeout: True
     value.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(

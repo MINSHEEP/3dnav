@@ -1,17 +1,29 @@
 """Final velocity guard consumes safe/limit atomically and rejects old latches."""
-import json
+import ast,json,threading,time
+from pathlib import Path
 from types import SimpleNamespace
-import unittest
-
-from test_velocity_arbiter_callbacks import VelocityArbiterCallbacksTest as ArbiterFixture
+import math,textwrap,unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from car_vel.velocity_ownership import constrain_navigation_velocity
+
+SOURCE=Path(__file__).resolve().parents[1]/'car_vel/velocity_arbiter.py'
 
 class AtomicTerrainTests(unittest.TestCase):
     def setUp(self):
-        fixture = ArbiterFixture()
-        fixture.setUp()
-        fixture.now = 10.0
-        self.h = fixture.node
+        source=SOURCE.read_text('utf-8')
+        cls=next(n for n in ast.parse(source).body if isinstance(n,ast.ClassDef) and n.name=='VelocityArbiter')
+        methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in (
+            '_terrain_status_callback','_terrain_safe_callback','_terrain_speed_callback')]
+        scope={'json':json,'time':time,'math':math,'Twist':SimpleNamespace,
+               'should_stop_for_terrain_update':lambda **kw:not kw['terrain_safe']}
+        exec('class Harness:\n'+'\n'.join(textwrap.indent(ast.get_source_segment(source,n),'    ') for n in methods),scope)
+        self.h=scope['Harness']();h=self.h
+        h._lock=threading.RLock();h._campus_active=False;h._teleop_at=0.;h.timeout=.3
+        h.terrain_timeout=.5;h._terrain_guard_enabled=True
+        h._require_atomic_terrain_status=True
+        h.get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=10000000000))
+        h.publisher=SimpleNamespace(publish=lambda _:None)
 
     def status(self,**kw):
         data={'safe':True,'speed_limit_mps':.25,'stamp_ns':10000000000,

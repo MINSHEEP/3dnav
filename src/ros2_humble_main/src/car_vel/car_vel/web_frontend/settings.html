@@ -4,16 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>设置 · 四足机器人巡检</title>
-    <link rel="stylesheet" href="robot_ui.css?v=20260825-system-settings">
-    <link rel="stylesheet" href="settings.css?v=20261102-detection">
+    <link rel="stylesheet" href="robot_ui.css?v=20261029-display">
+    <link rel="stylesheet" href="settings.css?v=20261020-mapping-filter">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
-    <script src="robot_ui_common.js?v=20261103-nav-speed"></script>
-    <script src="robot_body_settings.js?v=20260911-zsl1"></script>
+    <script src="robot_ui_common.js?v=20261029-display"></script>
+    <script src="robot_body_settings.js?v=20261103-body-switch"></script>
     <script src="m701_settings.js?v=20260916-connection"></script>
     <script src="lidar_settings.js?v=20260916-network"></script>
     <script src="mapping_filter_settings.js?v=20261020-switch"></script>
-    <script src="camera_source_settings.js?v=20261103-c12"></script>
-    <script src="detection_settings.js?v=20261102-switches"></script>
+    <script src="camera_source_settings.js?v=20261029-switch"></script>
 </head>
 <body>
 <div class="app-shell">
@@ -40,7 +39,7 @@
         <div class="settings-heading">
             <div>
                 <h1>系统设置</h1>
-                <p>选择本体与摄像头，管理检测功能、建图过滤、巡检导航、安全距离和小电脑电源。</p>
+                <p>选择机器人本体与普通摄像头，设置建图过滤、巡检导航和安全距离，并管理小电脑电源。</p>
             </div>
             <div id="power-state" class="power-state" aria-live="polite">
                 <span class="label">电源控制服务</span>
@@ -87,15 +86,25 @@
             <p id="web-preview-result" role="status">配置保存在当前浏览器；保存后请重新进入业务页面。热图不放大，默认5G只开一路视频，可在页面右上角切换。</p>
         </section>
         <section class="navigation-mode-section" aria-labelledby="ordinary-camera-title">
-            <h2 id="ordinary-camera-title">普通摄像头来源</h2>
+            <h2 id="ordinary-camera-title">相机链路切换</h2>
             <p>统一用于遥控、相机页面、巡检普通画面和视觉识别；热成像与气体检测保持独立。</p>
             <p id="ordinary-camera-state" role="status" aria-live="polite">正在读取普通摄像头配置…</p>
             <form id="ordinary-camera-form" onsubmit="return false">
                 <div class="body-fields">
+                    <label>相机链路<select id="ordinary-camera-pipeline">
+                        <option value="legacy">原有相机链路（USB / 本体图传）</option>
+                        <option value="c12">C12 双光相机链路</option>
+                    </select></label>
+                </div>
+                <div id="ordinary-camera-c12-fields" hidden>
+                    <p>使用 C12 可见光作为普通画面、视觉识别和巡检取图输入，红外窗口同步显示 C12 红外。两路画面均已旋转 180°。C12 测温数据尚未接入，不显示海康温度或触发高温报警。切回原有链路可恢复原有视频和海康测温，USB / 本体参数保留。</p>
+                    <p><a href="c12.html" target="_blank" rel="noopener">单独打开当前相机画面</a></p>
+                </div>
+                <div id="ordinary-camera-legacy-fields">
+                <div class="body-fields">
                     <label>画面来源<select id="ordinary-camera-source">
                         <option value="usb">USB 摄像头</option>
                         <option value="body">狗本体摄像头</option>
-                        <option value="c12">C12 双光相机</option>
                     </select></label>
                 </div>
                 <div id="ordinary-camera-usb-fields">
@@ -116,25 +125,12 @@
                     <label>本体图传地址<input id="ordinary-camera-url" type="url" autocomplete="off" placeholder="http://127.0.0.1:8081/camera"></label>
                     <p class="hint">默认复用原本体 HTTP 图传代理，原上游为 http://192.168.96.2:8080。这里只申请画面，不启用遥控、站立或运动；支持 JPEG/MJPEG，不使用海康云台 SDK。其他本体需填写实际已运行的 HTTP 图传地址。</p>
                 </div>
-                <div id="ordinary-camera-c12-fields" class="body-fields" hidden>
-                    <label>C12 可见光 RTSP<input id="ordinary-camera-c12-visible" type="url" autocomplete="off"></label>
-                    <label>C12 红外 RTSP<input id="ordinary-camera-c12-infrared" type="url" autocomplete="off"></label>
-                    <p class="hint">可见光用于普通画面与识别，红外仅供预览。切回 USB 或本体摄像头后使用海康 USB 测温。</p>
                 </div>
                 <button id="ordinary-camera-refresh" type="button">刷新配置和 USB 设备</button>
                 <button id="ordinary-camera-save" type="button" disabled>保存并切换</button>
             </form>
             <p>请先结束巡检并停止识别。仅保存所选来源的参数；首帧确认后保存，切换失败恢复原来源。设置保存在小电脑，重启后沿用，不随浏览器改变。</p>
             <p id="ordinary-camera-result" role="status" aria-live="polite"></p>
-        </section>
-        <section class="navigation-mode-section" aria-labelledby="detection-settings-title">
-            <h2 id="detection-settings-title">检测功能开关</h2>
-            <p>各项独立设置，修改后自动保存在小电脑；USB 相机页面与巡检任务统一使用，重启后沿用。</p>
-            <p id="detection-settings-state" role="status" aria-live="polite">正在读取检测配置…</p>
-            <div id="detection-settings-list" class="detection-settings-grid"></div>
-            <p class="hint">视觉与行为开关用于选择识别项目，仍需在相机页面启动识别或启动巡检；M701 开启后恢复后台串口轮询。关闭检测不关闭普通视频或热成像预览，也不删除已保存的记录。</p>
-            <button id="detection-settings-refresh" type="button">刷新检测设置</button>
-            <p id="detection-settings-result" role="status" aria-live="polite"></p>
         </section>
         <section class="navigation-mode-section" aria-labelledby="lidar-title">
             <h2 id="lidar-title">雷达网络（MID360s）</h2>
@@ -230,26 +226,6 @@
                 </button>
             </div>
             <p id="navigation-mode-lock-note" class="navigation-mode-note">正在连接导航模式服务…</p>
-        </section>
-
-        <section class="navigation-mode-section" aria-labelledby="navigation-speed-title">
-            <div class="navigation-mode-heading">
-                <div>
-                    <h2 id="navigation-speed-title">导航速度挡位</h2>
-                    <p>设置地形导航和巡检任务共用的前进速度上限。请在任务空闲时切换，重启后沿用。实际速度仍由导航控制器和安全限速决定。</p>
-                </div>
-            </div>
-            <div class="navigation-mode-grid">
-                <button class="navigation-mode-card" type="button" data-nav-speed="0.25" disabled aria-pressed="false">
-                    <strong>0.25 m/s</strong>
-                    <span>默认挡</span>
-                </button>
-                <button class="navigation-mode-card" type="button" data-nav-speed="0.45" disabled aria-pressed="false">
-                    <strong>0.45 m/s</strong>
-                    <span>快速挡</span>
-                </button>
-            </div>
-            <p id="navigation-speed-note" class="navigation-mode-note" role="status">正在连接导航速度设置服务…</p>
         </section>
 
         <section class="navigation-mode-section inflation-radius-section" aria-labelledby="inflation-radius-title">
@@ -400,8 +376,6 @@
         map_2d: document.getElementById('btn-nav-mode-2d'),
         terrain_3d: document.getElementById('btn-nav-mode-3d'),
     });
-    const navigationSpeedButtons = document.querySelectorAll('[data-nav-speed]');
-    const navigationSpeedNote = document.getElementById('navigation-speed-note');
     const inflationRadiusState = document.getElementById('inflation-radius-state');
     const inflationRadiusStateValue = document.getElementById('inflation-radius-state-value');
     const inflationRadiusLockNote = document.getElementById('inflation-radius-lock-note');
@@ -428,7 +402,6 @@
     const lidarSettings = window.LidarSettings.create(log);
     const mappingFilterSettings = window.MappingFilterSettings.create(log);
     const cameraSourceSettings = window.CameraSourceSettings.create(log);
-    const detectionSettings = window.DetectionSettingsUI.create(log);
     document.getElementById('web-preview-profile').value = UI.previewProfile();
     document.getElementById('web-preview-save').addEventListener('click', () => {
         try {
@@ -447,7 +420,6 @@
     let navigationModeSeen = false;
     let navigationModeRequestActive = false;
     let navigationModeStatus = {};
-    let navigationSpeedSaving = false;
     let inflationRadiusSeen = false;
     let inflationRadiusRequestActive = false;
     let inflationRadiusDirty = false;
@@ -658,7 +630,7 @@
             const active = status.active_inspection === true;
             const alarm = status.co2_alarm_active === true;
             renderEnvironmentAlertState(
-                'ready', status.co2_enabled === false ? '二氧化碳告警已关闭' : alarm ? '二氧化碳超限告警中' : (
+                'ready', alarm ? '二氧化碳超限告警中' : (
                     active ? '巡检中 · 告警已启用' : '等待巡检任务'));
             const current = Number(status.current_co2_ppm);
             const currentText = status.co2_sample_valid === true
@@ -709,42 +681,6 @@
             button.setAttribute('aria-pressed', selected ? 'true' : 'false');
             button.disabled = disabled || selected;
         });
-        renderNavigationSpeed();
-    }
-
-    function renderNavigationSpeed() {
-        const speed = navigationModeStatus.speed_mps;
-        const available = session.connected && Number.isFinite(speed);
-        const locked = navigationModeStatus.speed_locked === true;
-        for (const button of navigationSpeedButtons) {
-            const selected = available && Number(button.dataset.navSpeed) === speed;
-            button.classList.toggle('selected', selected);
-            button.setAttribute('aria-pressed', String(selected));
-            button.disabled = !available || selected || locked || navigationSpeedSaving
-                || requestActive || actionLocked;
-        }
-        if (!available) navigationSpeedNote.textContent = '尚未收到导航速度设置状态。';
-        else if (navigationSpeedSaving) navigationSpeedNote.textContent = '正在保存导航速度挡位…';
-        else if (navigationModeStatus.speed_error) navigationSpeedNote.textContent = navigationModeStatus.speed_error;
-        else if (!navigationModeStatus.speed_applied) navigationSpeedNote.textContent = `${speed.toFixed(2)} m/s 已保存，等待导航控制器和平滑器同步。`;
-        else if (locked) navigationSpeedNote.textContent = `${speed.toFixed(2)} m/s 已生效，请在任务空闲后切换。`;
-        else navigationSpeedNote.textContent = `${speed.toFixed(2)} m/s 已生效。`;
-    }
-
-    async function selectNavigationSpeed(speed) {
-        navigationSpeedSaving = true;
-        renderNavigationSpeed();
-        try {
-            const result = await session.call('/navigation/set_speed', UI.TYPES.setNavigationSpeed,
-                {speed_mps: speed}, 8000);
-            if (!result.success) throw new Error(result.message || '服务拒绝切换');
-            log(result.message);
-        } catch (error) {
-            log('速度档位保存失败：' + error.message);
-        } finally {
-            navigationSpeedSaving = false;
-            renderNavigationSpeed();
-        }
     }
 
     function requestedInflationRadius() {
@@ -963,9 +899,6 @@
         'click', () => openModal('reboot'));
     document.getElementById('btn-poweroff').addEventListener(
         'click', () => openModal('poweroff'));
-    for (const button of navigationSpeedButtons) {
-        button.addEventListener('click', () => selectNavigationSpeed(Number(button.dataset.navSpeed)));
-    }
     navigationModeButtons.map_2d.addEventListener(
         'click', () => selectNavigationMode('map_2d'));
     navigationModeButtons.terrain_3d.addEventListener(
@@ -1008,13 +941,12 @@
         if (event.key === 'Escape') closeModal();
     });
     window.addEventListener('beforeunload', () => {
-        mappingFilterSettings.stop(); cameraSourceSettings.stop(); detectionSettings.stop(); session.stop();
+        mappingFilterSettings.stop(); cameraSourceSettings.stop(); session.stop();
     });
 
     log('设置页面已加载，正在连接导航、安全距离、环境告警与系统电源服务。');
     session.connect();
     cameraSourceSettings.start();
-    detectionSettings.start();
 }());
 </script>
 </body>

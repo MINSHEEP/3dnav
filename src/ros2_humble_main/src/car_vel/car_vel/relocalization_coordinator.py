@@ -21,6 +21,11 @@ from lzp_interface.msg import CurrentMap, RelocalizationRequest
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.time import Time
+from nav_msgs.msg import OccupancyGrid
+from sensor_msgs.msg import LaserScan
+from tf2_ros import Buffer, TransformListener, TransformException
+from car_vel.initial_pose_quality import scan_map_quality
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -57,6 +62,9 @@ class RelocalizationCoordinator(Node):
         self.declare_parameter('action_server_wait_sec', 5.0)
         self.declare_parameter('cancel_confirmation_timeout_sec', 12.0)
         self.declare_parameter('amcl_confirmation_timeout_sec', 10.0)
+        self.declare_parameter('rough_amcl_timeout_sec', 15.0)
+        self.declare_parameter('initial_scan_match_distance', 0.20)
+        self.declare_parameter('initial_scan_match_ratio', 0.65)
         self.declare_parameter('amcl_confirmation_samples', 5)
         self.declare_parameter('amcl_confirmation_hold_sec', 1.5)
         self.declare_parameter('amcl_sample_max_gap_sec', 0.75)
@@ -84,6 +92,9 @@ class RelocalizationCoordinator(Node):
             'cancel_confirmation_timeout_sec', 12.0)
         self.amcl_timeout = self._positive_float(
             'amcl_confirmation_timeout_sec', 10.0)
+        self.rough_amcl_timeout = self._positive_float('rough_amcl_timeout_sec', 15.0)
+        self.scan_match_distance = self._positive_float('initial_scan_match_distance', 0.20)
+        self.scan_match_ratio = self._positive_float('initial_scan_match_ratio', 0.65)
         self.amcl_sample_count = max(
             3, int(self.get_parameter('amcl_confirmation_samples').value))
         self.amcl_hold = self._positive_float(
@@ -131,6 +142,13 @@ class RelocalizationCoordinator(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
 
+        self.initial_map = None
+        self.initial_scan = None
+        self.initial_scan_at = 0.0
+        self.initial_tf = Buffer()
+        self.initial_tf_listener = TransformListener(self.initial_tf, self)
+        self.create_subscription(OccupancyGrid, '/map', self._initial_map_callback, status_qos)
+        self.create_subscription(LaserScan, '/scan', self._initial_scan_callback, amcl_qos)
         self.action_client = ActionClient(self, Relocalize, '/relocalize')
         self.request_subscription = self.create_subscription(
             RelocalizationRequest,
@@ -250,9 +268,6 @@ class RelocalizationCoordinator(Node):
         return {
             'x': round(float(pose.pose.pose.position.x), 4),
             'y': round(float(pose.pose.pose.position.y), 4),
-            'z': float(pose.pose.pose.position.z),
-            'orientation': {key: float(getattr(pose.pose.pose.orientation, key))
-                            for key in ('x', 'y', 'z', 'w')},
             'yaw': round(RelocalizationCoordinator._yaw(
                 pose.pose.pose), 5),
         }
@@ -651,7 +666,7 @@ class RelocalizationCoordinator(Node):
         self._strict_identity = self._global_identity() if strict else None
         self._await_authority = None
         goal.robust_validation = strict
-        goal.map_load_id = self.current_map_load_id if strict else ''
+        goal.map_load_id = self.current_map_load_id if strict else '' 
         # Consume this request before dispatch.  A replacement request may be
         # queued while send_goal_async is in flight, but this generation must
         # never be sent twice.
@@ -848,11 +863,6 @@ class RelocalizationCoordinator(Node):
                     self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
                         '三维定位候选未确认或地图/本体身份已变化')
                     return
-                if getattr(result, 'transform_model', '') != 'se3_map_odom_v1':
-                    self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
-                        '三维配准模型版本不匹配，请重建接口和icp_registration并重启后台')
-                    return
-                metrics['transform_model'] = result.transform_model
                 self._await_authority = dict(generation=self.generation,
                     pose=copy.deepcopy(result.refined_pose), metrics=metrics,
                     deadline=time.monotonic()+3.)
@@ -935,6 +945,11 @@ class RelocalizationCoordinator(Node):
         backdated = now - Duration(seconds=0.2)
         pose.header.stamp = backdated.to_msg()
         self._ensure_initial_covariance(pose)
+        if source == 'rough':
+            # Search limits describe a roughly two-sigma neighbourhood, not an
+            # already precise pose. Never reuse the browser's refined covariance.
+            pose.pose.covariance[0] = pose.pose.covariance[7] = (self.search_xy / 2.0) ** 2
+            pose.pose.covariance[35] = (self.search_yaw / 2.0) ** 2
 
         self.amcl_wait = {
             'generation': self.generation,
@@ -943,7 +958,7 @@ class RelocalizationCoordinator(Node):
             'source': source,
             'retried': bool(retried),
             'started_at': time.monotonic(),
-            'deadline': time.monotonic() + self.amcl_timeout,
+            'deadline': time.monotonic() + (self.rough_amcl_timeout if source == 'rough' else self.amcl_timeout),
             'amcl_stamp_before': self.latest_amcl_stamp,
             'window': None,
             'metrics': metrics or {},
@@ -971,6 +986,39 @@ class RelocalizationCoordinator(Node):
         if covariance[35] <= 0.0:
             covariance[35] = 0.03
         message.pose.covariance = covariance
+
+    def _initial_map_callback(self, message):
+        self.initial_map = message
+
+    def _initial_scan_callback(self, message):
+        self.initial_scan = message
+        self.initial_scan_at = time.monotonic()
+
+    def _initial_scan_quality(self, pose):
+        scan, grid = self.initial_scan, self.initial_map
+        if scan is None or grid is None:
+            return None, '缺少当前激光或二维地图'
+        if grid.header.frame_id != pose.header.frame_id:
+            return None, '地图与定位坐标系不一致'
+        scan_stamp = self._stamp_seconds(scan.header.stamp)
+        pose_stamp = self._stamp_seconds(pose.header.stamp)
+        if (time.monotonic() - self.initial_scan_at > 0.75
+                or scan_stamp is None or pose_stamp is None
+                or abs(scan_stamp - pose_stamp) > 0.75):
+            return None, '激光与定位时间不同步'
+        try:
+            # Compensate the scan's acquisition time through odom. Using map TF
+            # here would accidentally score the previous AMCL pose.
+            transform = self.initial_tf.lookup_transform_full(
+                'base_footprint', Time.from_msg(pose.header.stamp),
+                scan.header.frame_id, Time.from_msg(scan.header.stamp), 'odom')
+        except TransformException as error:
+            return None, '激光 TF 不可用：' + str(error)
+        quality = scan_map_quality(grid, scan, pose.pose.pose,
+                                   transform.transform, self.scan_match_distance)
+        if quality['valid_beams'] < 30:
+            return None, '有效激光不足 30 束'
+        return quality, f"匹配率 {quality['match_ratio']:.0%}，要求 {self.scan_match_ratio:.0%}"
 
     def _amcl_callback(self, message):
         stamp = self._stamp_seconds(message.header.stamp)
@@ -1011,8 +1059,8 @@ class RelocalizationCoordinator(Node):
             pose_error_limit = self.refined_amcl_pose_error_limit
             yaw_error_limit = self.refined_amcl_yaw_error_limit
         else:
-            pose_error_limit = self.amcl_pose_error_limit
-            yaw_error_limit = self.amcl_yaw_error_limit
+            pose_error_limit = self.search_xy
+            yaw_error_limit = self.search_yaw
         sample_is_valid = (
             position_std <= self.amcl_position_std_limit
             and yaw_std <= self.amcl_yaw_std_limit
@@ -1021,8 +1069,27 @@ class RelocalizationCoordinator(Node):
         )
         if not sample_is_valid:
             waiting['window'] = None
+            reason = (f'位置不确定度 {position_std:.2f}/{self.amcl_position_std_limit:.2f} 米，'
+                      f'朝向不确定度 {math.degrees(yaw_std):.0f}/{math.degrees(self.amcl_yaw_std_limit):.0f}°；'
+                      f'修正距离 {position_error:.2f}/{pose_error_limit:.2f} 米，'
+                      f'修正角度 {math.degrees(yaw_error):.0f}/{math.degrees(yaw_error_limit):.0f}°')
+            waiting['quality_error'] = reason
+            if time.monotonic() >= waiting.get('next_diagnostic_at', 0.0):
+                waiting['next_diagnostic_at'] = time.monotonic() + 1.0
+                elapsed = time.monotonic() - waiting['started_at']
+                self._publish_status('confirming_amcl', 'amcl_confirmation', 0.86,
+                    f'AMCL 正在收敛（已等待 {elapsed:.0f} 秒）：' + reason,
+                    source_pose=waiting['source'])
             return
 
+        quality, reason = self._initial_scan_quality(message)
+        if quality is None or quality['match_ratio'] < self.scan_match_ratio:
+            waiting['window'] = None
+            waiting['quality_error'] = reason
+            self._publish_status('confirming_amcl', 'scan_map_validation', 0.86,
+                '等待激光与地图匹配确认：' + reason, source_pose=waiting['source'])
+            return
+        waiting['metrics'].update(quality)
         window = waiting['window']
         if (
             window is None
@@ -1084,6 +1151,27 @@ class RelocalizationCoordinator(Node):
                 level='info' if source == 'refined' else 'warning',
                 source_pose=source, pose=confirmed_pose,
                 metrics=metrics, force=True)
+
+    def _request_initial_amcl_update(self, waiting, now):
+        if now >= waiting['deadline'] or now < waiting['next_nomotion_at']:
+            return
+        if waiting['source'] != 'rough' and waiting['nomotion_sent'] >= self.nomotion_update_count:
+            return
+        future = waiting.get('nomotion_future')
+        if future is not None and not future.done():
+            return
+        scan = self.initial_scan
+        if scan is None:
+            return
+        stamp = self._stamp_seconds(scan.header.stamp)
+        if stamp is None or stamp == waiting.get('nomotion_scan_stamp'):
+            return
+        if self.nomotion_client.service_is_ready():
+            waiting['nomotion_future'] = self.nomotion_client.call_async(EmptyService.Request())
+            waiting['nomotion_scan_stamp'] = stamp
+            waiting['nomotion_sent'] += 1
+            interval = min(self.nomotion_update_interval, 0.2) if waiting['source'] == 'rough' else self.nomotion_update_interval
+            waiting['next_nomotion_at'] = now + interval
 
     def _timer_callback(self):
         now = time.monotonic()
@@ -1156,14 +1244,7 @@ class RelocalizationCoordinator(Node):
         waiting = self.amcl_wait
         if waiting is None or waiting['generation'] != self.generation:
             return
-        if (
-            waiting['nomotion_sent'] < self.nomotion_update_count
-            and now >= waiting['next_nomotion_at']
-        ):
-            waiting['nomotion_sent'] += 1
-            waiting['next_nomotion_at'] = now + self.nomotion_update_interval
-            if self.nomotion_client.service_is_ready():
-                self.nomotion_client.call_async(EmptyService.Request())
+        self._request_initial_amcl_update(waiting, now)
 
         if now < waiting['deadline']:
             return
@@ -1194,7 +1275,7 @@ class RelocalizationCoordinator(Node):
         self._publish_status(
             'failed', 'amcl_confirmation_timeout', 1.0,
             'AMCL 在自动回退后仍未形成稳定定位，已禁止导航；'
-            '请检查点云、TF、地图匹配后重新设置初始点。',
+            '请检查点云、TF、地图匹配后重新设置初始点。' + waiting.get('quality_error', ''),
             terminal=True, level='error',
             source_pose=source,
             code=Relocalize.Result.CODE_VALIDATION_FAILED,

@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
     <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
-    <script src="velocity_guard_widget.js?v=20261103-terrain-advisory"></script>
+    <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
     <script src="pointcloud_viewer.js?v=20261023-draft-marker-scale"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
 </head>
@@ -69,6 +69,7 @@
                     <button id="btn-single-navigation" class="choice-active flex" type="button">单点导航</button>
                     <button id="btn-multi-navigation" class="flex" type="button">多点导航</button>
                 </div>
+                <button id="btn-stop-active-route" class="danger" type="button" hidden disabled>停止当前路径，重新开始</button>
                 <p id="navigation-startup-detail" class="hint" aria-live="polite">等待导航启动诊断…</p>
                 <button id="btn-retry-navigation-startup" type="button" hidden disabled>重试导航服务（不运动）</button>
             </section>
@@ -76,7 +77,7 @@
             <section class="section" aria-labelledby="automatic-terrain-title">
                 <div id="automatic-terrain-title" class="section-title">自动地形导航</div>
                 <div class="status-grid">
-                    <div class="status-card"><span class="label">地形评估</span><span id="automatic-terrain-status" class="value">等待后端</span></div>
+                    <div class="status-card"><span class="label">实时安全</span><span id="automatic-terrain-status" class="value">等待后端</span></div>
                     <div class="status-card"><span class="label">地形阶段（星玑固定越障）</span><span id="automatic-terrain-mode" class="value">等待地形状态</span></div>
                     <div class="status-card"><span id="automatic-terrain-speed-label" class="label">地形速度上限</span><span id="automatic-terrain-speed" class="value">--</span></div>
                 </div>
@@ -614,19 +615,6 @@
     let navigationStartupReceivedAt = 0;
     let navigationStartupLastLog = '';
 
-    function initialLocalizationStartupHint(nowMs = Date.now()) {
-        const status = navigationStartupStatus;
-        if (navigationMapView !== '3d' || threeDNavigationMode !== 'terrain_3d'
-            || isGangbenThreeD() || !session?.connected
-            || !navigationMapReady || !loadedMapName || pendingMapName
-            || localizationReady || relocalizationActive || lioFaultLatched
-            || navigationActive || routeIsActive()
-            || !status || !status.pid || nowMs - navigationStartupReceivedAt >= 5000
-            || status.lifecycle?.map_server !== 'active' || status.lifecycle?.amcl !== 'active') return '';
-        return '地图与定位服务已启动，请先在三维俯视图设置并确认初始点；'
-            + '初始定位不需要等待 Nav2 全部激活，目标预览和启动仍需等导航就绪。';
-    }
-
     function renderNavigationStartup() {
         const detail = document.getElementById('navigation-startup-detail');
         const button = document.getElementById('btn-retry-navigation-startup');
@@ -635,9 +623,7 @@
         detail.textContent = fresh
             ? `${navigationStartupStatus.message}（本次启动 ${navigationStartupStatus.elapsed_sec} 秒）`
             : '尚未收到新的启动诊断；请检查 navigation_startup_monitor 是否运行。';
-        const initialHint = initialLocalizationStartupHint();
-        if (initialHint) detail.textContent = `${initialHint} ${detail.textContent}`;
-        button.hidden = !['timeout', 'stopped', 'process_conflict'].includes(state);
+        button.hidden = !['timeout', 'stopped'].includes(state);
         button.disabled = !session?.connected || !!navigationStartRequest
             || !navigationActiveKnown || navigationActive || routeIsActive()
             || relocalizationActive || navigationSafetyPending || nav2Ready;
@@ -688,14 +674,14 @@
     let threeDRobotBodyStatus = null;
     let threeDRobotBodyAtMs = 0;
     let threeDRobotBodyGeneration = null;
-    let unified3DStatus = null;
-    let unified3DStatusAtMs = 0;
     let navigationMapViewAutoBody = '';
     let threeDPoseDraft = null;
     let threeDDraftGeneration = 0;
     let threeDNotice = '';
     let threeDLocalizationRefreshState = 'idle';
     let threeDPoseFreshnessLimitMs = 3000;
+    let threeDPreviewPoseTimer = null;
+    let threeDPreviewPoseLease = 0;
     const THREE_D_STATUS_MAX_AGE_MS = 3000;
     function confirmedThreeDBody(nowMs = Date.now()) {
         if (threeDNavigationMode !== 'terrain_3d'
@@ -716,30 +702,6 @@
     }
     function isXingjiThreeD(nowMs = Date.now()) {
         return confirmedThreeDBody(nowMs) === 'xingji';
-    }
-    function usesUnifiedThreeDLocalization() {
-        return threeDNavigationMode === 'terrain_3d'
-            && threeDRobotBodyStatus?.config?.selected === 'xingji';
-    }
-    function applyUnifiedThreeDHealth(nowMs = Date.now()) {
-        if (!localizationReady) return false;
-        const data = unified3DStatus;
-        const valid = data && nowMs >= unified3DStatusAtMs
-            && nowMs - unified3DStatusAtMs <= THREE_D_STATUS_MAX_AGE_MS
-            && data.scope === 'xingji_3d' && data.transform_model === 'se3_map_odom_v1'
-            && data.map_name === loadedMapName && data.map_load_id === currentMapLoadId
-            && data.body_generation === threeDRobotBodyGeneration;
-        if (valid && data.ready === true) {
-            if (localizationHealth === LOCALIZATION_HEALTH.LOST) return false;
-            if (localizationHealth !== LOCALIZATION_HEALTH.GOOD) {
-                markLocalizationGood('统一三维定位已恢复，原任务仍按后台状态执行。');
-            }
-            return true;
-        }
-        markLocalizationDegraded('三维定位等待复核', valid
-            ? (data.error || '三维定位正在复核；运动与任务恢复由后台统一判断。')
-            : '三维定位状态未更新或与当前地图不一致，暂不发送新目标。');
-        return false;
     }
     function isGangbenThreeD(nowMs = Date.now()) {
         return confirmedThreeDBody(nowMs) === 'gangben_zsl1';
@@ -935,8 +897,8 @@
         goal_rejected_terrain_not_ready: '当前地图的地形代价图尚未就绪，请等待后重试',
         goal_rejected_localization_stale: '定位时间戳已过期，本次目标未启动；请重新确认初始定位',
         goal_rejected_navigation_stopping: '旧导航目标仍在取消中，新目标未启动；请确认机器人安全并等待停止结果',
-        goal_refreshing_localization: '定位时间戳已过期，本次目标未启动；正在自动刷新定位，不会自动启动导航',
-        goal_localization_refreshed: '定位已刷新；请重新在地图上设置目标，本次目标不会自动启动',
+        goal_refreshing_localization: '正在更新定位，更新通过后将继续执行本次目标',
+        goal_localization_refreshed: '定位已刷新',
         goal_localization_refresh_failed: '定位刷新失败，本次目标未启动；请重新定位后再设置目标',
         goal_refreshing_3d_localization: '3D定位刷新中：正在等待真实新采样，不会启动导航',
         goal_3d_localization_refreshed: '3D定位已刷新；预览和人工启动仍需分别确认',
@@ -984,12 +946,12 @@
             const safe = Boolean(value.safe);
             const state = String(value.state || 'unknown');
             const stateLabels = {
-                ready: '评估通过', idle: '等待任务', disabled: '已关闭',
-                suspended: '人工连接段接管', switching: '步态切换中',
-                enter_confirming: '确认地形中',
-                exit_confirming: '确认恢复平地', blocked: '评估未通过'
+                ready: '允许通行', idle: '等待任务', disabled: '已关闭',
+                suspended: '人工连接段接管', switching: '切换中，已停车',
+                enter_confirming: '确认地形，已停车',
+                exit_confirming: '确认恢复平地', blocked: '禁止通行'
             };
-            statusElement.textContent = stateLabels[state] || (safe ? '评估通过' : '评估未通过');
+            statusElement.textContent = stateLabels[state] || (safe ? '允许通行' : '禁止通行');
             statusElement.dataset.state = state;
             statusElement.classList.toggle('danger', !safe && state !== 'idle');
             const fixedSpeedPolicy = value.speed_policy === 'nav2_body_limits'
@@ -1445,6 +1407,9 @@
             !active || routeExecutionStatus.paused || routeServiceBusy;
         document.getElementById('btn-stop-route').disabled =
             !active || routeServiceBusy;
+        const stopActiveRoute = document.getElementById('btn-stop-active-route');
+        stopActiveRoute.hidden = !active;
+        stopActiveRoute.disabled = !active || routeServiceBusy || !session || !session.connected;
         document.getElementById('route-loop-count').disabled =
             active || routeServiceBusy
             || continuousInput.checked;
@@ -1643,19 +1608,17 @@
     }
 
     function threeDRoutePreviewFresh() {
-        return threeDRoutePreviewMatches() && !threeDRoutePreviewIssue();
-    }
-
-    function threeDRoutePreviewMatches() {
         const preview = threeDRoutePreview;
-        if (!preview || !preview.previewId) return false;
-        return preview.mapName === loadedMapName
+        if (!preview || !preview.previewId || threeDRoutePreviewIssue()) return false;
+        return Date.now() - preview.previewedAtMs < 18000
+            && preview.mapName === loadedMapName
             && preview.mapLoadId === currentMapLoadId
             && preview.routeId === Number(routeDraft && routeDraft.id)
             && preview.loopCount === Number(document.getElementById('route-loop-count').value)
             && preview.continuous === document.getElementById('route-continuous').checked
             && preview.bodyGeneration === threeDRobotBodyGeneration
-            && preview.localizationGeneration === localizationGeneration;
+            && preview.localizationGeneration === localizationGeneration
+            && preview.refreshState === singleGoalRefreshState;
     }
 
     function updateThreeDRouteUi() {
@@ -1667,13 +1630,13 @@
         message.hidden = !visible;
         if (!visible) return;
         const issue = threeDRoutePreviewIssue();
-        if (threeDRoutePreview && !threeDRoutePreviewMatches()) {
-            clearThreeDRoutePreview('地图、路线或配置发生变化，请重新预览。');
+        if (threeDRoutePreview && !threeDRoutePreviewFresh()) {
+            clearThreeDRoutePreview('路径预览已过期或状态发生变化，请重新预览。');
         }
         button.disabled = routeServiceBusy || Boolean(issue);
         message.textContent = issue || threeDRouteNotice || (
             threeDRoutePreviewFresh()
-                ? '预览不设操作倒计时；点击开始时复核当前定位和路径。蓝色线为预计平面投影。'
+                ? '蓝色线为整条路线的预计平面投影；18 秒内可单独点击“开始已预览路径”。执行中仍可能重新规划。'
                 : '保存路线后点击“预览整条路径（不运动）”；预检每段和有限循环回程段，成功后才允许开始。');
     }
 
@@ -1736,7 +1699,7 @@
             };
             navigationPointCloudViewer.setPreviewPath(points);
             threeDRouteNotice = `${result.message || '整条路线预览已生成'}。`
-                + '蓝色线是平面投影，不代表四足落脚轨迹；预览不设操作倒计时，开始时重新检查。';
+                + '蓝色线是平面投影，不代表四足落脚轨迹；18 秒内可单独点击开始。';
             threeDLocalizationRefreshState = 'idle';
             log('整条路线预览通过；等待人工点击开始，期间保持静止定位更新。');
         } catch (error) {
@@ -1914,6 +1877,7 @@
                 }
                 updateMapReadyUi();
             }
+            recoverActiveRouteMap();
             if ((routeListMapName !== loadedMapName
                 || !routeDraft
                 || Number(routeDraft.id) !== routeExecutionStatus.route_id)
@@ -2270,7 +2234,7 @@
             return '急停后自动准备已暂停；请到遥控页单独站立，确认安全后重新进入导航';
         }
         if (singleGoalRefreshState === 'refreshing') {
-            return '定位刷新中，本次目标未启动；请等待完成后重新设置目标';
+            return '正在更新定位，请等待本次目标预检完成';
         }
         if (singleGoalRefreshState === 'failed') {
             return '定位自动刷新失败；请重新设置初始点并确认定位';
@@ -2405,7 +2369,7 @@
                             : '';
                         log(`LIO 已软隔离一个可疑里程计采样${progress}${lioFaultDiagnostics(status)}：`
                             + '该帧不会用于导航或地图更新，下一帧正常时自动恢复。'
-                            + '持续异常会触发零速停车锁定。');
+                            + '只有连续的平面、航向或滤波器异常才会急停。');
                     }
                 } else {
                     log(`LIO 高度趋势预警${lioFaultDiagnostics(status)}：`
@@ -2419,7 +2383,7 @@
         if (status.state === 'recovering') {
             if (lioWarningCode !== 'lio_auto_recovery') {
                 lioWarningCode = 'lio_auto_recovery';
-                log('LIO 正在验证连续健康扫描；是否继续原目标由后台定位和任务状态统一确认。');
+                log('LIO 正在验证连续健康扫描；路径任务未取消，验证完成后自动继续当前目标点。');
             }
             return;
         }
@@ -2452,7 +2416,7 @@
                 recoveredCode === 'odometry_sample_quarantined'
                     ? 'LIO 异常扫描已恢复，里程计、TF 和注册点云已继续输出。'
                     : recoveredCode === 'lio_auto_recovery'
-                        ? 'LIO 连续健康扫描验证通过；仍在运行的任务将在定位复核通过后继续，已取消的任务不会重启。'
+                        ? 'LIO 连续健康扫描验证通过，已自动继续当前导航任务。'
                         : recoveredCode === 'lio_estimator_reset'
                             ? 'LIO 进程内重置已产生连续健康点云，正在进入自动三维重定位。'
                         : 'LIO 高度/速度模型偏差已恢复到正常范围。'
@@ -2600,16 +2564,12 @@
     }
 
     function refreshModeFromLocalization() {
-        if (initialLocalizationStartupHint()) {
-            setMode('等待初始定位');
-        } else if (localizationReady && localizationHealth === LOCALIZATION_HEALTH.LOST) {
+        if (localizationReady && localizationHealth === LOCALIZATION_HEALTH.LOST) {
             setMode('定位失效');
         } else if (localizationReady && localizationHealth === LOCALIZATION_HEALTH.DEGRADED) {
             setMode('定位退化');
         } else if (nav2Ready) {
             setMode(navigationActive ? '导航执行中' : '导航就绪');
-        } else {
-            setMode('等待 Nav2');
         }
     }
 
@@ -2703,7 +2663,6 @@
     }
 
     function monitorLocalizationSample(uncertainty, poseSample, receivedAtMs) {
-        if (usesUnifiedThreeDLocalization()) return applyUnifiedThreeDHealth(receivedAtMs);
         if (!localizationReady || !poseSample || !Number.isFinite(poseSample.stamp)) return false;
         amclStaleSinceMs = null;
         const motion = latestMotionState(receivedAtMs);
@@ -2885,10 +2844,6 @@
     }
 
     function monitorAmclFreshness() {
-        if (usesUnifiedThreeDLocalization()) {
-            applyUnifiedThreeDHealth();
-            return;
-        }
         if (!localizationReady || !navigationMapReady || !session || !session.connected) {
             amclStaleSinceMs = null;
             return;
@@ -2955,8 +2910,6 @@
     }
 
     function resetLocalizationState() {
-        unified3DStatus = null;
-        unified3DStatusAtMs = 0;
         clearThreeDPoseDraft('定位状态已重置，三维候选点和路径预览失效。');
         clearThreeDRoutePreview('定位状态已重置，整条路径预览失效。');
         localizationGeneration += 1;
@@ -3129,6 +3082,18 @@
         tryCompletePendingMapLoad();
     }
 
+    function recoverActiveRouteMap() {
+        if (!routeIsActive() || navigationMapReady || pendingMapName
+            || !mapSnapshotRecovery || !currentMapLoadId
+            || currentMapLoadName !== loadedMapName
+            || routeExecutionStatus.map_name !== loadedMapName) return;
+        const name = loadedMapName, identity = currentMapLoadId;
+        mapSnapshotRecovery.request(`${name}|${identity}`, () =>
+            routeIsActive() && !navigationMapReady && !pendingMapName
+            && loadedMapName === name && routeExecutionStatus.map_name === name
+            && currentMapLoadName === name && currentMapLoadId === identity);
+    }
+
     function trackCurrentMapLoadIdentity(message) {
         const mapName = String(message && message.map_name || '');
         const loadId = typeof (message && message.load_id) === 'string'
@@ -3150,6 +3115,7 @@
         }
         currentMapLoadName = mapName;
         currentMapLoadId = loadId;
+        recoverActiveRouteMap();
         if (terrainReloadRequired && mapName === terrainReloadRequired.mapName
             && loadId !== terrainReloadRequired.loadId) terrainReloadRequired = null;
         tryAcceptNavigationGlobalCloud();
@@ -3296,7 +3262,45 @@
         updateMapReadyUi();
     }
 
+    function stopThreeDPreviewPoseRefresh() {
+        threeDPreviewPoseLease += 1;
+        window.clearTimeout(threeDPreviewPoseTimer);
+        threeDPreviewPoseTimer = null;
+    }
+
+    function maintainThreeDPreviewPoseFreshness(draft) {
+        stopThreeDPreviewPoseRefresh();
+        const expectedSession = session;
+        const generation = localizationGeneration;
+        const draftGeneration = threeDDraftGeneration;
+        const lease = threeDPreviewPoseLease;
+        const previewId = draft.previewId;
+        const expiresAtMs = draft.previewedAtMs + 18000;
+        let requests = 0;
+        const current = () => threeDPoseDraft === draft && draft && draft.previewId
+            && lease === threeDPreviewPoseLease && draft.previewId === previewId
+            && !draft.busy && draftGeneration === threeDDraftGeneration
+            && generation === localizationGeneration && session === expectedSession
+            && expectedSession && expectedSession.connected
+            && navigationMapView === '3d' && threeDNavigationMode === 'terrain_3d'
+            && loadedMapName === draft.mapName && currentMapLoadId === draft.mapLoadId
+            && Date.now() < expiresAtMs
+            && !threeDInteractionIssue() && !goalReadinessIssue();
+        const tick = async () => {
+            threeDPreviewPoseTimer = null;
+            if (!current() || requests >= 18) return;
+            requests += 1;
+            const refreshed = await requestNoMotionUpdate(
+                generation, expectedSession, draft.mapName, false);
+            if (refreshed && current() && requests < 18) {
+                threeDPreviewPoseTimer = window.setTimeout(tick, 1000);
+            }
+        };
+        if (current()) threeDPreviewPoseTimer = window.setTimeout(tick, 1000);
+    }
+
     function clearThreeDPoseDraft(message = '') {
+        stopThreeDPreviewPoseRefresh();
         threeDDraftGeneration += 1;
         threeDPoseDraft = null;
         threeDNotice = message;
@@ -3361,19 +3365,18 @@
         const clearButton = document.getElementById('btn-three-d-clear');
         panel.hidden = navigationMapView !== '3d';
         const issue = threeDInteractionIssue();
-        if (threeDPoseDraft && (
-            (threeDPoseDraft.mapName && threeDPoseDraft.mapName !== loadedMapName)
-            || (threeDPoseDraft.mapLoadId && threeDPoseDraft.mapLoadId !== currentMapLoadId)
-            || (threeDPoseDraft.bodyGeneration != null
-                && threeDPoseDraft.bodyGeneration !== threeDRobotBodyGeneration)
-            || (threeDPoseDraft.localizationGeneration != null
-                && threeDPoseDraft.localizationGeneration !== localizationGeneration))) {
-            clearThreeDPoseDraft('地图、本体或初始定位已改变，请重新选择并预览。');
-        }
+        if (issue && threeDPoseDraft) clearThreeDPoseDraft(issue);
         const readinessIssue = goalReadinessIssue();
+        if (threeDPoseDraft
+            && (threeDPoseDraft.refreshState !== singleGoalRefreshState
+                || (threeDPoseDraft.previewId && readinessIssue))) {
+            clearThreeDPoseDraft(`导航条件变化（${readinessIssue || '定位已刷新'}），`
+                + '请重新选择目标并预览。');
+        }
         const draft = threeDPoseDraft;
         const valid = Boolean(draft && draft.groundValid && !draft.busy);
-        const previewFresh = valid && draft.previewId;
+        const previewFresh = valid && draft.previewId
+            && Date.now() - draft.previewedAtMs < 18000;
         initialButton.hidden = clickMode !== 'initial';
         previewButton.hidden = clickMode !== 'goal';
         startButton.hidden = clickMode !== 'goal';
@@ -3383,6 +3386,9 @@
         startButton.disabled = Boolean(issue) || !previewFresh
             || Boolean(readinessIssue);
         clearButton.disabled = !draft;
+        if (!previewFresh && draft && draft.previewId && !issue) {
+            threeDNotice = '路径预览已过期，请重新点击“预览目标路径”。';
+        }
         message.textContent = issue || (clickMode === 'route'
             ? (threeDRouteNotice || '俯视拖拽设置路径点，后端会先校验地面。')
             : (threeDNotice
@@ -3473,7 +3479,6 @@
         const draft = {
             kind: clickMode, mapName: loadedMapName, mapLoadId: currentMapLoadId,
             refreshState: singleGoalRefreshState, x, y, yaw,
-            bodyGeneration: threeDRobotBodyGeneration, localizationGeneration,
             groundValid: false, groundZ: null, previewId: '', previewedAtMs: 0,
             busy: true
         };
@@ -3525,6 +3530,7 @@
         if (!draft || draft.kind !== 'goal' || !draft.groundValid
             || draft.busy || draft.mapLoadId !== currentMapLoadId
             || threeDInteractionIssue() || goalReadinessIssue()) return;
+        stopThreeDPreviewPoseRefresh();
         draft.busy = true;
         draft.previewId = '';
         navigationPointCloudViewer.clearPreviewPath();
@@ -3559,7 +3565,7 @@
             navigationPointCloudViewer.setPreviewPath(points);
             threeDNotice = `${result.message || '当前路径预览已生成'}。`
                 + '蓝色线为预计路线的平面投影，不代表三维贴地足端轨迹，执行时仍可能重规划；'
-                + '预览不设操作倒计时；开始时复核当前定位与路径。';
+                + '请在 18 秒内点击“开始导航”，否则重新预览。';
         } catch (error) {
             if (generation !== threeDDraftGeneration || threeDPoseDraft !== draft) return;
             draft.previewId = '';
@@ -3571,6 +3577,7 @@
         } finally {
             if (generation === threeDDraftGeneration && threeDPoseDraft === draft) {
                 draft.busy = false;
+                if (draft.previewId) maintainThreeDPreviewPoseFreshness(draft);
                 updateThreeDPoseUi();
             }
         }
@@ -3579,9 +3586,10 @@
     async function startThreeDPreviewedGoal() {
         const draft = threeDPoseDraft;
         if (!draft || draft.kind !== 'goal' || !draft.groundValid || !draft.previewId
-            || draft.busy
+            || draft.busy || Date.now() - draft.previewedAtMs >= 18000
             || draft.mapLoadId !== currentMapLoadId
             || threeDInteractionIssue() || goalReadinessIssue()) return;
+        stopThreeDPreviewPoseRefresh();
         draft.busy = true;
         const generation = threeDDraftGeneration;
         threeDNotice = '正在向后端提交已预览目标；后端会再次核对地图、定位与地形。';
@@ -3773,8 +3781,7 @@
                 overlay.textContent = singleGoalHadActiveNavigation && navigationActive
                     ? '定位时间戳已过期，本次目标未启动；旧导航取消尚未确认。'
                         + '正在自动刷新定位，请关注机器人安全；不会自动启动本次目标。'
-                    : '定位时间戳已过期，本次目标未启动；正在自动刷新定位。'
-                        + '不会自动开始导航，请等待结果后重新在地图上设置目标。';
+                    : '正在更新定位，更新通过后将继续执行本次目标；可取消导航。';
             } else if (singleGoalRefreshState === 'failed') {
                 overlay.textContent = singleGoalHadActiveNavigation && navigationActive
                     ? '定位刷新失败，旧导航停止尚未确认；请先安全停止机器人并确认导航已结束，再重新定位。'
@@ -4502,7 +4509,6 @@
                         navigationStartupLastLog = key;
                     }
                     renderNavigationStartup();
-                    if (initialLocalizationStartupHint()) setMode('等待初始定位');
                 } catch (_error) { /* malformed diagnostics never grant motion */ }
             }, { queueLength: 1 });
             savedMapCloud?.dispose();
@@ -4741,16 +4747,11 @@
             activeSession.subscribe('/localization/status', UI.TYPES.string, (message) => {
                 let data;
                 try { data = JSON.parse(message.data); } catch (_) { return; }
-                if (!data || typeof data !== 'object' || Array.isArray(data)) return;
-                unified3DStatus = data;
-                unified3DStatusAtMs = Date.now();
-                if (usesUnifiedThreeDLocalization()) applyUnifiedThreeDHealth(unified3DStatusAtMs);
                 if (data.scope !== 'xingji_3d') return;
                 const state = `${data.ready}:${data.reason}:${data.error || ''}`;
                 if (state === lastGlobalLocalizationState) return;
                 lastGlobalLocalizationState = state;
-                log(data.recovering === true ? '定位数据流/三维匹配短暂复核中：已零速停车，原任务保留；连续观测与可信匹配通过后继续，超时则停止任务。'
-                    : data.ready ? '统一三维定位已确认，位置由 LIO 连续推算并经三维匹配校验。'
+                log(data.ready ? '统一三维定位已确认，位置由 LIO 连续推算并经三维匹配校验。'
                     : `统一三维定位未就绪：${data.error || data.reason || '等待初始定位'}；不会启动或自动恢复导航。`);
             });
             activeSession.subscribe('/localization/navigation_pose', UI.TYPES.poseWithCovariance, (message) => {
@@ -4910,7 +4911,7 @@
                     updateMapReadyUi();
                 } else if (status === 'waiting_for_nav2') {
                     nav2Ready = false;
-                    refreshModeFromLocalization();
+                    setMode('等待 Nav2');
                     updateMapReadyUi();
                 } else if (status === 'nav2_start_timeout') {
                     nav2Ready = false;
@@ -4919,7 +4920,11 @@
                 } else if (status === 'goal_succeeded' || status === 'goal_canceled') {
                     setMode(status === 'goal_canceled' && singleGoalRefreshState === 'failed'
                         ? '定位刷新失败，请重定位' : '导航就绪');
+                } else if (status === 'sending_goal' || status === 'goal_queued') {
+                    singleGoalRefreshState = '';
+                    setMode('正在规划目标');
                 } else if (status === 'navigating') {
+                    singleGoalRefreshState = '';
                     setMode('导航执行中');
                 } else if (status === 'goal_refreshing_localization') {
                     singleGoalRefreshState = 'refreshing';
@@ -5020,7 +5025,8 @@
                 const ready = Boolean(message && message.data);
                 if (ready === nav2Ready) return;
                 nav2Ready = ready;
-                refreshModeFromLocalization();
+                if (ready) refreshModeFromLocalization();
+                else setMode('等待 Nav2');
                 updateMapReadyUi();
             });
             activeSession.subscribe('/navigation_active', UI.TYPES.bool, (message) => {
@@ -5172,6 +5178,7 @@
     document.getElementById('btn-resume-route').addEventListener('click', () => controlRoute('resume'));
     document.getElementById('btn-skip-route').addEventListener('click', () => controlRoute('skip'));
     document.getElementById('btn-stop-route').addEventListener('click', () => controlRoute('stop'));
+    document.getElementById('btn-stop-active-route').addEventListener('click', () => controlRoute('stop'));
     cancelRelocalizationButton.addEventListener('click', () => {
         requestRelocalizationCancel('用户已请求取消本次三维初始定位精修。');
         updateMapReadyUi();
@@ -5180,6 +5187,7 @@
         window.clearInterval(automaticTerrainWatchdogTimer);
         savedMapCloud?.dispose();
         mapSnapshotRecovery?.cancel();
+        stopThreeDPreviewPoseRefresh();
         window.clearTimeout(navigationSafetyRetryTimer);
         if (localizationWatchdogTimer) window.clearInterval(localizationWatchdogTimer);
         clearRelocalizationWatchdog();

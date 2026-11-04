@@ -1452,20 +1452,16 @@ def draw_detections(frame: np.ndarray, result: Any) -> int:
     coordinates = boxes.xyxy.cpu().numpy().astype(int)
     confidences = boxes.conf.cpu().numpy()
     class_ids = boxes.cls.cpu().numpy().astype(int)
-    drawn_count = 0
     for (x1, y1, x2, y2), score, class_id in zip(coordinates, confidences, class_ids):
         color = BOX_COLORS[class_id % len(BOX_COLORS)]
         name = result.names[class_id]
-        if any(token in str(name).lower() for token in ('cigarette', 'butt')):
-            continue  # Retired object detection, including this standalone demo.
-        drawn_count += 1
         label = f"{name} {score:.2f}"
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
         text_top = max(y1 - text_height - baseline - 4, 0)
         cv2.rectangle(frame, (x1, text_top), (x1 + text_width + 6, text_top + text_height + baseline + 4), color, cv2.FILLED)
         cv2.putText(frame, label, (x1 + 3, text_top + text_height + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
-    return drawn_count
+    return len(class_ids)
 
 
 def draw_status(frame: np.ndarray, inference_fps: float, object_count: int, dropped_frames: int) -> None:

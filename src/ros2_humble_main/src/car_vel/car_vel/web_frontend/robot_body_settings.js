@@ -31,7 +31,7 @@
         function render() {
             const fresh = online && Date.now() - seenAt < 3000;
             apply.disabled = Boolean(busy || !fresh || !latest || !latest.config
-                || latest.locked !== false || latest.switching);
+                || latest.switching);
             model.disabled = busy;
             Object.values(inputs).forEach(input => { input.disabled = busy; });
             if (!fresh) {
@@ -44,8 +44,8 @@
             state.textContent = `已保存：${names[selected] || '未配置'}；当前连接：`
                 + (latest.connected ? (names[active] || '未知') : '未连接')
                 + (latest.switching ? '；正在切换' : '');
-            get('robot-body-note').textContent = latest.error || latest.lock_reason
-                || '切换前让旧本体趴下、退出遥控，并停止建图、导航和巡检程序。';
+            get('robot-body-note').textContent = latest.error
+                || '确认切换后将停止建图、导航和当前巡检任务，并退出旧本体控制。';
         }
 
         function receive(message) {
@@ -71,7 +71,8 @@
                     : input.type === 'number' ? Number(input.value) : input.value.trim();
             });
             if (!get('robot-body-form').reportValidity()) return;
-            if (!root.confirm('确认应用所选本体？旧本体必须已安全趴下。切换将重新建立底盘连接，不会自动站立或恢复任务。钢镚 SDK 占用期间手柄不能正常接管。')) return;
+            if (!root.confirm('确认切换本体？请确认现场安全。当前建图、导航、巡检和园区任务将停止，切换后不会自动站立或恢复任务。')) return;
+            profile.switch_confirmed = true;
             busy = true;
             render();
             log('正在检查旧本体并应用本体配置…');
@@ -80,7 +81,7 @@
                     'lzp_interface/srv/SetRobotBody', {
                         body_id: model.value, profile_json: JSON.stringify(profile),
                         expected_version: formVersion,
-                    }, 25000);
+                    }, 90000);
                 log(response.message || (response.success ? '本体切换完成' : '本体切换失败'));
                 dirty = !response.success;
                 if (response.status_json) receive(response.status_json);

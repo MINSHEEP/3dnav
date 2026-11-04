@@ -50,8 +50,6 @@ def generate_launch_description():
         parameters=[{
             'command_timeout_sec': 0.3,
             'terrain_guard_timeout_sec': 0.5,
-            # Local Xingji 3D navigation and patrol use terrain as telemetry.
-            'xingji_3d_terrain_stop_enabled': False,
             # Standard Nav2 Humble publishes the velocity smoother output on
             # /cmd_vel. Isolate the hardware-facing output so the smoother and
             # arbiter can never race each other at the robot bridge.
@@ -125,6 +123,7 @@ def generate_launch_description():
             'action_result_grace_sec': 1.5,
             'cancel_confirmation_timeout_sec': 12.0,
             'amcl_confirmation_timeout_sec': 10.0,
+            'rough_amcl_timeout_sec': 15.0,
         }],
     )
 

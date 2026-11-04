@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 import threading
 import time
 
@@ -19,9 +18,7 @@ from lzp_interface.msg import TerrainObservation as TerrainObservationMessage
 from lzp_interface.srv import SetTraversalMode
 
 from .automatic_terrain_navigation import AutomaticTerrainController
-from .navigation_mode import (
-    MAP_2D, TERRAIN_3D, normalize_navigation_mode, normalize_navigation_speed,
-)
+from .navigation_mode import MAP_2D, TERRAIN_3D, normalize_navigation_mode
 from .terrain_navigation import TerrainCapabilityProfile, TerrainObservation
 
 
@@ -52,7 +49,6 @@ class AutomaticTerrainNavigationNode(Node):
         self._navigation_known = False
         self._campus_active = False
         self._navigation_mode = TERRAIN_3D
-        self._navigation_speed = None
         # Only a fresh, validated Xingji identity may use the requested
         # score-threshold exception. Unknown bodies retain the old policy.
         self._body_id = ''
@@ -227,20 +223,16 @@ class AutomaticTerrainNavigationNode(Node):
                 f'Automatic terrain config rejected: {error}')
 
     def _mode_callback(self, message):
-        speed = None
         try:
             payload = json.loads(str(message.data))
             value = payload.get('mode') if isinstance(payload, dict) else payload
             mode = normalize_navigation_mode(value)
-            if isinstance(payload, dict) and 'speed_mps' in payload:
-                speed = normalize_navigation_speed(payload['speed_mps'])
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             self.get_logger().error(
                 f'Navigation mode rejected by terrain supervisor: {error}')
             mode = TERRAIN_3D
         with self._lock:
             self._navigation_mode = mode
-            self._navigation_speed = speed
 
     def _publish(self, decision):
         confidence_required = self._confidence_required()
@@ -403,9 +395,6 @@ class AutomaticTerrainNavigationNode(Node):
                     observation_sequence=self._observation_sequence,
                     check_confidence=self._confidence_required(now),
                     fixed_execution_mode='obstacle' if fixed else '')
-                if (fixed and decision.safe and decision.state != 'suspended'
-                        and self._navigation_speed is not None):
-                    decision = replace(decision, speed_limit_mps=self._navigation_speed)
                 if self._evidence_source == 'restricted_map' and decision.safe:
                     decision = type(decision)(safe=True, state='restricted_flat_site',
                         current_mode=decision.current_mode, requested_mode=decision.requested_mode,

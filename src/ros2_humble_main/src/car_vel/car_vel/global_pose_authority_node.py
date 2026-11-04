@@ -26,9 +26,7 @@ from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 
 from .global_pose_authority import (
-    GlobalPoseAuthority, LioAnchorContinuity, LioStreamGuard, Pose2, compose, angle,
-    RUNTIME_TIMING_MODEL)
-from .rigid_pose import Pose3, TRANSFORM_MODEL, quaternion
+    GlobalPoseAuthority, Pose2, compose, lio_step_valid, usable_lio_health, angle)
 
 
 def pose2(pose):
@@ -36,8 +34,8 @@ def pose2(pose):
     norm = q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w
     if not math.isfinite(norm) or abs(norm-1.) > .02:
         raise ValueError('invalid orientation')
-    return Pose3.from_quaternion(float(pose.position.x), float(pose.position.y),
-        float(getattr(pose.position, 'z', 0.)), q.x, q.y, q.z, q.w)
+    return Pose2(float(pose.position.x), float(pose.position.y), math.atan2(
+        2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z)))
 
 
 def stamp_seconds(stamp):
@@ -47,36 +45,23 @@ def stamp_seconds(stamp):
 class GlobalPoseAuthorityNode(Node):
     def __init__(self):
         super().__init__('global_pose_authority')
-        coast = float(self.declare_parameter('matching_coast_sec', 3.0).value)
-        recovery = float(self.declare_parameter('matching_recovery_sec', 2.0).value)
-        tracking_rmse = float(self.declare_parameter('tracking_maximum_rmse', .22).value)
-        self.tracking_timeout = float(self.declare_parameter('tracking_timeout_sec', 2.0).value)
-        if (not all(math.isfinite(v) for v in (coast, recovery, tracking_rmse))
-                or not 1. <= coast <= 4. or not 0. < recovery <= 2.
-                or not 0. < tracking_rmse <= .25
-                or not math.isfinite(self.tracking_timeout) or not .5 <= self.tracking_timeout <= 2.5):
-            raise ValueError('三维跟踪期限或质量参数无效')
-        self.policy = GlobalPoseAuthority(coast=coast,recovery=recovery,tracking_rmse=tracking_rmse)
+        self.policy = GlobalPoseAuthority()
         self.mode = self.body = ''
         self.body_generation = None
         self.mode_at = self.body_at = self.lio_at = 0.
         self.lio_ok = False
-        self.lio_continuity = LioAnchorContinuity()
         self.lio_epoch = 0
         self.map_name = self.load_id = ''
         self.active = True
         self.scope = False
         self.scope_known = False
         self.was_ready = False
-        self.was_recovering = False
         self.motion_latched = False
-        self.failure = None
         self.raw_pose = None
         self.last_raw_stamp = None
         self.last_pose_stamp = None
-        # Used only in the Xingji3D scope; legacy pose forwarding is unchanged.
-        self.lio_stream = LioStreamGuard(freshness_sec=.45)
-        self.stream_identity = None
+        self.last_odom = None
+        self.last_odom_wall = 0.
         self.seed_request = ''
         self.initial_request_id = ''
         self.legacy_required = False
@@ -116,9 +101,6 @@ class GlobalPoseAuthorityNode(Node):
         self.pose_pub = self.create_publisher(PoseWithCovarianceStamped,
             '/localization/navigation_pose', 10)
         self.status_pub = self.create_publisher(String, '/localization/status', latched)
-        self.interval_policy_pub = self.create_publisher(
-            Bool, '/localization/interval_compensation', latched)
-        self.interval_policy_pub.publish(Bool(data=False))
         self.create_subscription(String, '/navigation/mode', self._mode, latched)
         self.create_subscription(String, '/robot_body/status', self._body, latched)
         self.create_subscription(String, '/lio_health', self._lio, latched)
@@ -165,8 +147,6 @@ class GlobalPoseAuthorityNode(Node):
             generation = data.get('generation')
             self.body = selected if valid else ''
             if generation != self.body_generation:
-                self._capture_failure('body_generation_changed',
-                    f'本体配置批次变化：{self.body_generation} -> {generation}')
                 self.policy.reset()
             self.body_generation = generation
         except (ValueError, KeyError, TypeError, AttributeError):
@@ -174,25 +154,15 @@ class GlobalPoseAuthorityNode(Node):
         self.body_at = time.monotonic()
 
     def _lio(self, message):
-        data = None
-        # Five healthy scans can take1.48s in the recorded delayed stream.
-        # This keeps the anchor only; native motion_pause still stops motion.
-        self.lio_continuity.max_pause_sec = (
-            3.0 if self.mode == 'terrain_3d' and self.body == 'xingji' else 1.0)
         try:
             data = json.loads(message.data)
-            ok = self.lio_continuity.observe(data, time.monotonic())
+            ok = usable_lio_health(data)
         except (ValueError, TypeError, AttributeError):
-            self.lio_continuity.observe(None, time.monotonic())
             ok = False
         if not ok and self.lio_ok:
-            reason = (data.get('reason') or data.get('code') or data.get('state')) if isinstance(data, dict) else 'invalid_health_message'
-            self._capture_failure('lio_health_rejected', f'LIO健康检查未通过：{reason}',
-                                  lio_health=data)
             self.lio_epoch += 1
             self.policy.reset()
         self.lio_ok = ok
-        self.last_lio_health = data
         self.lio_at = time.monotonic()
 
     def _map(self, message):
@@ -200,8 +170,6 @@ class GlobalPoseAuthorityNode(Node):
         reload = str(message.message).startswith((
             'Successfully loaded and confirmed map:', 'Successfully loaded map:'))
         if identity != (self.map_name, self.load_id) or reload:
-            self._capture_failure('map_identity_changed',
-                f'地图加载批次变化：{self.map_name}/{self.load_id} -> {identity}')
             self.policy.reset()
             self.seed_request = ''
             self.initial_request_id = ''
@@ -293,7 +261,7 @@ class GlobalPoseAuthorityNode(Node):
         if (not all(math.isfinite(v) for v in (t.x,t.y,t.z,q.x,q.y,q.z,q.w))
                 or abs(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w-1.) > .02):
             raise ValueError('LIO transform contains invalid coordinates or rotation')
-        value = Pose3.from_quaternion(t.x, t.y, t.z, q.x, q.y, q.z, q.w)
+        value = Pose2(t.x, t.y, math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z)))
         return value, transform.header.stamp
 
     def _seed(self, message):
@@ -306,23 +274,11 @@ class GlobalPoseAuthorityNode(Node):
                     and data.get('body_generation') == self.body_generation):
                 self.initial_request_id = str(data.get('request_id') or '')
                 self.seed_request = ''
-                self.error = '正在等待本次初始精修结果'
                 self.lio_epoch += 1
                 self.policy.set_identity((self.body, self.body_generation, self.map_name,
                                           self.load_id, self.lio_epoch, self.mode))
                 if self.tracking_handle is not None:
                     self.tracking_handle.cancel_goal_async()
-                return
-            if (self.scope and not self.active and self.initial_request_id
-                    and data.get('request_id') == self.initial_request_id
-                    and data.get('map_name') == self.map_name
-                    and data.get('map_load_id') == self.load_id
-                    and data.get('body_generation') == self.body_generation
-                    and data.get('terminal') is True and data.get('success') is False
-                    and data.get('state') in ('failed', 'canceled')):
-                self.policy.reset()
-                self.seed_request = ''
-                self.error = '初始精修未确认：' + str(data.get('message') or '请求失败或取消')
                 return
             if (not self.scope or self.active or data.get('stage') != 'validation_passed'
                     or data.get('source_pose') != 'refined'
@@ -337,12 +293,7 @@ class GlobalPoseAuthorityNode(Node):
             seconds = float(stamp['sec'])+float(stamp['nanosec'])*1e-9
             odom, _ = self._odom(Time(seconds=int(stamp['sec']), nanoseconds=int(stamp['nanosec'])))
             p, q = data['pose'], data['metrics']
-            if q.get('transform_model') != TRANSFORM_MODEL:
-                self.error = '三维配准模型版本不匹配，请重建接口和icp_registration并重启后台'
-                return
-            rotation = p['orientation']
-            mapped = Pose3.from_quaternion(float(p['x']), float(p['y']), float(p['z']),
-                *(float(rotation[k]) for k in ('x', 'y', 'z', 'w')))
+            mapped = Pose2(float(p['x']), float(p['y']), float(p['yaw']))
             if self.tracking_handle is not None:
                 self.tracking_handle.cancel_goal_async()
             self.lio_epoch += 1
@@ -354,7 +305,6 @@ class GlobalPoseAuthorityNode(Node):
                 self.seed_request = data['request_id']
                 self.tf_fault = False
                 self.motion_latched = False
-                self.failure = None
                 self.was_ready = False
                 self.error = ''
         except Exception as error:
@@ -408,8 +358,6 @@ class GlobalPoseAuthorityNode(Node):
         self.record = value
 
     def _sync_tf_parameters(self, now):
-        # rclpy.Node owns self._parameters as its parameter dictionary. Keep
-        # the ownership RPC state machine out of that inherited namespace.
         endpoints = self.get_publishers_info_by_topic('/parameter_events')
         gids = {bytes(e.endpoint_gid).hex() for e in endpoints
                 if e.node_name == 'amcl' and e.node_namespace == '/' and any(e.endpoint_gid)}
@@ -489,16 +437,12 @@ class GlobalPoseAuthorityNode(Node):
 
     def _match(self, pose, stamp, now):
         if (self.tracking is not None or self.registration_busy or now < self.next_match
-                or not self.action.server_is_ready() or self.policy.transform is None
-                or self.policy.hard_failure or self.motion_latched):
+                or not self.action.server_is_ready() or self.policy.transform is None):
             return
         goal = Relocalize.Goal()
         goal.map_name, goal.map_load_id = self.map_name, self.load_id
         goal.robust_validation = goal.tracking = True
-        # Filter candidates against the same acceptance envelope before the
-        # registration server ranks them, rather than discarding its winner.
-        goal.search_xy, goal.search_yaw = self.policy.max_xy, self.policy.max_yaw
-        goal.timeout_sec = self.tracking_timeout
+        goal.search_xy, goal.search_yaw, goal.timeout_sec = .25, math.radians(8), 1.5
         goal.rough_pose = self._message(compose(self.policy.transform, pose), stamp)
         identity = self.policy.identity
         future = self.action.send_goal_async(goal)
@@ -509,7 +453,6 @@ class GlobalPoseAuthorityNode(Node):
             try:
                 handle = response.result()
                 if not handle.accepted:
-                    self.policy.match_failed()
                     self.tracking = None
                     return
                 self.tracking_handle = handle
@@ -519,7 +462,6 @@ class GlobalPoseAuthorityNode(Node):
                 if identity != self.policy.identity:
                     handle.cancel_goal_async()
             except Exception as error:
-                self.policy.match_failed()
                 self.error = f'局部匹配请求失败：{error}'
                 self.tracking = None
         future.add_done_callback(accepted)
@@ -533,12 +475,7 @@ class GlobalPoseAuthorityNode(Node):
                 return
             if (wrapped.status != GoalStatus.STATUS_SUCCEEDED or not result.success
                     or not result.candidate_verified):
-                self.policy.match_failed()
                 self.error = f'局部三维匹配未通过：{result.message}'
-                return
-            if getattr(result, 'transform_model', '') != TRANSFORM_MODEL:
-                self.policy.match_failed()
-                self.error = '局部三维配准模型版本不匹配，请重建接口和icp_registration并重启后台'
                 return
             stamp = result.refined_pose.header.stamp
             odom, _ = self._odom(Time(seconds=stamp.sec, nanoseconds=stamp.nanosec))
@@ -549,7 +486,6 @@ class GlobalPoseAuthorityNode(Node):
             else:
                 self.error = f'局部三维修正被拒绝：{self.policy.reason}'
         except Exception as error:
-            self.policy.match_failed()
             self.error = f'局部三维匹配结果无效：{error}'
 
     @staticmethod
@@ -557,54 +493,11 @@ class GlobalPoseAuthorityNode(Node):
         message = PoseWithCovarianceStamped()
         message.header.frame_id, message.header.stamp = 'map', stamp
         p, q = message.pose.pose.position, message.pose.pose.orientation
-        p.x, p.y, p.z = pose.x, pose.y, getattr(pose, 'z', 0.)
-        q.x, q.y, q.z, q.w = quaternion(pose)
-        for index in (0, 7, 14):
-            message.pose.covariance[index] = .04
-        for index in (21, 28, 35):
-            message.pose.covariance[index] = .02
+        p.x, p.y = pose.x, pose.y
+        q.z, q.w = math.sin(pose.yaw/2), math.cos(pose.yaw/2)
+        message.pose.covariance[0] = message.pose.covariance[7] = .04
+        message.pose.covariance[35] = .02
         return message
-
-    def _capture_failure(self, code, detail, *, lio_health=None):
-        """Freeze first loss before reset/generic lock can destroy evidence.
-
-        Diagnostic only: never changes readiness, recovery budgets or motion.
-        Only a newly validated manual initial pose clears this record.
-        """
-        if (not self.scope or (not self.active and self.policy.transform is None) or
-                getattr(self, 'failure', None) is not None):
-            return
-        def safe(value):
-            if isinstance(value, dict):
-                return {str(k): safe(v) for k, v in value.items()}
-            if isinstance(value, list):
-                return [safe(v) for v in value]
-            return None if isinstance(value, float) and not math.isfinite(value) else value
-        clock = self.get_clock().now().nanoseconds * 1e-9
-        self.failure = dict(code=code, detail=str(detail), stamp_ns=int(clock*1e9),
-            map_name=self.map_name, map_load_id=self.load_id,
-            body_generation=self.body_generation, lio_epoch=self.lio_epoch,
-            policy_reason=self.policy.reason, accepted_stamp=self.policy.accepted_stamp,
-            accepted_age_sec=(clock-self.policy.accepted_stamp
-                              if self.policy.accepted_stamp else None),
-            rmse_m=self.policy.rmse, overlap=self.policy.overlap,
-            recovery_deadline=self.policy.recovery_deadline,
-            recovery_matches=self.policy.recovery_samples,
-            recovery_matches_required=self.policy.recovery_matches_required if self.scope else 0,
-            lio_timing=dict(self.lio_stream.details()),
-            lio_health=safe(lio_health if lio_health is not None
-                            else getattr(self, 'last_lio_health', None)),
-            lio_health_pause_limit_sec=self.lio_continuity.max_pause_sec,
-            tf_broadcast_actual=self.actual_tf, tf_fault=self.tf_fault)
-        self.get_logger().error('LOCALIZATION_FAILURE ' + json.dumps(
-            self.failure, ensure_ascii=False))
-
-    def _motion_failure_message(self):
-        evidence = getattr(self, 'failure', None) or {}
-        detail = evidence.get('detail') or self.policy.reason
-        return ('运行中三维定位失效，已锁定零速；首次原因：'
-                + str(evidence.get('code') or 'localization_untrusted') + '；'
-                + str(detail) + '；停止任务后重新确认初始点')
 
     def _tick(self):
         wall = time.monotonic()
@@ -614,22 +507,16 @@ class GlobalPoseAuthorityNode(Node):
         self.scope_known = (wall-self.mode_at < 2. and (
             self.mode == 'map_2d' or (wall-self.body_at < 2.
             and bool(self.mode) and bool(self.body))))
-        # Freshness gates readiness, not the selected localization owner.
-        # A late heartbeat must not masquerade as a real switch to legacy.
-        wanted = (self.mode == 'terrain_3d' and self.body == 'xingji'
-                  and (self.scope or self.scope_known))
+        wanted = self.scope_known and self.mode == 'terrain_3d' and self.body == 'xingji'
         legacy_seed = None
         if wanted != self.scope:
-            self._capture_failure('localization_scope_changed',
-                f'定位模式变化：{self.mode}，本体：{self.body}')
             if self.scope:
                 self.legacy_required = True
                 self.legacy_wait = None
                 self.error = '切回原定位前需要核对AMCL位置，请保持停止并设置初始点'
                 # A fresh same-body anchor may initialize the legacy filter at rest.
                 if (self.mode == 'map_2d' and self.body == 'xingji' and not self.active
-                        and self.policy.ready(clock) and not self.motion_latched
-                        and self.policy.recovery_deadline is None and not self.policy.hard_failure):
+                        and self.policy.ready(clock) and not self.motion_latched):
                     try:
                         odom, stamp = self._odom()
                         if abs(clock-stamp_seconds(stamp)) <= .3:
@@ -642,21 +529,11 @@ class GlobalPoseAuthorityNode(Node):
             self.last_pose_stamp = None
             self.last_owned_tf = wall if self.scope else self.last_owned_tf
         self.scope = wanted
-        self.lio_continuity.max_pause_sec = 3.0 if self.scope else 1.0
         if legacy_seed is not None:
             self._legacy_initial(legacy_seed)
             self.initial_pose_pub.publish(legacy_seed)
-        if self.lio_ok and not self.lio_continuity.allows_anchor(wall):
-            self._capture_failure('lio_health_continuity_expired',
-                                  'LIO健康状态连续性复核未通过或超过允许时长')
-            self.lio_ok = False
-            self.lio_epoch += 1
-            self.policy.reset()
-        identity = (self.body,self.body_generation,self.map_name,self.load_id,self.lio_epoch,self.mode)
-        if identity != self.stream_identity:
-            self.lio_stream.reset()
-            self.stream_identity = identity
-        self.policy.set_identity(identity)
+        self.policy.set_identity((self.body, self.body_generation, self.map_name,
+                                  self.load_id, self.lio_epoch, self.mode))
         try:
             self._sync_tf_parameters(wall)
         except Exception as error:
@@ -667,110 +544,59 @@ class GlobalPoseAuthorityNode(Node):
         except Exception as error:
             self.error = f'切回原定位等待确认：{error}'
         ready = False
-        recovering = False
         sensor_fresh = False
         if self.scope:
             try:
-                odom = stamp = None
-                stream = self.lio_stream
-                anchored = self.policy.transform is not None
-                try:
-                    odom,stamp = self._odom()
-                    stream.observe(odom,stamp_seconds(stamp),clock,wall,anchored)
-                except (ValueError,TypeError,AttributeError) as error:
-                    stream.lookup_error = str(error)
-                    self._capture_failure('invalid_lio_pose', str(error))
-                    stream.fail('invalid_lio_pose')
-                except Exception as error:
-                    stream.missing(clock,wall,anchored,error)
-                sensor_fresh = stream.fresh
-                if stream.failed:
-                    self._capture_failure(stream.reason,
-                        'LIO连续性检查失败：' + json.dumps(stream.details(), ensure_ascii=False))
-                    self.lio_epoch += 1
-                    self.policy.set_identity((self.body,self.body_generation,self.map_name,
-                                              self.load_id,self.lio_epoch,self.mode))
-                    self.error = 'LIO连续性检查失败，旧锚点已作废：'+json.dumps(stream.details(),ensure_ascii=False)
-                elif stream.requires_match and anchored:
-                    # An actual sample gap still requires a fresh measured map
-                    # match. Its deadline belongs to map evidence, not to the
-                    # independently verified LIO transport recovery window.
-                    deadline = self.policy.accepted_stamp+self.policy.coast+self.policy.recovery
-                    self.policy.begin_recovery(clock,
-                        min(stream.recovery,max(0.,deadline-clock)),stream.match_min_stamp)
-                    stream.requires_match = False
-                if self.lio_continuity.paused and anchored:
-                    self.policy.begin_recovery(clock,3.,clock,
-                        require_matches=not self.policy.ready(clock))
-                if not self.scope_known and anchored:
-                    self.policy.begin_recovery(clock,3.,clock)
-                lio = (self.lio_ok and wall-self.lio_at < 2.5
-                       and self.lio_continuity.allows_anchor(wall))
+                odom, stamp = self._odom()
+                if self.last_odom is None or stamp_seconds(stamp) != self.last_odom[1]:
+                    self.last_odom_wall = wall
+                if self.last_odom and stamp_seconds(stamp) != self.last_odom[1]:
+                    dt = stamp_seconds(stamp)-self.last_odom[1]
+                    if not lio_step_valid(self.last_odom[0], odom, dt):
+                        self.lio_epoch += 1
+                        self.policy.set_identity((self.body, self.body_generation, self.map_name,
+                                                  self.load_id, self.lio_epoch, self.mode))
+                        self.error = 'LIO位姿或时间不连续，原全局锚点已作废'
+                self.last_odom = (odom, stamp_seconds(stamp))
+                sensor_fresh = (-.1 <= clock-stamp_seconds(stamp) <= .3
+                                and wall-self.last_odom_wall <= .3)
+                lio = self.lio_ok and wall-self.lio_at < 2.5
                 owned = (self.actual_tf is False and self.param_operation != 'set'
                          and self._ensure_own_tf_gid()
                          and wall-max(self.external_tf_at, self.handoff_at) > .7
                          and not self.tf_fault and not self.record_bad)
-                infrastructure = (owned and lio and bool(self.load_id) and not stream.failed
-                                  and (sensor_fresh or stream.recovering))
-                phase = self.policy.phase(clock,can_resume=(self.scope_known and stream.stream_ready
-                    and not self.lio_continuity.paused)) if infrastructure else 'failed'
-                if phase == 'ready' and stream.recovering:
-                    # A good map anchor never substitutes for the three new
-                    # LIO samples required to release a transport hold.
-                    phase = 'recovering'
-                ready = phase == 'ready'
-                recovering = phase == 'recovering'
-                if ((self.was_ready or self.was_recovering) and self.active
-                        and not ready and not recovering):
-                    if not owned:
-                        code = 'tf_ownership_unconfirmed'
-                    elif not lio:
-                        code = 'lio_health_untrusted'
-                    elif self.policy.reason == 'recovery_timeout':
-                        code = 'matching_recovery_timeout'
-                    else:
-                        code = self.policy.reason or 'global_match_stale'
-                    self._capture_failure(code, self.error or self.policy.reason)
+                ready = (owned and lio and sensor_fresh and bool(self.load_id)
+                         and self.policy.ready(clock))
+                if self.was_ready and self.active and not ready:
                     self.motion_latched = True
                 if self.motion_latched:
                     ready = False
-                    recovering = False
-                    self.error = self._motion_failure_message()
-                if lio and stream.stream_ready and owned:
+                    self.error = '运行中三维定位失效，已锁定零速；停止任务后重新确认初始点'
+                if lio and sensor_fresh and owned:
                     self._match(odom, stamp, wall)
-                # A bounded recovery keeps measured relative TF available to
-                # Nav2, while ready=false independently blocks final velocity.
-                if ((ready or recovering) and sensor_fresh and stamp is not None
-                        and stamp_seconds(stamp) != self.last_pose_stamp):
+                if ready and stamp_seconds(stamp) != self.last_pose_stamp:
                     mapped = compose(self.policy.transform, odom)
                     message = self._message(mapped, stamp)
                     age = max(0., clock-self.policy.accepted_stamp)
-                    for index in (0, 7, 14):
-                        message.pose.covariance[index] = (
-                            max(.05, self.policy.rmse)**2 + (.10*age)**2)
-                    for index in (21, 28, 35):
-                        message.pose.covariance[index] = math.radians(3+2*age)**2
+                    message.pose.covariance[0] = message.pose.covariance[7] = (
+                        max(.05, self.policy.rmse)**2 + (.10*age)**2)
+                    message.pose.covariance[35] = math.radians(3+2*age)**2
                     self.pose_pub.publish(message)
                     t = TransformStamped()
                     t.header.frame_id, t.child_frame_id = 'map', 'odom'
                     t.header.stamp = Time(nanoseconds=int((stamp_seconds(stamp)+.2)*1e9)).to_msg()
                     a = self.policy.transform
                     t.transform.translation.x, t.transform.translation.y = a.x, a.y
-                    t.transform.translation.z = getattr(a, 'z', 0.)
-                    q = t.transform.rotation
-                    q.x, q.y, q.z, q.w = quaternion(a)
+                    t.transform.rotation.z, t.transform.rotation.w = math.sin(a.yaw/2), math.cos(a.yaw/2)
                     self.own_tf_messages.append(self._tf_fingerprint(t))
                     self.broadcaster.sendTransform(t)
                     self.last_owned_tf = wall
                     self.last_pose_stamp = stamp_seconds(stamp)
             except Exception as error:
                 ready = False
-                recovering = False
-                if (self.was_ready or self.was_recovering) and self.active:
-                    self._capture_failure('localization_exception', str(error))
+                if self.was_ready and self.active:
                     self.motion_latched = True
-                self.error = (self._motion_failure_message() if self.motion_latched
-                              else f'三维定位等待有效LIO/TF：{error}')
+                self.error = f'三维定位等待有效LIO/TF：{error}'
         else:
             ready = self.scope_known and self._legacy_ready()
             if ready and self.raw_pose is not None:
@@ -780,47 +606,19 @@ class GlobalPoseAuthorityNode(Node):
                     self.last_raw_stamp = stamp
         data = dict(schema=1, stamp_ns=int(clock*1e9), ready=ready,
             scope='xingji_3d' if self.scope else 'legacy', body_id=self.body,
-            transform_model=TRANSFORM_MODEL if self.scope else 'legacy',
             navigation_mode=self.mode, map_name=self.map_name, map_load_id=self.load_id,
             body_generation=self.body_generation, seed_request_id=self.seed_request,
             initial_request_id=self.initial_request_id,
             accepted_stamp=self.policy.accepted_stamp,
             rmse_m=self.policy.rmse, overlap=self.policy.overlap,
             age_sec=(clock-self.policy.accepted_stamp if self.policy.accepted_stamp else None),
-            reason=(('identity_recovery' if not self.scope_known else
-                     'sensor_recovery' if self.lio_stream.recovering else 'matching_recovery')
-                    if recovering else self.policy.reason),
-            error=self.error, failure=getattr(self, 'failure', None) if self.scope else None,
-            sensor_fresh=sensor_fresh,
-            recovering=recovering,
-            recovery_remaining_sec=(max(0., self.policy.recovery_deadline-clock)
-                                    if recovering and self.policy.recovery_deadline is not None
-                                    else max(0., self.lio_stream.deadline-wall)
-                                    if recovering and self.lio_stream.recovering else 0.),
-            recovery_matches=self.policy.recovery_samples,
-            recovery_matches_required=self.policy.recovery_matches_required if self.scope else 0,
-            sensor_recovering=recovering and self.lio_stream.recovering,
-            sensor_stream_ready=self.lio_stream.stream_ready,
-            lio_timing=self.lio_stream.details(),
-            lio_quality_pause=self.lio_continuity.paused,
+            reason=self.policy.reason, error=self.error, sensor_fresh=sensor_fresh,
             tf_broadcast_actual=self.actual_tf, tf_broadcast_baseline=self.baseline,
             legacy_initialization_required=self.legacy_required,
             matching=self.tracking is not None, rejected=self.policy.rejected)
-        # A bounded native lease selects the dt-aware gate. No authority
-        # heartbeat, inactive task, legacy mode or fault restores the old gate.
-        interval_enabled = (self.scope and self.scope_known and self.active
-                            and self.lio_ok and not self.motion_latched
-                            and self.policy.transform is not None)
-        publisher = getattr(self, 'interval_policy_pub', None)
-        if publisher is not None:
-            publisher.publish(Bool(data=bool(interval_enabled)))
-        data['interval_compensation'] = bool(interval_enabled)
-        data['runtime_timing_model'] = RUNTIME_TIMING_MODEL if self.scope else 'legacy'
-        data['lio_health_pause_limit_sec'] = self.lio_continuity.max_pause_sec
         self.status_pub.publish(String(data=json.dumps(data, ensure_ascii=False)))
         self.was_ready = ready if self.scope else False
-        self.was_recovering = recovering if self.scope else False
-        signature = (data['scope'], ready, data['reason'], self.error,data['lio_timing']['state'])
+        signature = (data['scope'], ready, self.policy.reason, self.error)
         if signature != self.last_status:
             self.last_status = signature
             self.get_logger().info('GLOBAL_LOCALIZATION '+json.dumps(data, ensure_ascii=False))

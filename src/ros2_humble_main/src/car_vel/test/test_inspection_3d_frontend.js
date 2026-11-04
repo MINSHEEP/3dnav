@@ -2,7 +2,6 @@
 'use strict';
 
 const fs = require('fs');
-const assert = require('assert');
 const path = require('path');
 
 const frontend = path.resolve(__dirname, '..', 'car_vel', 'web_frontend');
@@ -47,15 +46,16 @@ requireMatch(inline, /result\.path && result\.path\.header[\s\S]*?frame_id[\s\S]
   'preview path is not constrained to the map frame');
 requireMatch(inline, /session !== requestSession \|\| !requestSession\.connected[\s\S]*?currentMapLoadId !== mapLoadId/,
   'asynchronous preview result may survive session or map change');
-requireMatch(inline, /const bidirectional = document\.getElementById\('bidirectional'\)\.checked;[\s\S]*?loop_count: loopCount, continuous: false, bidirectional/,
-  'finite inspection preview must send the selected round-trip mode');
-assert(!inline.includes('3D 巡检暂不支持往返'), '3D round-trip checkbox blocks preview');
+requireMatch(inline, /loop_count: Math\.max\(1,[\s\S]*?continuous: false/,
+  'finite loop count or continuous route preview policy missing');
+requireMatch(inline, /bidirectional'\)\.checked\) \{[\s\S]*?3D 巡检暂不支持往返/,
+  'unsupported bidirectional 3D inspection not rejected');
 requireMatch(inline, /const preview = terrain3d \? currentThreeDPreview\(\) : null;[\s\S]*?if \(terrain3d && !preview\)/,
   '3D start can bypass explicit route preview');
 requireMatch(inline, /preview_id: terrain3d \? preview\.previewId : ''/,
   'inspection start does not submit preview token');
-assert(!inline.includes('THREE_D_PREVIEW_MAX_AGE_MS'),
-  'human preview evidence must not have a countdown');
+requireMatch(inline, /THREE_D_PREVIEW_MAX_AGE_MS = 18000/,
+  'preview token client age not bounded below backend TTL');
 requireMatch(common, /preview3dRoute:\s*'lzp_interface\/srv\/Preview3DRoute'/,
   'RobotUi Preview3DRoute type missing');
 for (const method of ['setRoutePoints', 'setCheckpointPoints', 'pickRoutePoint']) {

@@ -20,7 +20,6 @@ function context(mode = 'single') {
         mapSnapshotRecovery: {cancel() {ctx.snapshotCancelled=true;}},
         savedMapCloud: {dispose() {ctx.fullMapDisposed=true;}},
         stopThreeDPreviewPoseRefresh() {}, navigationSafetyRetryTimer: null, localizationWatchdogTimer: null,
-        automaticTerrainWatchdogTimer: null,
         clearRelocalizationWatchdog() {}, clearNoMotionUpdateRequests() {}, requestRelocalizationCancel() {},
         clearGlobalPlan() {}, setGlobalPlanStatus() {}, mapCanvas: {clearGoalPose() {}},
         localizationReady: true, localizationHealth: 'good', localizationHealthReason: '',

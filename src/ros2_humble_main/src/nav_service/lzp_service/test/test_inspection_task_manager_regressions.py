@@ -120,10 +120,6 @@ def _load_manager_methods(*method_names):
     namespace = {
         'time': time,
         'threading': threading,
-        'TERMINAL_STATES': ast.literal_eval(next(
-            node.value for node in tree.body if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == 'TERMINAL_STATES'
-                    for target in node.targets))),
         'utc_now': lambda: 'now',
         'RouteExecutionStatus': object,
         'CancelGoal': type('CancelGoal', (), {'Request': type('Request', (), {})}),
@@ -145,20 +141,6 @@ def _load_manager_methods(*method_names):
     )
     exec(body, namespace)
     return namespace['ManagerHarness']
-
-
-def test_failed_start_cleanup_without_route_keeps_primary_error():
-    harness = _load_manager_methods('_apply_route_request_result')()
-    harness._state = {'message': '启动路线失败：定位未确认'}
-    records = []
-    harness._log = lambda message, level='info': records.append((level, message))
-    harness._apply_route_request_result('control:failed_start_cleanup:stop', False,
-                                       'No route navigation task is active')
-    assert harness._state['message'] == '启动路线失败：定位未确认'
-    assert records and records[-1][0] == 'info'
-    harness._apply_route_request_result('control:failed_start_cleanup:stop', False,
-                                       'authorization mismatch')
-    assert records[-1][0] == 'warning'
 
 
 def test_patrol_return_and_next_round_use_the_same_frozen_3d_navigation_service():

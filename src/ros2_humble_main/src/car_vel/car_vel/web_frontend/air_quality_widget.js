@@ -83,11 +83,6 @@
         }
         const meta = root.querySelector('[data-air-quality-meta]');
         meta.textContent = `M701 · 地址 ${payload.address ?? '--'} · ${payload.port || '串口未知'}`;
-        if (payload.enabled === false) {
-            clearValues(root);
-            setState(root, 'disabled', '检测已关闭', 'M701 气体/环境检测已在设置页关闭，串口轮询已停止。');
-            return;
-        }
         if (!payload.valid) {
             clearValues(root);
             setState(

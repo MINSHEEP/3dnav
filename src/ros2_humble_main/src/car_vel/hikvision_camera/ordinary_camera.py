@@ -19,24 +19,23 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import build_opener, ProxyHandler, HTTPRedirectHandler, Request
 import uuid
 
-from c12_stream import VISIBLE_URL, INFRARED_URL
-
 DEFAULT_USB_DEVICE = '/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0'
 DEFAULT_BODY_URL = 'http://127.0.0.1:8081/camera'
-DEFAULTS = dict(version=0, source='usb', usb_device=DEFAULT_USB_DEVICE,
-                usb_width=1280, usb_height=720, usb_fps=30.0, body_url=DEFAULT_BODY_URL,
-                c12_visible_url=VISIBLE_URL, c12_infrared_url=INFRARED_URL)
+DEFAULTS = dict(version=0, pipeline='legacy', source='usb', usb_device=DEFAULT_USB_DEVICE,
+                usb_width=1280, usb_height=720, usb_fps=30.0, body_url=DEFAULT_BODY_URL)
 
 
 def validate_config(value, *, forbidden_ports=(8766, 8767, 8877)):
-    c12_fields = {'c12_visible_url', 'c12_infrared_url'}
-    if isinstance(value, dict) and set(value) == set(DEFAULTS) - c12_fields:
-        value = {**DEFAULTS, **value}
+    # Existing saved USB/body configurations keep their original selection.
+    if isinstance(value, dict) and 'pipeline' not in value:
+        value = {'pipeline': 'legacy', **value}
     if not isinstance(value, dict) or set(value) != set(DEFAULTS):
         raise ValueError('普通摄像头配置字段不完整或包含未知字段，请刷新设置页')
     result = copy.deepcopy(value)
-    if result['source'] not in ('usb', 'body', 'c12'):
-        raise ValueError('请选择 USB、狗本体或 C12 双光相机')
+    if result['pipeline'] not in ('legacy', 'c12'):
+        raise ValueError('请选择原有相机链路或 C12 相机')
+    if result['source'] not in ('usb', 'body'):
+        raise ValueError('请选择 USB 摄像头或狗本体摄像头')
     if type(result['version']) is not int or result['version'] < 0:
         raise ValueError('摄像头配置版本无效')
     path = result['usb_device']
@@ -65,20 +64,17 @@ def validate_config(value, *, forbidden_ports=(8766, 8767, 8877)):
         raise ValueError('本体图传只支持无内嵌账号密码的 HTTP/HTTPS JPEG 或 MJPEG 地址') from error
     if port in forbidden_ports:
         raise ValueError('本体图传不能指向普通/热成像/识别网关自身，避免循环取流')
-    for field in c12_fields:
-        address = result[field]
-        try:
-            if not isinstance(address, str) or not address or len(address) > 2048 or any(ord(c) < 33 for c in address):
-                raise ValueError()
-            stream = urlsplit(address)
-            port = 554 if stream.port is None else stream.port
-            if (stream.scheme != 'rtsp' or not stream.hostname or not 1 <= port <= 65535
-                    or port in forbidden_ports or stream.username is not None or stream.fragment):
-                raise ValueError()
-        except ValueError as error:
-            raise ValueError('C12 地址须为无内嵌账号密码的 RTSP 地址') from error
     result['usb_fps'] = float(fps)
     return result
+
+
+def source_kind(config):
+    return 'c12' if config.get('pipeline') == 'c12' else config['source']
+
+
+def source_label(config):
+    return {'usb': 'USB摄像头', 'body': '狗本体摄像头',
+            'c12': 'C12可见光相机'}[source_kind(config)]
 
 
 class CameraSourceStore:

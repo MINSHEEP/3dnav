@@ -1008,3 +1008,8 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .navigation-motion-grid span { display:block; color:var(--muted); font-size:12px; }
 .navigation-motion-grid strong { display:block; margin-top:5px; font-size:15px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .navigation-motion-status .hint { margin:8px 0 0; font-size:12px; overflow-wrap:anywhere; }
+
+/* The selected chain reuses these channel panels; hidden channels take no space. */
+[data-camera-channel][hidden], [data-camera-grid][hidden] { display:none !important; }
+[data-camera-grid].camera-single-view { grid-template-columns:minmax(0,1fr) !important; }
+.mapping-camera-grid { display:grid; gap:8px; }

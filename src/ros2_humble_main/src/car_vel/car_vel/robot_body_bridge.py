@@ -11,10 +11,9 @@ import time
 def run_worker(body, profile, generation, frozen, pipe):
     import rclpy
     from rclpy.parameter import Parameter
-    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from car_vel.dog_remote_bridge import DogRemoteBridge
     from car_vel.velocity_shaping import TurnCommandShaper
-    from car_vel.motion_diagnostics import CommandStreamTiming, MotionTrace, age, velocity, body_reason
+    from car_vel.motion_diagnostics import MotionTrace, age, velocity, body_reason
     from geometry_msgs.msg import Twist
     from std_msgs.msg import Bool, Empty
 
@@ -42,7 +41,6 @@ def run_worker(body, profile, generation, frozen, pipe):
                     self._diag_navigation_active=False
                     self._diag_nav_received_at=0.0
                     self._diag_received=[0.0,0.0,0.0]
-                    self._safe_velocity_timing = CommandStreamTiming('/cmd_vel_safe')
                     self._diag_send_at=0.0
                     self._diag_sent=[0.0,0.0,0.0]
                     self._diag_send_success=None
@@ -54,13 +52,7 @@ def run_worker(body, profile, generation, frozen, pipe):
                         Parameter('dog_port', value=profile['port']),
                         Parameter('camera_upstream_url', value=f"http://{profile['robot_ip']}:8080")])
                     self._motion_trace=MotionTrace(self.get_logger(),'NAV_BODY')
-                    # The arbiter sends a fresh sample every 50 ms. Waiting for
-                    # reliable repair of an old velocity can stall newer ones.
-                    latest_velocity = QoSProfile(
-                        history=HistoryPolicy.KEEP_LAST, depth=1,
-                        reliability=ReliabilityPolicy.BEST_EFFORT,
-                        durability=DurabilityPolicy.VOLATILE)
-                    self.create_subscription(Twist, '/cmd_vel_safe', self.nav_velocity, latest_velocity)
+                    self.create_subscription(Twist, '/cmd_vel_safe', self.nav_velocity, 1)
                     self.create_subscription(Bool, '/navigation_active', self.navigation_diagnostic_active, 1)
                     self.create_subscription(Empty, '/motion_stop', lambda _: self._safety_stop(), 10)
                     # Old publishers remain compatible but may no longer
@@ -200,7 +192,8 @@ def run_worker(body, profile, generation, frozen, pipe):
 
                 def _velocity_callback(self, message):
                     if not self.frozen and not self.mapping_lio_paused:
-                        self.ever_controlled = True
+                        if message.linear.x != 0 or message.linear.y != 0 or message.angular.z != 0:
+                            self.ever_controlled = True
                         super()._velocity_callback(message)
 
                 def _ensure_standing_callback(self, request, response):
@@ -226,7 +219,6 @@ def run_worker(body, profile, generation, frozen, pipe):
                     # arm the body from diagnostic receipt alone.
                     self._diag_nav_received_at=time.monotonic()
                     self._diag_received=velocity(message)
-                    self._safe_velocity_timing.observe(self._diag_nav_received_at, self._diag_received)
                     if self.frozen or self.mapping_lio_paused or self.remote_active or self.emergency_latched:
                         return
                     now = time.monotonic()
@@ -299,7 +291,6 @@ def run_worker(body, profile, generation, frozen, pipe):
                         gait_ready=self._diag_tick_gait_ready,
                         permitted_by_body_tick=self._diag_tick_permitted,
                         input_seen=self._diag_nav_received_at>0,input_age_sec=age(now,self._diag_nav_received_at),
-                        safe_velocity_stream=self._safe_velocity_timing.snapshot(now, 0.3),
                         command_age_sec=age(now,self.nav_at),input=list(self._diag_received),
                         command_discarded=self._diag_nav_received_at>0 and self.nav_at<=0,
                         sent_sdk_velocity=list(self._diag_sent),send_age_sec=age(now,self._diag_send_at),
@@ -368,13 +359,16 @@ def run_worker(body, profile, generation, frozen, pipe):
                             self._send_zero_burst()
                             self.nav_was_active = False
 
-                def prepare_switch(self):
+                def prepare_switch(self, powered_off_confirmed=False, switch_confirmed=False):
                     parked = (self.body_status.get('connected') is True and
                               self.body_status.get('motion_mode') in (0, 1))
                     unused = not self.ever_connected and not self.ever_controlled
-                    if self.remote_active or self.active_action or not (parked or unused):
+                    offline_confirmed = powered_off_confirmed and self.body_status.get('connected') is False
+                    if not switch_confirmed and (self.remote_active or self.active_action or not (parked or unused or offline_confirmed)):
                         return False, '请先让星玑趴下、退出遥控，并停止所有任务；失联本体不能直接切换'
                     self.frozen = True
+                    self._cancel_action()
+                    self.remote_active = False
                     self.mapping_rearm_after_neutral = False
                     self.mapping_release_seen = False
                     self.nav_at = 0.0
@@ -444,6 +438,10 @@ def run_worker(body, profile, generation, frozen, pipe):
                     continue
                 if operation == 'prepare':
                     success, message = node.prepare_switch()
+                elif operation == 'prepare_xingji_powered_off' and body == 'xingji':
+                    success, message = node.prepare_switch(powered_off_confirmed=True)
+                elif operation == 'prepare_confirmed':
+                    success, message = node.prepare_switch(switch_confirmed=True)
                 elif operation == 'activate':
                     node.activate()
                     success, message = True, '本体已启用；未自动站立'

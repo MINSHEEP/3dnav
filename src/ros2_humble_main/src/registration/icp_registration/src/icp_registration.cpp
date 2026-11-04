@@ -1,10 +1,6 @@
 #include "icp_registration/icp_registration.hpp"
 #include "icp_registration/search_seeds.hpp"
 #include "icp_registration/candidate_quality.hpp"
-#include "icp_registration/refinement_budget.hpp"
-#include "icp_registration/tracking_validation.hpp"
-#include "icp_registration/target_sampling.hpp"
-#include "icp_registration/pose_output.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
@@ -596,12 +592,6 @@ public:
       node_.get_logger(),
       "Relocalization action ready on /relocalize. It is on-demand only and "
       "publishes neither TF nor /initialpose.");
-    RCLCPP_INFO(node_.get_logger(),
-      "REGISTRATION_CONTRACT model=%s robust_only=true legacy_projection_unchanged=true",
-      icp::kRigidTransformModel);
-    RCLCPP_INFO(node_.get_logger(),
-      "REGISTRATION_TARGET_POLICY model=%s robust_only=true max_refinements=3",
-      icp::kTargetSamplingModel);
     RCLCPP_INFO(
       node_.get_logger(),
       "PCD directory: %s; metadata schema: %s v%d; internal registration "
@@ -655,7 +645,6 @@ private:
     double search_xy{0.0};
     double search_yaw{0.0};
     double timeout_sec{10.0};
-    std::string last_candidate_error{};
   };
 
   void publishActiveGlobalMap()
@@ -804,7 +793,7 @@ private:
     minimum_rough_source_points_ =
       static_cast<std::size_t>(std::max<int64_t>(
         100, node_.declare_parameter<int64_t>(
-          "minimum_rough_source_points", 250)));
+          "minimum_rough_source_points", 300)));
     minimum_target_points_ =
       static_cast<std::size_t>(std::max<int64_t>(
         200, node_.declare_parameter<int64_t>("minimum_target_points", 1500)));
@@ -858,12 +847,6 @@ private:
       static_cast<int>(std::max<int64_t>(
         1, node_.declare_parameter<int64_t>(
           "gicp_maximum_optimizer_iterations", 8)));
-    initial_budget_.ndt = static_cast<int>(std::clamp<int64_t>(
-        node_.declare_parameter<int64_t>("initial_ndt_maximum_iterations", 20), 1, 40));
-    initial_budget_.gicp = static_cast<int>(std::clamp<int64_t>(
-        node_.declare_parameter<int64_t>("initial_gicp_maximum_iterations", 40), 1, 80));
-    initial_budget_.optimizer = static_cast<int>(std::clamp<int64_t>(
-        node_.declare_parameter<int64_t>("initial_gicp_maximum_optimizer_iterations", 12), 1, 30));
     gicp_maximum_correspondence_distance_ =
       node_.declare_parameter<double>(
       "gicp_maximum_correspondence_distance", 0.6);
@@ -889,10 +872,6 @@ private:
         100, node_.declare_parameter<int64_t>("minimum_matched_points", 500)));
     maximum_vertical_correction_ =
       node_.declare_parameter<double>("maximum_vertical_correction", 0.35);
-    tracking_maximum_rmse_ =
-      node_.declare_parameter<double>("tracking_maximum_rmse", 0.22);
-    tracking_maximum_vertical_correction_ =
-      node_.declare_parameter<double>("tracking_maximum_vertical_correction", 0.45);
     maximum_tilt_ = degreesToRadians(
       node_.declare_parameter<double>("maximum_tilt_deg", 8.0));
     refined_yaw_stddev_ = degreesToRadians(
@@ -935,12 +914,7 @@ private:
       minimum_overlap_ <= 0.0 || minimum_overlap_ > 1.0 ||
       minimum_planar_eigen_ratio_ < 0.0 ||
       minimum_planar_eigen_ratio_ > 1.0 ||
-      maximum_vertical_correction_ < 0.0 || maximum_tilt_ <= 0.0 ||
-      !std::isfinite(tracking_maximum_rmse_) || tracking_maximum_rmse_ <= 0.0 ||
-      tracking_maximum_rmse_ > 0.25 ||
-      !std::isfinite(tracking_maximum_vertical_correction_) ||
-      tracking_maximum_vertical_correction_ <= 0.0 ||
-      tracking_maximum_vertical_correction_ > 0.60;
+      maximum_vertical_correction_ < 0.0 || maximum_tilt_ <= 0.0;
     if (invalid) {
       const std::string message =
         "icp_registration 参数无效；请检查搜索/超时、点云范围、"
@@ -1652,42 +1626,24 @@ private:
       abortGoal(
         context, CODE_VALIDATION_FAILED,
         "粗初始点周围的定位 PCD 只有 " + std::to_string(roi->size()) +
-        " 个点（最低要求 " + std::to_string(minimum_target_points_) +
-        "，半径 " + std::to_string(radius) +
-        " m）；地图覆盖不足或初始点不在有效三维地图内");
+        " 个点；地图覆盖不足或初始点不在有效三维地图内");
       return false;
     }
 
-    const auto sampling = prepareTargetSampling(
-      context.goal_handle->get_goal()->robust_validation, roi->size(),
-      loaded_map.voxel_size, fine_leaf_size_, rough_leaf_size_,
-      minimum_target_points_, maximum_fine_target_points_,
-      maximum_rough_target_points_,
-      [&](bool rough, double leaf, std::size_t maximum) {
-        auto sampled = limitCloud(voxelFilter(roi, leaf), maximum);
-        if (rough) {rough_target = sampled;} else {fine_target = sampled;}
-        return sampled->size();
-      });
-    RCLCPP_INFO(
-      node_.get_logger(),
-      "REGISTRATION_TARGET model=%s center=[%.3f,%.3f] radius=%.3f "
-      "z=[%.3f,%.3f] raw=%zu fine=%zu rough=%zu initial_rough=%zu "
-      "fine_leaf=%.4f rough_leaf=%.4f minimum=%zu refinements=%zu ready=%s",
-      kTargetSamplingModel, center_x, center_y, radius, roi_min_z_, roi_max_z_,
-      sampling.raw_count, sampling.fine_count, sampling.rough_count,
-      sampling.initial_rough_count, sampling.fine_leaf, sampling.rough_leaf,
-      minimum_target_points_, sampling.refinements, sampling.ready ? "true" : "false");
-    if (!sampling.ready) {
+    const double target_fine_leaf =
+      std::max(fine_leaf_size_, loaded_map.voxel_size);
+    fine_target = limitCloud(
+      voxelFilter(roi, target_fine_leaf), maximum_fine_target_points_);
+    rough_target = limitCloud(
+      voxelFilter(roi, std::max(rough_leaf_size_, loaded_map.voxel_size)),
+      maximum_rough_target_points_);
+    if (fine_target->size() < minimum_target_points_ ||
+      rough_target->size() < std::min<std::size_t>(
+        minimum_target_points_, maximum_rough_target_points_))
+    {
       abortGoal(
         context, CODE_VALIDATION_FAILED,
-        "定位 PCD 局部点数不足：原始 " + std::to_string(sampling.raw_count) +
-        "，细配准 " + std::to_string(sampling.fine_count) +
-        "，粗配准 " + std::to_string(sampling.rough_count) +
-        "（初次 " + std::to_string(sampling.initial_rough_count) +
-        "，最低要求 " + std::to_string(minimum_target_points_) +
-        "，粗体素 " + std::to_string(sampling.rough_leaf) +
-        " m，重采样 " + std::to_string(sampling.refinements) +
-        " 次）；无法可靠精修");
+        "定位 PCD 的局部 ROI 降采样后点数不足，无法可靠精修");
       return false;
     }
     return true;
@@ -1707,10 +1663,7 @@ private:
     ndt.setResolution(static_cast<float>(ndt_resolution_));
     ndt.setStepSize(ndt_step_size_);
     ndt.setTransformationEpsilon(ndt_transformation_epsilon_);
-    const auto goal = context.goal_handle->get_goal();
-    const auto budget = icp::refinementBudget(goal->robust_validation, goal->tracking,
-      {ndt_maximum_iterations_, gicp_maximum_iterations_, gicp_maximum_optimizer_iterations_}, initial_budget_);
-    ndt.setMaximumIterations(budget.ndt);
+    ndt.setMaximumIterations(ndt_maximum_iterations_);
 
     const double rough_yaw = matrixYaw(rough_map_from_base);
     const auto seeds = icp::makeSearchSeeds(
@@ -1757,7 +1710,7 @@ private:
       "search_xy=%.2f search_yaw_deg=%.1f max_iterations=%d.",
       rough_source->size(), rough_target->size(), seeds.size(), candidates.size(),
       context.search_xy, context.search_yaw * 180.0 / kPi,
-      budget.ndt);
+      ndt_maximum_iterations_);
     for (std::size_t index = 0; index < candidates.size(); ++index) {
       if (stopRequested(context)) {
         return false;
@@ -1832,19 +1785,11 @@ private:
     if (stopRequested(context)) {
       return false;
     }
-    class MeasuredGicp : public pcl::GeneralizedIterativeClosestPoint<PointT, PointT>
-    {
-    public:
-      int iterations() const {return this->nr_iterations_;}
-    } gicp;
-    const auto goal = context.goal_handle->get_goal();
-    const bool robust_initial = goal->robust_validation && !goal->tracking;
-    const auto budget = icp::refinementBudget(goal->robust_validation, goal->tracking,
-      {ndt_maximum_iterations_, gicp_maximum_iterations_, gicp_maximum_optimizer_iterations_}, initial_budget_);
+    pcl::GeneralizedIterativeClosestPoint<PointT, PointT> gicp;
     gicp.setInputSource(fine_source);
     gicp.setInputTarget(fine_target);
-    gicp.setMaximumIterations(budget.gicp);
-    gicp.setMaximumOptimizerIterations(budget.optimizer);
+    gicp.setMaximumIterations(gicp_maximum_iterations_);
+    gicp.setMaximumOptimizerIterations(gicp_maximum_optimizer_iterations_);
     gicp.setMaxCorrespondenceDistance(gicp_maximum_correspondence_distance_);
     gicp.setTransformationEpsilon(gicp_transformation_epsilon_);
     gicp.setEuclideanFitnessEpsilon(gicp_fitness_epsilon_);
@@ -1856,23 +1801,19 @@ private:
       node_.get_logger(),
       "Starting GICP: source=%zu target=%zu max_iterations=%d "
       "optimizer_iterations=%d.",
-      fine_source->size(), fine_target->size(), budget.gicp, budget.optimizer);
+      fine_source->size(), fine_target->size(), gicp_maximum_iterations_,
+      gicp_maximum_optimizer_iterations_);
     const auto gicp_started = SteadyClock::now();
     gicp.align(aligned, initial_guess);
     const double gicp_seconds =
       std::chrono::duration<double>(
       SteadyClock::now() - gicp_started).count();
     RCLCPP_INFO(
-      node_.get_logger(), "GICP returned after %.3f s; iterations=%d/%d; iteration_ceiling=%s.",
-      gicp_seconds, gicp.iterations(), budget.gicp,
-      icp::iterationCeiling(gicp.hasConverged(), gicp.iterations(), budget.gicp) ? "true" : "false");
+      node_.get_logger(), "GICP returned after %.3f s.", gicp_seconds);
     if (stopRequested(context)) {
       return false;
     }
-    if (!gicp.hasConverged() || !isFiniteMatrix(gicp.getFinalTransformation()) ||
-      (robust_initial && icp::iterationCeiling(gicp.hasConverged(), gicp.iterations(), budget.gicp)))
-    {
-      context.last_candidate_error = "GICP未稳定收敛或达到迭代上限，未放行该候选";
+    if (!gicp.hasConverged() || !isFiniteMatrix(gicp.getFinalTransformation())) {
       if (report_failure) {abortGoal(context, CODE_GICP_FAILED, "GICP 精配准未收敛");}
       return false;
     }
@@ -1881,14 +1822,6 @@ private:
       node_.get_logger(), "GICP converged, PCL fitness score %.6f.",
       gicp.getFitnessScore());
     return true;
-  }
-
-  icp::ValidationLimits validationLimitsFor(const ExecutionContext & context) const
-  {
-    const auto goal = context.goal_handle->get_goal();
-    return icp::validationLimits(goal->robust_validation, goal->tracking,
-      {maximum_rmse_, maximum_vertical_correction_},
-      {tracking_maximum_rmse_, tracking_maximum_vertical_correction_});
   }
 
   bool validateRegistration(
@@ -1900,13 +1833,9 @@ private:
     Eigen::Matrix4d & refined_map_from_base,
     RegistrationMetrics & metrics, bool report_failure = true)
   {
-    const auto limits = validationLimitsFor(context);
     auto reject = [&](ExecutionContext & ctx, uint16_t code, const std::string & message) {
         if (report_failure) {abortGoal(ctx, code, message);}
-        else {
-          ctx.last_candidate_error = message;
-          RCLCPP_WARN(node_.get_logger(), "Rejected candidate: %s", message.c_str());
-        }
+        else {RCLCPP_WARN(node_.get_logger(), "Rejected candidate: %s", message.c_str());}
       };
     refined_map_from_base =
       final_map_from_odom.cast<double>() * latest_odom_from_base;
@@ -1933,12 +1862,12 @@ private:
     const double vertical_correction = std::abs(
       refined_map_from_base(2, 3) - rough_map_from_base(2, 3));
     const auto [roll, pitch] = matrixRollPitch(refined_map_from_base);
-    if (vertical_correction > limits.vertical ||
+    if (vertical_correction > maximum_vertical_correction_ ||
       std::abs(roll) > maximum_tilt_ || std::abs(pitch) > maximum_tilt_)
     {
       std::ostringstream message;
       message << "三维配准产生不合理的垂直/倾斜修正（z "
-              << vertical_correction << " m，上限 " << limits.vertical << " m，roll "
+              << vertical_correction << " m，roll "
               << roll * 180.0 / kPi << "°，pitch "
               << pitch * 180.0 / kPi << "°）";
       reject(context, CODE_VALIDATION_FAILED, message.str());
@@ -1953,14 +1882,14 @@ private:
     context.result->fitness = std::isfinite(metrics.rmse) ?
       static_cast<float>(metrics.rmse) : -1.0F;
     context.result->overlap = static_cast<float>(metrics.overlap);
-    if (!std::isfinite(metrics.rmse) || metrics.rmse > limits.rmse ||
+    if (!std::isfinite(metrics.rmse) || metrics.rmse > maximum_rmse_ ||
       metrics.overlap < minimum_overlap_ ||
       metrics.matched_points < minimum_matched_points_ ||
       metrics.planar_eigen_ratio < minimum_planar_eigen_ratio_)
     {
       std::ostringstream message;
       message << "精修质量验证失败：RMSE " << metrics.rmse
-              << " m（上限 " << limits.rmse << "），重叠率 "
+              << " m（上限 " << maximum_rmse_ << "），重叠率 "
               << metrics.overlap * 100.0 << "%（下限 "
               << minimum_overlap_ * 100.0 << "%），匹配点 "
               << metrics.matched_points << "，平面特征比 "
@@ -1970,7 +1899,7 @@ private:
       return false;
     }
 
-    const double relaxed_rmse = limits.rmse * 1.25;
+    const double relaxed_rmse = maximum_rmse_ * 1.25;
     const double relaxed_overlap = minimum_overlap_ * 0.8;
     int consistent_frames = 0;
     for (const auto & frame : frames) {
@@ -2026,28 +1955,22 @@ private:
     refined.header.stamp = cloud_stamp;
     refined.pose.pose.position.x = refined_map_from_base(0, 3);
     refined.pose.pose.position.y = refined_map_from_base(1, 3);
+    refined.pose.pose.position.z = 0.0;
     const double yaw = matrixYaw(refined_map_from_base);
-    const bool rigid = context.goal_handle->get_goal()->robust_validation;
-    const Eigen::Quaterniond rotation =
-      Eigen::Quaterniond(refined_map_from_base.block<3, 3>(0, 0)).normalized();
-    const auto output = icp::poseOutput(rigid, refined_map_from_base(2, 3),
-      {rotation.x(), rotation.y(), rotation.z(), rotation.w()}, yaw);
-    refined.pose.pose.position.z = output.z;
-    refined.pose.pose.orientation.x = output.rotation[0];
-    refined.pose.pose.orientation.y = output.rotation[1];
-    refined.pose.pose.orientation.z = output.rotation[2];
-    refined.pose.pose.orientation.w = output.rotation[3];
-    context.result->transform_model = rigid ? icp::kRigidTransformModel : "legacy_planar_v1";
+    refined.pose.pose.orientation.x = 0.0;
+    refined.pose.pose.orientation.y = 0.0;
+    refined.pose.pose.orientation.z = std::sin(0.5 * yaw);
+    refined.pose.pose.orientation.w = std::cos(0.5 * yaw);
 
     refined.pose.covariance.fill(0.0);
     const double xy_stddev = std::clamp(
       std::max(metrics.rmse, minimum_refined_xy_stddev_),
-      minimum_refined_xy_stddev_, validationLimitsFor(context).rmse);
+      minimum_refined_xy_stddev_, maximum_rmse_);
     refined.pose.covariance[0] = xy_stddev * xy_stddev;
     refined.pose.covariance[7] = xy_stddev * xy_stddev;
-    refined.pose.covariance[14] = rigid ? xy_stddev * xy_stddev : 1.0e6;
-    refined.pose.covariance[21] = rigid ? refined_yaw_stddev_ * refined_yaw_stddev_ : 1.0e6;
-    refined.pose.covariance[28] = refined.pose.covariance[21];
+    refined.pose.covariance[14] = 1.0e6;
+    refined.pose.covariance[21] = 1.0e6;
+    refined.pose.covariance[28] = 1.0e6;
     refined.pose.covariance[35] =
       refined_yaw_stddev_ * refined_yaw_stddev_;
   }
@@ -2086,15 +2009,6 @@ private:
     {
       return;
     }
-
-    RCLCPP_INFO(node_.get_logger(),
-      "REGISTRATION_REQUEST map=%s load_id=%s stamp=%ld.%09u rough_xyz=[%.9f,%.9f,%.9f] "
-      "rough_yaw=%.9f robust=%s tracking=%s search_xy=%.3f search_yaw=%.6f timeout=%.3f",
-      goal->map_name.c_str(), goal->map_load_id.c_str(),
-      static_cast<long>(goal->rough_pose.header.stamp.sec), goal->rough_pose.header.stamp.nanosec,
-      rough_map_from_base(0,3), rough_map_from_base(1,3), rough_map_from_base(2,3), matrixYaw(rough_map_from_base),
-      goal->robust_validation ? "true" : "false", goal->tracking ? "true" : "false",
-      context.search_xy, context.search_yaw, context.timeout_sec);
 
     uint64_t map_generation = 0;
     if (goal->robust_validation) {
@@ -2228,62 +2142,44 @@ private:
       struct ValidCandidate {Eigen::Matrix4f transform; Eigen::Matrix4d pose; RegistrationMetrics metrics;};
       std::vector<ValidCandidate> valid;
       std::vector<Eigen::Matrix4d> attempted;
-      std::vector<std::string> rejected_reasons;
       // Bounded work: up to three distinct coarse basins, not three copies of one basin.
       for (const auto & candidate : alternatives) {
         if (stopRequested(context)) {return;}
         const Eigen::Matrix4d coarse_pose = candidate.second.cast<double>() * latest_odom_from_base;
-        const auto [coarse_roll, coarse_pitch] = matrixRollPitch(coarse_pose);
         bool duplicate = false;
         for (const auto & previous : attempted) {
-          const auto [previous_roll, previous_pitch] = matrixRollPitch(previous);
           if (std::hypot(previous(0, 3)-coarse_pose(0, 3), previous(1, 3)-coarse_pose(1, 3)) < 0.15 &&
-            std::abs(previous(2, 3)-coarse_pose(2, 3)) < 0.15 &&
-            std::hypot(normalizeAngle(previous_roll-coarse_roll),
-              normalizeAngle(previous_pitch-coarse_pitch)) < degreesToRadians(3.0) &&
             std::abs(normalizeAngle(matrixYaw(previous)-matrixYaw(coarse_pose))) < degreesToRadians(5.0))
           {duplicate = true; break;}
         }
         if (duplicate) {continue;}
         if (attempted.size() >= 3U) {break;}
         attempted.push_back(coarse_pose);
-        context.last_candidate_error.clear();
         Eigen::Matrix4f transform;
         Eigen::Matrix4d pose;
         RegistrationMetrics candidate_metrics;
         if (!runGicp(context, aggregate, fine_target, candidate.second, transform, false)) {
           if (stopRequested(context)) {return;}
-          rejected_reasons.push_back(context.last_candidate_error);
           continue;
         }
-        const Eigen::Matrix4d measured_pose = transform.cast<double>() * latest_odom_from_base;
-        const auto [measured_roll, measured_pitch] = matrixRollPitch(measured_pose);
-        RCLCPP_INFO(node_.get_logger(),
-          "REGISTRATION_CANDIDATE index=%zu coarse_xyz=[%.6f,%.6f,%.6f] coarse_yaw=%.9f "
-          "fine_xyz=[%.6f,%.6f,%.6f] fine_rpy=[%.9f,%.9f,%.9f]",
-          attempted.size(), coarse_pose(0,3), coarse_pose(1,3), coarse_pose(2,3), matrixYaw(coarse_pose),
-          measured_pose(0,3), measured_pose(1,3), measured_pose(2,3),
-          measured_roll, measured_pitch, matrixYaw(measured_pose));
         if (validateRegistration(context, rough_map_from_base, latest_odom_from_base,
             transform, aggregate, fine_target, frames, pose, candidate_metrics, false))
         {
-          // The authority publishes this same verified SE(3) map->odom.
-          // Nav2 reads XY/yaw from it; cloud quality must not be evaluated
-          // against a different zero-height/yaw-only transform.
-          valid.push_back({transform, pose, candidate_metrics});
-        }
-        if (!context.last_candidate_error.empty()) {
-          rejected_reasons.push_back(context.last_candidate_error);
+          // Nav2 consumes a gravity-aligned planar map->odom. Validate that
+          // exact transform too: a good tilted fit must not become an unchecked
+          // yaw-only pose when roll/pitch/z are dropped from the output.
+          const Eigen::Matrix4f planar = planarPoseMatrix(
+            transform(0, 3), transform(1, 3), 0.0,
+            matrixYaw(transform.cast<double>())).cast<float>();
+          if (validateRegistration(context, rough_map_from_base, latest_odom_from_base,
+              planar, aggregate, fine_target, frames, pose, candidate_metrics, false))
+          {valid.push_back({planar, pose, candidate_metrics});}
         }
       }
       result->candidates_checked = static_cast<uint32_t>(attempted.size());
       if (stopRequested(context)) {return;}
       if (valid.empty()) {
-        std::string reason = "全部三维候选均未通过校验";
-        for (std::size_t i = 0; i < rejected_reasons.size(); ++i) {
-          reason += "；候选" + std::to_string(i+1) + ": " + rejected_reasons[i];
-        }
-        abortGoal(context, CODE_VALIDATION_FAILED, reason);
+        abortGoal(context, CODE_VALIDATION_FAILED, "全部三维候选均未通过高度、重叠率或多帧质量校验");
         return;
       }
       std::stable_sort(valid.begin(), valid.end(), [](const auto & a, const auto & b) {
@@ -2291,21 +2187,13 @@ private:
                  icp::candidateCost(b.metrics.rmse, b.metrics.overlap);
         });
       const auto & best = valid.front();
-      const auto [best_roll, best_pitch] = matrixRollPitch(best.pose);
       for (std::size_t i = 1; i < valid.size(); ++i) {
         const auto & other = valid[i];
-        const auto [other_roll, other_pitch] = matrixRollPitch(other.pose);
         if (icp::ambiguousCandidate(
             icp::candidateCost(best.metrics.rmse, best.metrics.overlap),
             icp::candidateCost(other.metrics.rmse, other.metrics.overlap),
             std::hypot(best.pose(0, 3)-other.pose(0, 3), best.pose(1, 3)-other.pose(1, 3)),
-            std::abs(normalizeAngle(matrixYaw(best.pose)-matrixYaw(other.pose)))) ||
-          icp::ambiguousRigidCandidate(
-            icp::candidateCost(best.metrics.rmse, best.metrics.overlap),
-            icp::candidateCost(other.metrics.rmse, other.metrics.overlap),
-            std::abs(best.pose(2, 3)-other.pose(2, 3)),
-            std::hypot(normalizeAngle(best_roll-other_roll),
-              normalizeAngle(best_pitch-other_pitch))))
+            std::abs(normalizeAngle(matrixYaw(best.pose)-matrixYaw(other.pose)))))
         {
           abortGoal(context, CODE_VALIDATION_FAILED, "多个空间分离候选质量接近，无法排除重复结构误匹配；请重新选初始点");
           return;
@@ -2403,7 +2291,7 @@ private:
   double fine_leaf_size_{0.15};
   std::size_t minimum_points_per_frame_{300U};
   std::size_t minimum_source_points_{900U};
-  std::size_t minimum_rough_source_points_{250U};
+  std::size_t minimum_rough_source_points_{300U};
   std::size_t minimum_target_points_{1500U};
   std::size_t maximum_raw_points_per_frame_{120000U};
   std::size_t maximum_rough_source_points_{6000U};
@@ -2424,7 +2312,6 @@ private:
   double ndt_maximum_fitness_{2.0};
   int gicp_maximum_iterations_{15};
   int gicp_maximum_optimizer_iterations_{8};
-  icp::RefinementBudget initial_budget_{20, 40, 12};
   double gicp_maximum_correspondence_distance_{0.6};
   double gicp_transformation_epsilon_{0.001};
   double gicp_fitness_epsilon_{0.0001};
@@ -2436,8 +2323,6 @@ private:
   double minimum_planar_eigen_ratio_{0.01};
   std::size_t minimum_matched_points_{500U};
   double maximum_vertical_correction_{0.35};
-  double tracking_maximum_rmse_{0.22};
-  double tracking_maximum_vertical_correction_{0.45};
   double maximum_tilt_{degreesToRadians(8.0)};
   double refined_yaw_stddev_{degreesToRadians(5.0)};
   double minimum_refined_xy_stddev_{0.05};

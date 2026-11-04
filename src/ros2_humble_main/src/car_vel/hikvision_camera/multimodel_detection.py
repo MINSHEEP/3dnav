@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Priority-aware smoke/fire, face and plate detection.
+"""Priority-aware smoke/fire/cigarette, face and plate detection.
 
 The module exposes one small interface to the camera child process:
 ``analyze(frame, mode)`` returns normalized detections and
@@ -17,10 +17,11 @@ import cv2
 import numpy as np
 
 
-ALARM_CATEGORIES = ("fire", "smoke")
+ALARM_CATEGORIES = ("fire", "smoke", "cigarettes")
 CATEGORY_COLORS = {
     "fire": (0, 0, 230),
     "smoke": (160, 160, 160),
+    "cigarettes": (0, 220, 80),
     "face": (255, 255, 0),
     "plate": (0, 200, 255),
 }
@@ -138,11 +139,10 @@ class MultiModelDetector:
             face_max_width: int = 640, plate_conf: float = 0.25,
             plate_imgsz: int = 640, transit_aux_fps: float = 3.0,
             manual_aux_fps: float = 5.0,
-            display_ttl_seconds: float = 0.60, model_factories=None) -> None:
+            display_ttl_seconds: float = 0.60) -> None:
         self.primary_model = primary_model
         self.face_detector = face_detector
         self.plate_model = plate_model
-        self._model_factories = model_factories or {}
         self.primary_conf = float(primary_conf)
         self.primary_iou = float(primary_iou)
         self.primary_imgsz = int(primary_imgsz)
@@ -162,23 +162,14 @@ class MultiModelDetector:
         self._display_cache: dict[
             str, tuple[float, tuple[Detection, ...]]] = {}
 
-    def _ensure_models(self, enabled):
-        for name, attribute in (('primary', 'primary_model'), ('face', 'face_detector'), ('plate', 'plate_model')):
-            needed = (enabled.get('fire', True) or enabled.get('smoke', True)) if name == 'primary' else enabled.get(name, True)
-            if needed and getattr(self, attribute) is None and name in self._model_factories:
-                setattr(self, attribute, self._model_factories[name]())
-
-    def warmup(self, enabled=None) -> None:
+    def warmup(self) -> None:
         """Warm YOLO models without affecting auxiliary scheduling."""
-        enabled = {} if enabled is None else enabled
-        self._ensure_models(enabled)
         primary_frame = np.zeros(
             (self.primary_imgsz, self.primary_imgsz, 3), dtype=np.uint8)
-        if enabled.get('fire', True) or enabled.get('smoke', True):
-            self.primary_model.predict(
-                primary_frame, conf=self.primary_conf, iou=self.primary_iou,
-                imgsz=self.primary_imgsz, device=self.device, verbose=False)
-        if enabled.get('plate', True) and self.plate_model is not None:
+        self.primary_model.predict(
+            primary_frame, conf=self.primary_conf, iou=self.primary_iou,
+            imgsz=self.primary_imgsz, device=self.device, verbose=False)
+        if self.plate_model is not None:
             plate_frame = np.zeros(
                 (self.plate_imgsz, self.plate_imgsz, 3), dtype=np.uint8)
             self.plate_model.predict(
@@ -199,7 +190,7 @@ class MultiModelDetector:
 
     def _primary_detections(
             self, result: Any, width: int,
-            height: int, enabled=None) -> tuple[Detection, ...]:
+            height: int) -> tuple[Detection, ...]:
         boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
             return ()
@@ -212,10 +203,6 @@ class MultiModelDetector:
                 continue
             category = normalize_primary_category(
                 _class_name(result.names, class_id))
-            # The shared weight still supplies fire/smoke. Legacy cigarette
-            # boxes must not leak into display, speech or inspection evidence.
-            if category not in ALARM_CATEGORIES or (enabled is not None and not enabled.get(category, True)):
-                continue
             detections.append(Detection(
                 category=category,
                 confidence=confidence,
@@ -292,37 +279,28 @@ class MultiModelDetector:
 
     def analyze(
             self, frame: np.ndarray, mode: str = "manual",
-            now: float | None = None, enabled=None) -> FrameAnalysis:
+            now: float | None = None) -> FrameAnalysis:
         """Analyze the latest frame without queueing or blocking on old frames."""
         current = time.monotonic() if now is None else float(now)
-        enabled = {} if enabled is None else enabled
-        self._ensure_models(enabled)
-        for name in ('face', 'plate'):
-            if not enabled.get(name, True):
-                self._display_cache.pop(name, None)
-                self._last_run[name] = None
         height, width = frame.shape[:2]
         timings: dict[str, float] = {}
-        ran = []
+        ran = ["primary"]
 
         started = time.perf_counter()
         primary_imgsz = (
             self.inspection_primary_imgsz
             if mode == "inspection" else self.primary_imgsz
         )
-        primary = ()
-        if enabled.get('fire', True) or enabled.get('smoke', True):
-            primary_result = self.primary_model.predict(
-                frame, conf=self.primary_conf, iou=self.primary_iou,
-                imgsz=primary_imgsz, device=self.device, verbose=False)[0]
-            timings["primary"] = (time.perf_counter() - started) * 1000.0
-            primary = self._primary_detections(primary_result, width, height, enabled)
-            ran.append('primary')
+        primary_result = self.primary_model.predict(
+            frame, conf=self.primary_conf, iou=self.primary_iou,
+            imgsz=primary_imgsz, device=self.device,
+            verbose=False)[0]
+        timings["primary"] = (time.perf_counter() - started) * 1000.0
+        primary = self._primary_detections(primary_result, width, height)
         fresh = list(primary)
 
         if (
             self.face_detector is not None
-            and enabled.get('face', True)
             and self._auxiliary_due("face", mode, current)
         ):
             started = time.perf_counter()
@@ -335,7 +313,6 @@ class MultiModelDetector:
 
         if (
             self.plate_model is not None
-            and enabled.get('plate', True)
             and self._auxiliary_due("plate", mode, current)
         ):
             started = time.perf_counter()

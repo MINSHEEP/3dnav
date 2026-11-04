@@ -4,21 +4,6 @@ import math
 from .rolling_terrain import matched_pose
 
 
-def rigid_transform_matrix(translation, rotation):
-    """Map a measured cloud with the same finite SE(3) transform as TF."""
-    tx, ty, tz = map(float, translation)
-    x, y, z, w = map(float, rotation)
-    norm = x*x+y*y+z*z+w*w
-    if (not all(math.isfinite(v) for v in (tx, ty, tz, x, y, z, w))
-            or abs(norm-1.) > .02):
-        raise ValueError('invalid terrain frame transform')
-    length = math.sqrt(norm)
-    x, y, z, w = (v/length for v in (x, y, z, w))
-    return ((1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w), tx),
-            (2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w), ty),
-            (2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y), tz))
-
-
 @dataclass(frozen=True)
 class MappedPose:
     x: float

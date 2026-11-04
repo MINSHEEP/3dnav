@@ -11,7 +11,7 @@ from unittest import mock
 
 CAMERA = Path(__file__).resolve().parents[1] / 'hikvision_camera'
 sys.path.insert(0, str(CAMERA))
-from behavior_supervisor import BehaviorSupervisor, isolated_environment
+from behavior_project import BehaviorSupervisor, isolated_environment
 
 
 class Frame:
@@ -33,7 +33,7 @@ def send(v):
     data=json.dumps(v).encode()
     sys.stdout.buffer.write(struct.pack('>I',len(data))+data)
     sys.stdout.buffer.flush()
-send({'type':'ready','sampling':{'fight':{'result_ttl_seconds':1}}})
+send({'type':'ready','sampling':{'fight':{'result_ttl_seconds':1},'smoking':{'result_ttl_seconds':2}}})
 while True:
     value=json.loads(read(struct.unpack('>I',read(4))[0]))
     op=value['op']
@@ -50,7 +50,7 @@ while True:
           'scene':{'fight':{'label':'other','score':.95,'state':'valid','updated':True,
                             'prediction_stamp_ns':value['stamp_ns']}},
           'environment':{k:os.environ.get(k) for k in ('PYTHONPATH','PYTHONHOME','LD_LIBRARY_PATH','OMP_NUM_THREADS')},
-          'enabled_branches':value['enabled_branches']})
+          'request_keys':list(value), 'enabled_branches':value.get('enabled_branches')})
 '''
 
 
@@ -73,6 +73,7 @@ class BehaviorProcessTests(unittest.TestCase):
         (package / 'worker.py').write_text(FAKE_WORKER)
         self.service = BehaviorSupervisor(runtime_dir=self.root, python=sys.executable,
                                           startup_timeout=2, inference_timeout=.4)
+        self.service._worker_script = package / 'worker.py'
         self.service._render = lambda frame, result, raw: (raw or b'raw', b'annotated')
     def tearDown(self):
         self.service.close()
@@ -82,13 +83,15 @@ class BehaviorProcessTests(unittest.TestCase):
             self.service.start()
             wait_for(lambda: self.service._loaded)
         process = self.service._process
+        self.assertEqual(self.service._smoking_ttl, 2.0)
         self.assertTrue(self.service.submit(Frame(), stamp_ns=time.monotonic_ns(), source_key='usb', raw_jpeg=b'jpeg'))
         status = wait_for(lambda: self.service.status() if self.service.status()['fresh'] else None)
         self.assertTrue(status['ready'])
         self.assertEqual(status['branches']['fall']['label'], 'no_person')
         self.assertEqual(status['result']['environment'], {'PYTHONPATH':None,'PYTHONHOME':None,'LD_LIBRARY_PATH':None,'OMP_NUM_THREADS':'2'})
-        self.assertEqual(status['result']['enabled_branches'], {'fall':True, 'fight':True, 'smoking':True})
-        self.assertEqual(self.service.frame()[0], b'annotated')
+        self.assertEqual(status['result']['enabled_branches'], {'fall': True, 'fight': True, 'smoking': True})
+        self.assertEqual(self.service.frame(str(status['source_epoch']))[0], b'annotated')
+        with self.assertRaises(RuntimeError): self.service.frame('old-source')
         self.service.stop()
         self.assertIsNotNone(process.poll())
         self.assertFalse(self.service.status()['running'])
@@ -152,30 +155,30 @@ class BehaviorTemporalTests(unittest.TestCase):
         self.assertEqual(self.service.status()['detections'], [])
         self.assertEqual(self.service.events('task1'), [])
         with self.assertRaises(RuntimeError): self.service.frame()
-    def test_preview_request_can_retrieve_the_fresh_frame_reported_before_next_result(self):
-        self.service._render = lambda frame, result, raw: (b'raw', str(result['stamp_ns']).encode())
-        self.service._accept(self.result(), Frame())
-        status = self.service.status()
-        epoch, stamp = status['source_epoch'], status['frame_stamp_ns']
-        self.now += 500_000_000
-        self.service._accept(self.result(), Frame())
-        self.assertNotEqual(self.service.frame()[2], int(stamp))
-        self.assertEqual(self.service.frame(epoch=str(epoch), stamp=stamp), (stamp.encode(), epoch, int(stamp)))
-        self.now += 500_000_001
-        with self.assertRaises(LookupError):
-            self.service.frame(epoch=str(epoch), stamp=stamp)
-        current = self.service.status()
-        self.service.reset_source()
-        with self.assertRaises(LookupError):
-            self.service.frame(epoch=str(epoch), stamp=current['frame_stamp_ns'])
-    def test_preview_can_distinguish_pose_and_fight_at_the_same_capture_time(self):
-        self.service._render = lambda frame, result, raw: (raw, raw)
-        result = self.result(updated=False)
-        self.service._accept(result, Frame(), b'fight', stream='fight')
-        self.service._accept(result, Frame(), b'pose', stream='pose')
-        for view in ('pose', 'fight'):
-            image, _, _ = self.service.frame(epoch=self.service._epoch, stamp=self.now, view=view)
-            self.assertEqual(image, view.encode())
+    def test_fight_result_is_accepted_at_1_1_seconds_and_expires_at_1_5(self):
+        self.service._fight_ttl = 1.5
+        result = self.result(fall='other')
+        self.now += 1_100_000_000
+        self.assertTrue(self.service._accept(result, Frame()))
+        self.assertTrue(self.service.status()['fresh'])
+        self.assertEqual(self.service.status()['branches']['fight']['label'], 'fight')
+        self.now += 400_000_001
+        self.assertFalse(self.service.status()['fresh'])
+        self.assertEqual(self.service.status()['detections'], [])
+        with self.assertRaises(RuntimeError): self.service.frame()
+
+    def test_smoking_deadline_uses_prediction_time_and_configured_ttl(self):
+        self.service._fight_ttl = self.service._smoking_ttl = 2.0
+        result = self.result(fall='other', fight='other')
+        result['persons'][0]['actions']['smoking'] = {
+            'state': 'valid', 'label': 'other', 'prediction_stamp_ns': self.now - 400_000_000}
+        self.now += 1_500_000_000
+        self.assertTrue(self.service._accept(result, Frame()))
+        self.assertTrue(self.service.status()['fresh'])
+        self.now += 100_000_001
+        self.assertFalse(self.service.status()['fresh'])
+        with self.assertRaises(RuntimeError): self.service.frame()
+
     def test_duplicate_stamp_source_switch_size_change_clear_history_and_inflight_result(self):
         frame = Frame()
         self.assertTrue(self.service.submit(frame, stamp_ns=self.now, source_key='usb'))
