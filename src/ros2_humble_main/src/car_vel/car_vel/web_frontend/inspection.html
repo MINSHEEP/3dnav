@@ -1294,7 +1294,7 @@
             if (becameReady) {
                 mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
                 mapOverlay.classList.remove('blocked');
-                refreshRoutes(taskState.route_id || pendingDraftRouteId
+                refreshRoutes((taskState.active && taskState.route_id) || pendingDraftRouteId
                     || (inspectionDraft && inspectionDraft.routeId));
             }
         }
@@ -1448,15 +1448,18 @@
     async function refreshRoutes(preferredId) {
         if (!session || !session.connected || !loadedMapName) return;
         const requestedMap = loadedMapName;
+        const selectionGeneration = routeSelectionGeneration;
         try {
             const result = await session.call('/list_routes', UI.TYPES.listRoutes, {
                 map_name: requestedMap
             });
-            if (requestedMap !== loadedMapName) return;
+            if (requestedMap !== loadedMapName
+                || selectionGeneration !== routeSelectionGeneration) return;
             if (!result.success) throw new Error(result.message || '读取路线失败');
             routes = (result.routes || []).map(routeFromMessage);
             const select = document.getElementById('route-selector');
-            const wanted = Number(preferredId || selectedRouteId() || taskState.route_id || 0);
+            const wanted = Number(preferredId || selectedRouteId()
+                || (taskState.active && taskState.route_id) || 0);
             select.innerHTML = '<option value="">请选择已保存巡检路线</option>';
             routes.forEach((item) => {
                 const floors = new Set(item.points.map((point) => point.floor_id).filter(Boolean));
@@ -2275,7 +2278,7 @@
                     mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
                     mapOverlay.classList.remove('blocked');
                 }
-                if (changed && mapReady) await refreshRoutes(taskState.route_id);
+                if (changed && mapReady) await refreshRoutes(taskState.active ? taskState.route_id : 0);
                 tryAcceptGlobalCloud();
                 updateUi();
             });
@@ -2326,11 +2329,12 @@
                 taskState = parseJson(message && message.data, taskState);
                 if (!taskState.active) clearGlobalPath();
                 if (taskState.active) clearInspectionDraft();
-                if (taskState.map_name && !loadedMapName) {
+                if (taskState.active && taskState.map_name && !loadedMapName) {
                     loadedMapName = taskState.map_name;
                     refreshMaps(loadedMapName);
                 }
-                if (taskState.route_id && (!route || route.id !== Number(taskState.route_id))) {
+                if (taskState.active && taskState.route_id
+                    && (!route || route.id !== Number(taskState.route_id))) {
                     refreshRoutes(taskState.route_id);
                 }
                 renderTaskState();
@@ -2354,9 +2358,9 @@
             }
             if (taskState.active) clearInspectionDraft();
             else applyInspectionDraftForm(inspectionDraft);
-            await refreshMaps(taskState.map_name
+            await refreshMaps((taskState.active && taskState.map_name)
                 || (inspectionDraft && inspectionDraft.mapName));
-            if (taskState.map_name) {
+            if (taskState.active && taskState.map_name) {
                 loadedMapName = taskState.map_name;
                 mapReady = Boolean(mapCanvas.mapInfo && mapCanvas.mapData);
                 if (mapReady) {
@@ -2365,7 +2369,7 @@
                     await refreshRoutes(taskState.route_id);
                 }
             }
-            if (!taskState.map_name) await restoreInspectionDraft();
+            if (!taskState.active) await restoreInspectionDraft();
             renderTaskState();
             refreshHistory();
         }
