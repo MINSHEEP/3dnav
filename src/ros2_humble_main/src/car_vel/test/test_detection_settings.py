@@ -249,13 +249,35 @@ class GatewaySwitchTests(unittest.TestCase):
         self.assertTrue(status['ready'])
         self.assertFalse(status['partial'])
         self.assertEqual(status['requirements'], dict(yolo=False, thermal=False, behavior=False))
-        self.assertTrue(self.gateway.inspection_speech({'key': 'co2_high'})['disabled'])
+        for running in (False, True):
+            self.gateway._yolo.status.return_value['running'] = running
+            for key in ('thermal_high', 'co2_high'):
+                with self.subTest(running=running, key=key):
+                    self.assertEqual(self.gateway.inspection_speech({'key': key}),
+                                     dict(success=True, key=key, queued=False, disabled=True))
         self.gateway._behavior_speech.announce.assert_not_called()
+        self.gateway._yolo.inspection_request.assert_not_called()
 
-    def test_environment_speech_does_not_require_visual_yolo(self):
-        result = self.gateway.inspection_speech({'key': 'thermal_high'})
-        self.assertEqual(result['voice_backend'], 'local')
-        self.gateway._behavior_speech.announce.assert_called_once_with('thermal_high')
+    def test_environment_speech_always_uses_local_queue_regardless_of_visual_yolo(self):
+        speaker = self.gateway._behavior_speech.announce
+        for running in (False, True):
+            self.gateway._yolo.status.return_value['running'] = running
+            for key in ('thermal_high', 'co2_high'):
+                for queued in (False, True):
+                    with self.subTest(running=running, key=key, queued=queued):
+                        speaker.reset_mock()
+                        speaker.return_value = queued
+                        self.assertEqual(self.gateway.inspection_speech({'key': key}),
+                                         dict(success=True, key=key, queued=queued, voice_backend='local'))
+                        speaker.assert_called_once_with(key)
+        self.gateway._yolo.inspection_request.assert_not_called()
+
+    def test_environment_speech_rejects_unknown_keys_without_playback(self):
+        for key in ('', 'arbitrary phrase', 'fire'):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.gateway.inspection_speech({'key': key})
+        self.gateway._behavior_speech.announce.assert_not_called()
+        self.gateway._yolo.inspection_request.assert_not_called()
 
     def test_http_handler_dispatch_preserves_switches_and_rejects_old_revision(self):
         # Exercise the actual HTTP handlers without requiring local sockets.

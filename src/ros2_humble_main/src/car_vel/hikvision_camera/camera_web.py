@@ -2498,7 +2498,7 @@ class CameraGateway:
         }
 
     def inspection_speech(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Queue only fixed inspection phrases."""
+        """Queue fixed inspection phrases through the local offline speaker."""
         key = str(payload.get("key", "")).strip()
         if key == PATROL_SAFETY_KEY:
             if (not self._inspection_task_id or payload.get('task_id') != self._inspection_task_id
@@ -2510,14 +2510,10 @@ class CameraGateway:
             raise ValueError("环境语音告警类型无效")
         if not self._settings().allows(key):
             return dict(success=True, key=key, queued=False, disabled=True)
-        if not self._yolo.status()["running"]:
-            speaker = getattr(self, '_behavior_speech', None)
-            if speaker is None:
-                raise RuntimeError("本地环境告警语音不可用")
-            return dict(success=True, key=key, queued=bool(speaker.announce(key)), voice_backend='local')
-        result = self._yolo.inspection_request(
-            "speech", {"key": key}, timeout=5.0)
-        return {"success": True, **result, "key": key}
+        speaker = getattr(self, '_behavior_speech', None)
+        if speaker is None:
+            raise RuntimeError("本地环境告警语音不可用")
+        return dict(success=True, key=key, queued=bool(speaker.announce(key)), voice_backend='local')
 
     def inspection_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
         settings = self._sync_detection_settings()

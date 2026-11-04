@@ -76,11 +76,17 @@ class GatewayBehaviorTests(unittest.TestCase):
     def test_patrol_notice_uses_local_audio_only_for_the_current_task(self):
         self.gateway._behavior_speech.announce_patrol_safety.return_value = True
         request = {'key': 'patrol_safety', 'task_id': 'task-1'}
-        self.assertFalse(self.gateway.inspection_speech({**request, 'task_id': 'old-task'})['queued'])
-        self.assertTrue(self.gateway.inspection_speech(request)['queued'])
-        self.gateway._inspection_mode = 'paused'
-        self.assertFalse(self.gateway.inspection_speech(request)['queued'])
-        self.gateway._behavior_speech.announce_patrol_safety.assert_called_once_with()
+        for running in (False, True):
+            with self.subTest(running=running):
+                self.gateway._yolo.status.return_value['running'] = running
+                self.gateway._inspection_mode = 'transit'
+                self.gateway._behavior_speech.announce_patrol_safety.reset_mock()
+                self.assertFalse(self.gateway.inspection_speech({**request, 'task_id': 'old-task'})['queued'])
+                self.assertEqual(self.gateway.inspection_speech(request),
+                                 dict(success=True, key='patrol_safety', queued=True, voice_backend='local'))
+                self.gateway._inspection_mode = 'paused'
+                self.assertFalse(self.gateway.inspection_speech(request)['queued'])
+                self.gateway._behavior_speech.announce_patrol_safety.assert_called_once_with()
         self.gateway._yolo.inspection_request.assert_not_called()
 
     def test_capture_persists_behavior_own_pair_even_if_yolo_is_missing(self):

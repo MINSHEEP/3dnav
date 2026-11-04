@@ -11,16 +11,19 @@ from pathlib import Path
 
 PHRASES = {'fall': '检测到疑似人员跌倒', 'fight': '检测到疑似打架', 'smoking': '检测到疑似人员吸烟'}
 INSPECTION_SMOKING_PHRASE = '吸烟有害健康，请不要在公共场合吸烟，谢谢配合'
-INSPECTION_SMOKING_ASSET = 'behavior_smoking_public_notice_v1.mp3'
+INSPECTION_SMOKING_ASSET = 'behavior_smoking_public_notice_v1.wav'
 ENVIRONMENT_PHRASES = {'thermal_high': '环境温度异常', 'co2_high': '二氧化碳浓度异常'}
 PATROL_SAFETY_KEY = 'patrol_safety'
 PATROL_SAFETY_PHRASE = '正在执行巡检任务，请注意安全'
+BUNDLED_AUDIO_DIR = Path(__file__).resolve().parent / 'speech_audio'
 
 
 class BehaviorSpeechService:
     def __init__(self, audio_dir=None, cooldown_seconds=20.0):
-        self._audio_dir = Path(audio_dir) if audio_dir else (
-            Path.home() / '.cache' / 'robot_inspection_speech')
+        # Resolve beside this module in both source and installed ROS share trees.
+        # Custom directories remain supported; ambient caches cannot override the
+        # bundled voice or the distinct manual/inspection smoking messages.
+        self._audio_dir = Path(audio_dir) if audio_dir else BUNDLED_AUDIO_DIR
         self._synth = shutil.which('espeak-ng') or shutil.which('espeak')
         self._player = shutil.which('ffplay')
         self._cooldown = max(1.0, float(cooldown_seconds))
@@ -44,10 +47,13 @@ class BehaviorSpeechService:
             return None
         # Only these fixed filenames and phrases can be played; no shell input.
         public_notice = inspection and key == 'smoking'
-        asset = self._audio_dir / (INSPECTION_SMOKING_ASSET if public_notice else f'behavior_{key}.mp3')
-        if self._player and asset.is_file():
-            return [self._player, '-hide_banner', '-loglevel', 'error',
-                    '-nodisp', '-autoexit', '-vn', str(asset)]
+        asset = self._audio_dir / (INSPECTION_SMOKING_ASSET if public_notice else f'behavior_{key}.wav')
+        if self._player:
+            # Prefer the fixed PCM assets, while accepting legacy custom MP3s.
+            for candidate in (asset, asset.with_suffix('.mp3')):
+                if candidate.is_file():
+                    return [self._player, '-hide_banner', '-loglevel', 'error',
+                            '-nodisp', '-autoexit', '-vn', str(candidate)]
         if self._synth:
             return [self._synth, '-v', 'cmn', '-s', '150',
                     INSPECTION_SMOKING_PHRASE if public_notice else phrase]
@@ -55,10 +61,12 @@ class BehaviorSpeechService:
 
     def status(self):
         with self._lock:
-            ready = (not self._closed.is_set() and all(self._command(k) for k in PHRASES)
+            ready = (not self._closed.is_set()
+                     and all(self._command(k) for k in (
+                         PATROL_SAFETY_KEY, *PHRASES, *ENVIRONMENT_PHRASES))
                      and bool(self._command('smoking', inspection=True)))
             return {'ready': ready, 'error': self._error or (
-                '' if ready else '行为告警语音不可用：请安装 espeak-ng 或准备固定语音素材')}
+                '' if ready else '离线语音不可用：请安装 ffplay 并准备完整固定语音素材，或安装 espeak-ng')}
 
     def announce(self, key, *, inspection=False):
         now = time.monotonic()

@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "language": "zh-CN",
+  "voice": "Microsoft Huihui",
+  "generator": "Windows SAPI / Speech_OneCore",
+  "format": "PCM WAV",
+  "generated_at": "2026-11-04",
+  "files": [
+    {
+      "key": "patrol_safety",
+      "inspection": false,
+      "text": "正在执行巡检任务，请注意安全",
+      "filename": "behavior_patrol_safety.wav",
+      "sha256": "972929be752f53a0839d50363c20f255c61e0d28ee720b08c77dc330516413d0",
+      "bytes": 188490,
+      "duration_seconds": 4.2731,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    },
+    {
+      "key": "fall",
+      "inspection": false,
+      "text": "检测到疑似人员跌倒",
+      "filename": "behavior_fall.wav",
+      "sha256": "192470123bc2c6efb4b9f243e4a7c449f3cc6b1d3eca184e93250de89d1695c2",
+      "bytes": 124778,
+      "duration_seconds": 2.8284,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    },
+    {
+      "key": "fight",
+      "inspection": false,
+      "text": "检测到疑似打架",
+      "filename": "behavior_fight.wav",
+      "sha256": "5294bbe2069541298589ecea8137b4d0c1b7d1ffe739832b6fe144058c9b8f4b",
+      "bytes": 107592,
+      "duration_seconds": 2.4387,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    },
+    {
+      "key": "smoking",
+      "inspection": false,
+      "text": "检测到疑似人员吸烟",
+      "filename": "behavior_smoking.wav",
+      "sha256": "e26395a779a770ee2d0f3fb66f1bd2a2a58426ca2d206135f885dee82e0ddb71",
+      "bytes": 125442,
+      "duration_seconds": 2.8434,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    },
+    {
+      "key": "smoking",
+      "inspection": true,
+      "text": "吸烟有害健康，请不要在公共场合吸烟，谢谢配合",
+      "filename": "behavior_smoking_public_notice_v1.wav",
+      "sha256": "dc15a95a891293486fc66b1e6e8bb27c8d7d7c00785b4c36b5773392c3b98a7b",
+      "bytes": 285468,
+      "duration_seconds": 6.4722,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    },
+    {
+      "key": "thermal_high",
+      "inspection": false,
+      "text": "环境温度异常",
+      "filename": "behavior_thermal_high.wav",
+      "sha256": "db39e5e93ebe4265b0c1f218485e3861b141630f39ca31cbef8ea03db6d3cfb1",
+      "bytes": 101428,
+      "duration_seconds": 2.2989,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    },
+    {
+      "key": "co2_high",
+      "inspection": false,
+      "text": "二氧化碳浓度异常",
+      "filename": "behavior_co2_high.wav",
+      "sha256": "c991ff94bb8115ba30509f1574eac25dabef47f2ef3c9f90712b65c24550855d",
+      "bytes": 118180,
+      "duration_seconds": 2.6788,
+      "sample_rate_hz": 22050,
+      "channels": 1,
+      "sample_width_bytes": 2
+    }
+  ]
+}

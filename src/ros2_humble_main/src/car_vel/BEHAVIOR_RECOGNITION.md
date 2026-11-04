@@ -8,7 +8,7 @@
 - “启动识别”启用已勾选项目；巡检途中和检测阶段同样启用。跌倒与吸烟共享一次人物姿态推理，打架从相机采集端独立保留 8 帧，再交给同一进程异步处理。姿态和吸烟各配置 4 个 OpenVINO 线程，打架配置 2 个。开关改变时重建这个行为进程以加载或释放相应模型。
 - “查看行为画面”优先显示实际推理帧的人物姿态与吸烟标注；人物分支没有新鲜画面时可显示独立打架结果。右侧热成像独立显示。
 - 巡检途中和检测点发现有效疑似吸烟结果时，播报“吸烟有害健康，请不要在公共场合吸烟，谢谢配合”；手动识别仍播报“检测到疑似人员吸烟”。同类别至少间隔 20 秒。巡检记录人物、检测分数、关联证据、来源时间戳和对应原图/标注图。过期、缓存及短暂遮挡结果不会产生新告警。
-- 巡检吸烟语音使用独立缓存 `~/.cache/robot_inspection_speech/behavior_smoking_public_notice_v1.mp3`，不会沿用旧 `behavior_smoking.mp3`。没有新音频时由已安装的 `espeak-ng` 离线播报；长句播放超时上限为 30 秒。
+- 巡检安全、跌倒、打架、两种吸烟提示、高温和 CO₂ 告警使用随项目安装的七条同音色离线 WAV。默认优先读取 `hikvision_camera/speech_audio`，使用 `ffplay` 播放；旧缓存不会覆盖默认素材。巡检吸烟使用独立长句话术，播放超时上限为 30 秒。缺少录音或播放器时保留 `espeak-ng` 本地回退，详见[离线播报及部署说明](hikvision_camera/speech_audio/README.md)。
 - 暂停、来源/任务/分辨率变化和重新启用清理历史。行为识别不控制机器人运动或急停。
 
 | 显示 | 含义 |
@@ -32,7 +32,7 @@ cd /home/a/3dnav/src/ros2_humble_main/src/car_vel
 bash scripts/install_behavior_deps.sh
 ```
 
-安装脚本复用原有独立环境，安装锁定的 OpenVINO 2024.6.0，校验资产、准备 PaddleDetection 预处理代码并检查三个模型能否加载。没有独立环境时先安装 `python3-venv libgl1 libglib2.0-0`。语音可使用 `espeak-ng` 或已有音频与 `ffmpeg`。
+安装脚本复用原有独立环境，安装锁定的 OpenVINO 2024.6.0，校验资产、准备 PaddleDetection 预处理代码并检查三个模型能否加载。没有独立环境时先安装 `python3-venv libgl1 libglib2.0-0`。统一离线播报使用随项目附带的音频与 `ffmpeg` 中的 `ffplay`；`espeak-ng` 只作为本地回退。
 
 ```bash
 cd /home/a/3dnav

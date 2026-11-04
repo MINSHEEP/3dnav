@@ -38,6 +38,6 @@ print('CPU imports verified. No model accuracy or throughput claim has been made
 PY
 "$behavior_venv/bin/python" -s -m pphuman_runtime.self_check --timeout 90
 echo "Installed isolated CPU environment: $behavior_venv"
-echo "Optional offline Chinese speech: sudo apt-get install espeak-ng"
-echo "Optional cached MP3 playback: sudo apt-get install ffmpeg"
+echo "Bundled offline speech playback: sudo apt-get install ffmpeg"
+echo "Optional offline speech fallback: sudo apt-get install espeak-ng"
 echo "Run scripts/benchmark_behavior.sh --video /absolute/path/video.mp4 --output /tmp/behavior-benchmark.json"
