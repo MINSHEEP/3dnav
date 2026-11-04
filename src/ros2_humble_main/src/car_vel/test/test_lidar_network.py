@@ -25,7 +25,10 @@ class NetworkTests(unittest.TestCase):
             self.addCleanup(self.lock.stop)
 
     def test_defaults_from_installed_template(self):
-        self.assertEqual(self.store.load(), {'version': 0, 'lidar_ip': '192.168.1.130', 'host_ip': '192.168.1.50'})
+        template = json.loads(self.template.read_text())
+        self.assertEqual(self.store.load(), {'version': 0,
+            'lidar_ip': template['lidar_configs'][0]['ip'],
+            'host_ip': template['Mid360s']['host_net_info'][0]['host_ip']})
 
     def test_invalid_addresses(self):
         for address in ('', 'x; reboot', '::1', 'localhost', '0.0.0.0', '127.0.0.1',

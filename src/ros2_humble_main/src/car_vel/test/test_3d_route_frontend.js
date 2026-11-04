@@ -89,7 +89,7 @@ const previewContext = {
   }) },
 };
 vm.createContext(previewContext);
-vm.runInContext(previewFresh[0], previewContext);
+vm.runInContext(page.match(/function threeDRoutePreviewMatches\([^]*?\n    }/)[0]+'\n'+previewFresh[0], previewContext);
 assert.strictEqual(vm.runInContext('threeDRoutePreviewFresh()', previewContext), true);
 previewContext.currentMapLoadId = 'load_b';
 assert.strictEqual(vm.runInContext('threeDRoutePreviewFresh()', previewContext), false,
@@ -100,8 +100,8 @@ assert.strictEqual(vm.runInContext('threeDRoutePreviewFresh()', previewContext),
   'switching robot body must revoke the old route preview');
 previewContext.threeDRobotBodyGeneration = 8;
 previewContext.threeDRoutePreview.previewedAtMs -= 20000;
-assert.strictEqual(vm.runInContext('threeDRoutePreviewFresh()', previewContext), false,
-  'expired route preview may not enable Start');
+assert.strictEqual(vm.runInContext('threeDRoutePreviewFresh()', previewContext), true,
+  'unchanged route preview must not expire from human waiting');
 
 function makeViewer() {
   let next = 0;

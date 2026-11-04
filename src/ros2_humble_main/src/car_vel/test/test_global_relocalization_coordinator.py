@@ -10,7 +10,7 @@ SOURCE = Path(__file__).resolve().parents[1]/'car_vel/relocalization_coordinator
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
 names = {'_global_identity','_authority_callback','_start_pending_request',
-         '_process_action_result','_fallback_or_fail'}
+         '_process_action_result','_fallback_or_fail', '_pose_dictionary', '_yaw'}
 methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
 clock = NS(value=100.)
 namespace = dict(copy=copy,json=json,math=math,time=NS(monotonic=lambda:clock.value),
@@ -18,6 +18,7 @@ namespace = dict(copy=copy,json=json,math=math,time=NS(monotonic=lambda:clock.va
         CODE_OK=0,CODE_TIMEOUT=33,CODE_INTERNAL_ERROR=34,CODE_VALIDATION_FAILED=32)))
 exec(compile(ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(name='Coordinator',bases=[],
     keywords=[], body=methods, decorator_list=[])],type_ignores=[])), str(SOURCE), 'exec'), namespace)
+namespace['RelocalizationCoordinator'] = namespace['Coordinator']
 
 
 def harness(strict=True):
@@ -78,7 +79,7 @@ def test_original_legacy_coarse_fallback_is_unchanged():
 def test_good_3d_result_waits_for_same_seed_and_authority_confirmation():
     h = harness()
     result = NS(success=True,code=0,candidate_verified=True, fitness=.1,overlap=.8,
-        correction_xy=.2,correction_yaw=.1,refined_pose=NS())
+        correction_xy=.2,correction_yaw=.1,refined_pose=NS(),transform_model='se3_map_odom_v1')
     h._process_action_result(result,4)
     h._begin_amcl_confirmation.assert_not_called()
     assert h._await_authority and h._publish_status.call_args.args[1] == 'validation_passed'

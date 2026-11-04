@@ -652,6 +652,17 @@ namespace small_point_lio {
             rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
         set_motion_paused(true);
         publish_lio_health("{\"state\":\"initializing\"}");
+        interval_policy_subscription = create_subscription<std_msgs::msg::Bool>(
+            "/localization/interval_compensation",
+            rclcpp::QoS(1).reliable().transient_local(),
+            [this](const std_msgs::msg::Bool::SharedPtr message) {
+                const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                interval_policy.observe(message->data, now_ns);
+            });
+        RCLCPP_INFO(get_logger(),
+            "ODOMETRY_INTERVAL_POLICY model=xingji_3d_interval_v1 "
+            "lease=1s compensated_speed=0.6m/s legacy_step=unchanged");
         // rosbridge commonly creates a VOLATILE subscription, so it will not
         // receive a transient-local sample published before the browser
         // connects.  Repeat the tiny status payload at 1 Hz for late clients.
@@ -1279,9 +1290,13 @@ namespace small_point_lio {
                 const bool pose_angular_violation =
                     pose_angular_speed >
                     odometry_guard_max_angular_speed;
-                const bool position_step_violation =
-                    dt <= 0.5 &&
-                    position_step > odometry_guard_max_position_step;
+                const auto interval_now_ns =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                const bool interval_compensation = interval_policy.enabled(interval_now_ns);
+                const bool position_step_violation = exceeds_position_step(
+                    dt, position_step, odometry_guard_max_position_step,
+                    odometry_guard_max_linear_speed, interval_compensation);
                 const bool yaw_step_violation =
                     dt <= 0.5 &&
                     yaw_step > odometry_guard_max_yaw_step;

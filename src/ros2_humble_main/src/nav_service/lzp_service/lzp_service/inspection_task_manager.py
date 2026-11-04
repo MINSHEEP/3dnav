@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -308,6 +309,10 @@ class CameraInspectionClient:
         return self.request(
             '/api/inspection/speech', {'key': str(key)}, timeout=5.0)
 
+    def speak_patrol_safety(self, task_id: str) -> Dict[str, Any]:
+        return self.request('/api/inspection/speech',
+                            {'key': 'patrol_safety', 'task_id': task_id}, timeout=2.0)
+
 
 class InspectionTaskManager(Node):
     """Run recoverable inspection jobs independently of the browser."""
@@ -380,6 +385,8 @@ class InspectionTaskManager(Node):
         )
         self._workers = ThreadPoolExecutor(
             max_workers=3, thread_name_prefix='inspection-worker')
+        self._patrol_speech_worker = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix='inspection-speech')
         self._selected_navigation_mode = TERRAIN_3D
         self._navigation_mode_seen = False
         self._selected_robot_body = ''
@@ -502,6 +509,7 @@ class InspectionTaskManager(Node):
         self._route_status: Optional[RouteExecutionStatus] = None
         self._last_route_event_sequence = 0
         self._route_request_future = None
+        self._pending_task_start = None
         self._route_request_purpose = ''
         self._route_request_started_monotonic = 0.0
         self._pending_route_start: Optional[Dict[str, Any]] = None
@@ -511,6 +519,7 @@ class InspectionTaskManager(Node):
         self._3d_authorization_generation = 0
         self._route_session_active = False
         self._route_session_purpose = ''
+        self._route_completion_event_floor = 0
         self._camera_future: Optional[Future] = None
         self._camera_future_purpose = ''
         self._pending_camera_mode: Optional[tuple[str, str]] = None
@@ -859,6 +868,10 @@ class InspectionTaskManager(Node):
 
     def _start_task_callback(self, request, response):
         with self._lock:
+            if getattr(self, '_pending_task_start', None) is not None:
+                response.success, response.task_id = False, ''
+                response.message = '已有巡检启动请求正在确认，可等待或取消启动'
+                return response
             if self._is_active():
                 response.success = False
                 response.message = '已有巡检任务正在运行'
@@ -906,95 +919,170 @@ class InspectionTaskManager(Node):
                 response.task_id = ''
                 return response
 
-            task_id = uuid.uuid4().hex
-            preview_id = str(getattr(request, 'preview_id', '') or '').strip()
-            if self._selected_navigation_mode == TERRAIN_3D and preview_id:
-                if bool(request.bidirectional):
-                    response.success = False
-                    response.message = (
-                        '3D 双向巡检暂未完成反向逐段预览，不能启动；'
-                        '请关闭双向巡检并重新预览')
-                    response.task_id = ''
-                    return response
+            prepared = dict(task_id=uuid.uuid4().hex, name=name,
+                route=copy.deepcopy(route), template=copy.deepcopy(template),
+                loop_count=loop_count, interval=interval,
+                bidirectional=bool(request.bidirectional),
+                preview_id=str(getattr(request, 'preview_id', '') or '').strip(),
+                mode=self._selected_navigation_mode, body=self._selected_robot_body,
+                localized_map=self._localized_map_name)
+            if self._selected_navigation_mode == TERRAIN_3D and prepared['preview_id']:
                 if not self._reserve_3d_route_client.service_is_ready():
                     response.success = False
                     response.message = '3D 路线预览预约服务尚未就绪'
                     response.task_id = ''
                     return response
-                reserve = Reserve3DInspectionRoute.Request()
-                reserve.preview_id = preview_id
-                reserve.owner_token = task_id
-                reserve.route_id = int(route['id'])
-                reserve.loop_count = loop_count
-                reserve.bidirectional = False
-                try:
-                    future = self._reserve_3d_route_client.call_async(reserve)
-                    completed = threading.Event()
-                    future.add_done_callback(lambda _result: completed.set())
-                    # Reservation may request the bounded 8-second no-motion
-                    # AMCL refresh; do not abandon it after only 3 seconds.
-                    if not completed.wait(12.0):
-                        raise TimeoutError('3D 路线预览预约超时')
-                    result = future.result()
-                    if not result.success:
-                        raise ValueError(result.message)
-                except Exception as error:
-                    response.success = False
-                    response.message = f'3D 巡检未启动：{error}'
-                    response.task_id = ''
-                    return response
-            request_data = {
-                'loop_count': loop_count,
-                'loop_interval_minutes': interval,
-                'bidirectional': bool(request.bidirectional),
-                'navigation_mode': self._selected_navigation_mode,
-                'previewed_3d': bool(
-                    self._selected_navigation_mode == TERRAIN_3D
-                    and preview_id),
-            }
-            checkpoint_count = len(template['checkpoints'])
-            self._state = {
-                **self._idle_state(),
-                'task_id': task_id, 'name': name, 'state': 'preparing',
-                'active': True, 'route_id': int(route['id']),
-                'route_name': str(route['name']),
-                'map_name': str(route['map_name']), 'current_loop': 1,
-                'loop_count': loop_count,
-                'bidirectional': bool(request.bidirectional),
-                'loop_interval_minutes': interval,
-                'navigation_mode': self._selected_navigation_mode,
-                'total_points': len(route['points']) * loop_count,
-                'total_detection_points': checkpoint_count * loop_count,
-                'message': '正在启动并预热 YOLO',
-                'started_at': utc_now(), 'resume_state': '',
-                'recovery_pending': False,
-            }
-            route_snapshot = self._route_to_dict(route)
-            self._database.create_task(
-                task_id, name, route_snapshot, request_data,
-                template, self._state)
-            self._task = {
-                'task_id': task_id, 'name': name, 'route_id': int(route['id']),
-                'route_name': str(route['name']),
-                'map_name': str(route['map_name']), 'request': request_data,
-                'template': template, 'state': self._state,
-            }
-            self._route = route_snapshot
-            self._camera.set_context(task_id)
-            self._checkpoints = {
-                int(item['route_point_id']): item
-                for item in template['checkpoints']
-            }
-            self._reset_runtime_events()
-            mode_label = navigation_mode_label(self._selected_navigation_mode)
-            self._database.add_event(
-                task_id, 'task_started', f'巡检任务已创建，模式：{mode_label}')
-            self._log(f'巡检任务已创建（{mode_label}），正在预热 YOLO')
-            self._publish(force=True)
-            response.success = True
-            response.message = '巡检任务已启动'
-            response.task_id = task_id
+                pending = dict(prepared=prepared, future=None, cancelled=False,
+                    cleanup_registered=False, waiter=None, started=time.monotonic())
+                self._pending_task_start = pending
+            else:
+                return self._commit_task_start(prepared, response)
+
+        # No shared task lock is held while a ROS executor delivers the reply.
+        # Otherwise timer/status callbacks can occupy every worker waiting for
+        # that lock, starving the service future until its timeout.
+        try:
+            reserve = Reserve3DInspectionRoute.Request()
+            reserve.preview_id = prepared['preview_id']
+            reserve.owner_token = prepared['task_id']
+            reserve.route_id = int(prepared['route']['id'])
+            reserve.loop_count = prepared['loop_count']
+            reserve.bidirectional = prepared['bidirectional']
+            self._log('正在确认三维路线预约与启动条件，可取消本次启动。')
+            self.get_logger().info('INSPECTION_START '+_json(dict(stage='reserving',
+                task_id=prepared['task_id'], preview_id=prepared['preview_id'])))
+            future = self._reserve_3d_route_client.call_async(reserve)
+            completed = threading.Event()
+            with self._lock:
+                pending['future'], pending['waiter'] = future, completed
+                if pending['cancelled'] or self._pending_task_start is not pending:
+                    raise ValueError('启动已取消，晚到预约不会创建任务')
+            future.add_done_callback(lambda _result: completed.set())
+            if not completed.wait(12.0):
+                raise TimeoutError('路线预约请求等待后台响应超时（12 秒）；不是预览过期')
+            if not future.done():
+                raise ValueError('启动已取消，晚到预约不会创建任务')
+            result = future.result()
+            if not result.success:
+                raise ValueError(result.message)
+            with self._lock:
+                if pending['cancelled'] or self._pending_task_start is not pending:
+                    raise ValueError('启动已取消，晚到预约不会创建任务')
+                current_route = self._routes.get_route(int(prepared['route']['id']))
+                if (self._is_active() or not self._nav2_ready
+                        or self._selected_navigation_mode != prepared['mode']
+                        or self._selected_robot_body != prepared['body']
+                        or not self._localization_ready
+                        or self._localized_map_name != prepared['localized_map']
+                        or current_route != prepared['route']):
+                    raise ValueError('预约期间地图、路线、本体或导航状态变化，未启动巡检')
+                current_template = self._database.get_template(int(prepared['route']['id'])) or {
+                    'route_id': int(prepared['route']['id']), 'checkpoints': []}
+                if self._validate_template(current_route,current_template) != prepared['template']:
+                    raise ValueError('预约期间检测点配置变化，未启动巡检')
+                self._pending_task_start = None
+                response = self._commit_task_start(prepared, response)
+                self.get_logger().info('INSPECTION_START '+_json(dict(stage='committed',
+                    task_id=prepared['task_id'],
+                    elapsed_sec=round(time.monotonic()-pending['started'],3))))
+                return response
+        except Exception as error:
+            with self._lock:
+                self._abandon_task_start(pending)
+            response.success, response.task_id = False, ''
+            response.message = f'3D 巡检未启动：{error}'
+            self._log(response.message)
+            self.get_logger().info('INSPECTION_START '+_json(dict(stage='rejected',
+                task_id=prepared['task_id'], error=str(error),
+                elapsed_sec=round(time.monotonic()-pending['started'],3))))
             return response
+
+    def _abandon_task_start(self, pending):
+        """Caller holds _lock. Wake the waiter; late replies may only clean up."""
+        pending['cancelled'] = True
+        if getattr(self, '_pending_task_start', None) is pending:
+            self._pending_task_start = None
+        if pending.get('waiter') is not None:
+            pending['waiter'].set()
+        future = pending.get('future')
+        if future is not None and not pending['cleanup_registered']:
+            pending['cleanup_registered'] = True
+            owner = pending['prepared']['task_id']
+            future.add_done_callback(lambda f: self._release_abandoned_start(f, owner))
+
+    def _release_abandoned_start(self, future, owner):
+        try:
+            if not future.result().success:
+                return
+            if not self._revoke_3d_route_client.service_is_ready():
+                self._log('已放弃的启动收到晚到预约；路线撤销服务暂不可用，未创建巡检任务', 'warning')
+                return
+            revoke = Revoke3DInspectionRoute.Request()
+            revoke.owner_token, revoke.action = owner, 'cancel'
+            self._revoke_3d_route_client.call_async(revoke)
+            self.get_logger().info('INSPECTION_START '+_json(dict(stage='late_reservation_revoke_requested',task_id=owner)))
+        except Exception as error:
+            self._log(f'放弃启动后的预约清理未完成：{error}', 'warning')
+
+    def _commit_task_start(self, prepared, response):
+        """Commit under _lock after reservation/context checks; no RPC wait."""
+        task_id, name = prepared['task_id'], prepared['name']
+        route, template = prepared['route'], prepared['template']
+        loop_count, interval = prepared['loop_count'], prepared['interval']
+        preview_id = prepared['preview_id']
+        request_data = {
+            'loop_count': loop_count,
+            'loop_interval_minutes': interval,
+            'bidirectional': prepared['bidirectional'],
+            'navigation_mode': prepared['mode'],
+            'previewed_3d': bool(
+                prepared['mode'] == TERRAIN_3D
+                and preview_id),
+        }
+        checkpoint_count = len(template['checkpoints'])
+        self._state = {
+            **self._idle_state(),
+            'task_id': task_id, 'name': name, 'state': 'preparing',
+            'active': True, 'route_id': int(route['id']),
+            'route_name': str(route['name']),
+            'map_name': str(route['map_name']), 'current_loop': 1,
+            'loop_count': loop_count,
+            'bidirectional': prepared['bidirectional'],
+            'loop_interval_minutes': interval,
+            'navigation_mode': prepared['mode'],
+            'total_points': len(route['points']) * loop_count,
+            'start_safety_notice_pending': True,
+            'total_detection_points': checkpoint_count * loop_count,
+            'message': '正在准备已启用的识别项目',
+            'started_at': utc_now(), 'resume_state': '',
+            'recovery_pending': False,
+        }
+        route_snapshot = self._route_to_dict(route)
+        self._database.create_task(
+            task_id, name, route_snapshot, request_data,
+            template, self._state)
+        self._task = {
+            'task_id': task_id, 'name': name, 'route_id': int(route['id']),
+            'route_name': str(route['name']),
+            'map_name': str(route['map_name']), 'request': request_data,
+            'template': template, 'state': self._state,
+        }
+        self._route = route_snapshot
+        self._camera.set_context(task_id)
+        self._checkpoints = {
+            int(item['route_point_id']): item
+            for item in template['checkpoints']
+        }
+        self._reset_runtime_events()
+        mode_label = navigation_mode_label(prepared['mode'])
+        self._database.add_event(
+            task_id, 'task_started', f'巡检任务已创建，模式：{mode_label}')
+        self._log(f'巡检任务已创建（{mode_label}），正在准备已启用的识别项目')
+        self._publish(force=True)
+        response.success = True
+        response.message = '巡检任务已启动'
+        response.task_id = task_id
+        return response
 
     def _reset_runtime_events(self) -> None:
         self._last_route_event_sequence = 0
@@ -1027,6 +1115,13 @@ class InspectionTaskManager(Node):
             if command not in self.VALID_CONTROLS:
                 response.success = False
                 response.message = f'不支持的巡检控制命令: {command}'
+                return response
+            pending = getattr(self,'_pending_task_start',None)
+            if pending is not None and command in ('pause','cancel'):
+                self._abandon_task_start(pending)
+                response.success = True
+                response.message = '已取消尚未完成的巡检启动；晚到预约不会启动任务'
+                self._log(response.message)
                 return response
             if not self._is_active():
                 response.success = False
@@ -1160,6 +1255,11 @@ class InspectionTaskManager(Node):
             return False, '请先继续任务，再跳过当前点'
         if self._state['state'] not in ('navigating', 'inspecting'):
             return False, '当前阶段没有可跳过的巡检点'
+        if not self._route_session_active:
+            status = getattr(self, '_route_status', None)
+            if status is not None:
+                self._route_status_callback(status)
+            return False, '路线已结束或尚未就绪，当前没有可跳过的活动路线点'
         if self._state['state'] == 'inspecting':
             self._skip_event.set()
             self._state['message'] = '正在结束当前检测并跳过该点'
@@ -1476,6 +1576,10 @@ class InspectionTaskManager(Node):
     def _start_route(
             self, purpose: str, reverse: bool, hold: bool,
             start_point_id: int, point_limit: int) -> None:
+        # The route process may have restarted and reset its event counter.
+        # Baseline the currently observed publisher, not the previous session.
+        self._route_completion_event_floor = int(getattr(
+            getattr(self, '_route_status', None), 'goal_event_sequence', 0))
         self._pending_route_start = {
             'purpose': purpose, 'reverse': bool(reverse), 'hold': bool(hold),
             'start_point_id': int(start_point_id),
@@ -1646,11 +1750,24 @@ class InspectionTaskManager(Node):
                 self._state['message'] = (
                     f'第 {self._state["current_loop"]} 轮巡检进行中'
                     if route_purpose == 'patrol' else '正在返回起点复位')
+                if route_purpose == 'patrol' and self._state.pop('start_safety_notice_pending', False):
+                    self._queue_patrol_safety_notice()
+            # A very short route can finish before its Start service reply.
+            # Consume that cached terminal event now that the session exists.
+            status = getattr(self, '_route_status', None)
+            if status is not None and str(status.state) == 'completed':
+                self._route_status_callback(status)
+        elif (not success and purpose == 'control:failed_start_cleanup:stop'
+                and message == 'No route navigation task is active'):
+            self._log('启动未成功，后台未创建活动路线；清理已结束，保留原始启动失败原因')
         elif not success and not purpose.startswith('control:cancel'):
             self._log(f'路线控制失败：{message}', 'warning')
         elif success and purpose.startswith('control:'):
+            if self._state['state'] in TERMINAL_STATES:
+                return
             command = purpose.rsplit(':', 1)[-1]
-            if command in ('release', 'skip') and not self._state.get('paused'):
+            if (command in ('release', 'skip') and not self._state.get('paused')
+                    and self._route_session_active):
                 self._state['state'] = 'navigating'
                 self._state['message'] = '正在前往下一个巡检点'
             elif command == 'resume':
@@ -1661,6 +1778,7 @@ class InspectionTaskManager(Node):
         if str(message.owner_token) != str(self._state.get('task_id', '')):
             return
         self._route_session_active = bool(message.active)
+        self._route_completion_event_floor = int(getattr(message, 'goal_event_sequence', 0))
         resume_state = str(self._state.get('resume_state') or 'navigating')
         self._route_session_purpose = (
             'reposition' if resume_state == 'returning_to_start' else 'patrol')
@@ -1773,7 +1891,14 @@ class InspectionTaskManager(Node):
                 self._persist()
                 self._publish(force=True)
                 return
-            if str(message.owner_token) != str(self._state['task_id']):
+            completed = (self._route_session_active and not message.active
+                and str(message.state) == 'completed'
+                and (str(message.owner_token) == str(self._state['task_id']) or (
+                    str(getattr(message, 'last_goal_owner_token', '')) == str(self._state['task_id'])
+                    and str(getattr(message, 'last_goal_result', '')) == 'route_completed'
+                    and int(getattr(message, 'goal_event_sequence', 0))
+                        > getattr(self, '_route_completion_event_floor', 0))))
+            if str(message.owner_token) != str(self._state['task_id']) and not completed:
                 if self._state.get('recovery_pending') and bool(message.active):
                     self._state['message'] = '路线正由其他任务占用，等待操作员处理'
                     self._persist()
@@ -1810,11 +1935,10 @@ class InspectionTaskManager(Node):
                 self._handle_route_point_event(message)
             if message.awaiting_release and str(message.state) == 'awaiting_release':
                 self._handle_point_hold(message)
-            if (
-                self._route_session_active
-                and not message.active
-                and str(message.state) == 'completed'
-            ):
+            if completed:
+                self._route_completion_event_floor = max(
+                    getattr(self, '_route_completion_event_floor', 0),
+                    int(getattr(message, 'goal_event_sequence', 0)))
                 purpose = self._route_session_purpose
                 self._route_session_active = False
                 self._route_session_purpose = ''
@@ -1870,6 +1994,7 @@ class InspectionTaskManager(Node):
             return
         if self._inspection_future is not None:
             return
+        self._queue_patrol_safety_notice()
         self._state.update({
             'state': 'inspecting', 'current_direction': '',
             'message': f'正在检测“{point.name}”',
@@ -2291,6 +2416,22 @@ class InspectionTaskManager(Node):
                 None, valid=False, active=True, now=now)
         self._publish_environment_config()
 
+    def _queue_patrol_safety_notice(self) -> None:
+        try:
+            self._patrol_speech_worker.submit(self._send_patrol_safety_notice, self._state['task_id'])
+        except RuntimeError as error:
+            self._log(f'巡检安全提示未加入队列：{error}', 'warning')
+
+
+    def _send_patrol_safety_notice(self, task_id: str) -> None:
+        try:
+            result = self._camera.speak_patrol_safety(task_id)
+            if not result.get('queued'):
+                self._log('巡检安全提示未加入播放队列', 'warning')
+        except Exception as error:
+            self._log(f'巡检安全提示请求失败：{error}', 'warning')
+
+
     def _queue_environment_speech(self, key: str) -> None:
         if key in self._environment_speech_pending:
             return
@@ -2441,7 +2582,12 @@ class InspectionTaskManager(Node):
             logger.info(message)
 
     def destroy_node(self):
+        with self._lock:
+            pending = getattr(self,'_pending_task_start',None)
+            if pending is not None:
+                self._abandon_task_start(pending)
         self._cancel_event.set()
+        self._patrol_speech_worker.shutdown(wait=False, cancel_futures=True)
         self._workers.shutdown(wait=False, cancel_futures=True)
         return super().destroy_node()
 

@@ -1,5 +1,6 @@
 """Recoverable LIO pauses must never become hardware emergency commands."""
 import ast
+import json
 from pathlib import Path
 import unittest
 
@@ -58,6 +59,9 @@ class LioMotionPauseTests(unittest.TestCase):
         for index in range(80):
             self.fixture.now += 0.05
             self.fixture.body('xingji')
+            self.node._global_localization_callback(Message(json.dumps(dict(
+                ready=True,scope='xingji_3d',body_generation=1,
+                stamp_ns=int(self.fixture.now*1e9)))))
             self.fixture.terrain(True)
             self.fixture.command()
             if index % 10 == 0:

@@ -82,6 +82,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ManageCampusTopology.srv"
   "srv/SetTraversalMode.srv"
   "srv/SetNavigationMode.srv"
+  "srv/SetNavigationSpeed.srv"
   "srv/SetRobotBody.srv"
   "srv/ConfigureM701.srv"
   "srv/SetLidarNetwork.srv"

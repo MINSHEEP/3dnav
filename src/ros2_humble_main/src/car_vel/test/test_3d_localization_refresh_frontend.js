@@ -75,30 +75,7 @@ function readiness(ctx) {vm.runInContext(`{${block}}`, ctx); return ctx.box.text
     reject(new Error('late old refresh failure'));
     await pending;
     assert.equal(superseded.threeDNotice, 'new candidate', 'old RPC failure must not overwrite a newer draft');
-    const lease = context(), timers = [];
-    let refreshCalls = 0;
-    Object.assign(lease, {threeDPreviewPoseTimer: null, threeDPreviewPoseLease: 0, localizationGeneration: 1,
-        loadedMapName: 'garden', session: {connected: true},
-        requestNoMotionUpdate: async () => {refreshCalls++; return true;},
-        window: {clearTimeout() {}, setTimeout(callback) {timers.push(callback); return timers.length;}}});
-    vm.runInContext(`${method('stopThreeDPreviewPoseRefresh')}\n${method('maintainThreeDPreviewPoseFreshness')}`, lease);
-    vm.runInContext('maintainThreeDPreviewPoseFreshness(threeDPoseDraft)', lease);
-    for(let index=0;timers.length && index<25;index++) await timers.shift()();
-    assert.equal(refreshCalls, 18, 'preview maintenance must be bounded, not perpetual');
-    assert.equal(timers.length, 0);
-    refreshCalls=0;
-    vm.runInContext('maintainThreeDPreviewPoseFreshness(threeDPoseDraft)', lease);
-    lease.threeDPoseDraft = null;
-    await timers.shift()();
-    assert.equal(refreshCalls, 0, 'clearing the candidate stops refresh maintenance');
-    lease.threeDPoseDraft = context().threeDPoseDraft;
-    let finishRefresh;
-    lease.requestNoMotionUpdate = () => new Promise(resolve => {finishRefresh = resolve;});
-    vm.runInContext('maintainThreeDPreviewPoseFreshness(threeDPoseDraft)', lease);
-    const oldTick = timers.shift()();
-    vm.runInContext('stopThreeDPreviewPoseRefresh()', lease);
-    finishRefresh(true);
-    await oldTick;
-    assert.equal(timers.length, 0, 'a late service reply cannot restart a canceled refresh lease');
+    assert(!page.includes('maintainThreeDPreviewPoseFreshness'),
+        'waiting for a human must not require an AMCL keepalive timer');
     console.log('3D pose refresh readiness, preview-only errors and manual restart semantics: OK');
 })().catch(error => {console.error(error); process.exitCode = 1;});

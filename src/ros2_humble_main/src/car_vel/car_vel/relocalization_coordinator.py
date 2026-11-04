@@ -268,6 +268,9 @@ class RelocalizationCoordinator(Node):
         return {
             'x': round(float(pose.pose.pose.position.x), 4),
             'y': round(float(pose.pose.pose.position.y), 4),
+            'z': float(pose.pose.pose.position.z),
+            'orientation': {key: float(getattr(pose.pose.pose.orientation, key))
+                            for key in ('x', 'y', 'z', 'w')},
             'yaw': round(RelocalizationCoordinator._yaw(
                 pose.pose.pose), 5),
         }
@@ -666,7 +669,7 @@ class RelocalizationCoordinator(Node):
         self._strict_identity = self._global_identity() if strict else None
         self._await_authority = None
         goal.robust_validation = strict
-        goal.map_load_id = self.current_map_load_id if strict else '' 
+        goal.map_load_id = self.current_map_load_id if strict else ''
         # Consume this request before dispatch.  A replacement request may be
         # queued while send_goal_async is in flight, but this generation must
         # never be sent twice.
@@ -863,6 +866,11 @@ class RelocalizationCoordinator(Node):
                     self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
                         '三维定位候选未确认或地图/本体身份已变化')
                     return
+                if getattr(result, 'transform_model', '') != 'se3_map_odom_v1':
+                    self._fallback_or_fail(Relocalize.Result.CODE_VALIDATION_FAILED,
+                        '三维配准模型版本不匹配，请重建接口和icp_registration并重启后台')
+                    return
+                metrics['transform_model'] = result.transform_model
                 self._await_authority = dict(generation=self.generation,
                     pose=copy.deepcopy(result.refined_pose), metrics=metrics,
                     deadline=time.monotonic()+3.)

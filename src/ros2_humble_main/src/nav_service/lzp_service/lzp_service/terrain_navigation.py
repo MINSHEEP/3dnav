@@ -41,6 +41,7 @@ class TerrainObservation:
     confidence: float = 1.0
     negative_obstacle: bool = False
     slippery: bool = False
+    sampling_gap_width_m: float = 0.0  # Missing returns, not measured ditch width.
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> 'TerrainObservation':

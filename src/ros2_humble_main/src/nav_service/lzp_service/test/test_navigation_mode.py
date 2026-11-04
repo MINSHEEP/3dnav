@@ -61,6 +61,21 @@ class NavigationModeTests(unittest.TestCase):
             self.assertEqual(first['version'], 0)
             self.assertEqual(second['version'], 0)
 
+    def test_speed_gears_persist_without_raising_legacy_speed(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'navigation_mode.json'
+            self.assertEqual(NavigationModeStore(path).snapshot()['speed_mps'], 0.25)
+            for speed in (0.15, 0.30, 0.45, 0.25):
+                with self.subTest(speed=speed):
+                    store = NavigationModeStore(path)
+                    self.assertEqual(store.set_speed(speed), speed)
+                    self.assertEqual(
+                        NavigationModeStore(path).snapshot()['speed_mps'], speed)
+            with self.assertRaises(ValueError):
+                store.set_speed(0.50)
+            self.assertEqual(NavigationModeStore(path).snapshot()['speed_mps'], 0.25)
+
     def test_corrupt_persisted_mode_fails_safe_to_terrain_mode(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as directory:

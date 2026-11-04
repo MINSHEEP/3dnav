@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from lzp_service.rolling_terrain import RollingGroundMemory,matched_pose
 from lzp_service.restricted_ground import restricted_flat_ground
-from lzp_service.terrain_pose import propagate_localization
+from lzp_service.terrain_pose import propagate_localization, rigid_transform_matrix
 from lzp_service.terrain_navigation import TerrainCapabilityModel
 from lzp_service.terrain_observer import estimate_local_terrain,corridor_return_diagnostics
 from lzp_service.terrain_grid import build_terrain_grid
@@ -23,13 +23,17 @@ def harness():
         '_cloud_callback','_restricted_prior','_stamp','_clear_memory','_map_callback',
         '_scan_callback','_lio_callback','_pose_refresh_tick','_navigation_callback',
         '_ground_anchor','_map_pose_callback')]
+    def ros_time(**kwargs):
+        return NS(**kwargs)
+    ros_time.from_msg = lambda value: value
     scope={'np':np,'math':math,'json':json,'time':NS(monotonic=lambda:100),
         'matched_pose':matched_pose,'estimate_local_terrain':estimate_local_terrain,
         'corridor_return_diagnostics':corridor_return_diagnostics,
         'restricted_flat_ground':restricted_flat_ground,
         'propagate_localization':propagate_localization,
+        'rigid_transform_matrix':rigid_transform_matrix,
         'EmptyService':NS(Request=NS),
-        'Time':NS(from_msg=lambda value: value),
+        'Time':ros_time,
         'TerrainCapabilityModel':TerrainCapabilityModel,'String':lambda **kw:NS(**kw)}
     yaw_fn=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='_yaw')
     tree=ast.Module(body=[yaw_fn,ast.ClassDef(name='Harness',bases=[],keywords=[],
@@ -54,6 +58,8 @@ def harness():
     h._scan_clear=True;h._scan_at=100
     h._map_pose_age=None;h._refresh_state='idle'
     h._map_pose_cutoff=0.
+    h._tf_buffer=NS(lookup_transform=lambda *_: NS(transform=NS(
+        translation=NS(x=0.,y=0.,z=0.),rotation=NS(x=0.,y=0.,z=0.,w=1.))))
     return h
 
 

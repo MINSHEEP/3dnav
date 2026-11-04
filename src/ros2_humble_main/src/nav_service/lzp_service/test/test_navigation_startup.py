@@ -71,6 +71,21 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(result['state'], 'activating')
         self.assertIn('map_server=unconfigured', result['message'])
 
+    def test_duplicate_containers_are_reported_before_sixty_second_timeout(self):
+        tracker = StartupTracker()
+        tracker.observe_launch(True, 979378, 0)
+        containers = [dict(pid=975382, ppid=976), dict(pid=980502, ppid=979378)]
+        result = tracker.snapshot(2, {}, False, containers=containers)
+        self.assertEqual(result['state'], 'process_conflict')
+        self.assertIn('975382', result['message'])
+        self.assertIn('980502', result['message'])
+
+    def test_leftover_container_is_not_reported_as_cleanly_stopped(self):
+        tracker = StartupTracker()
+        tracker.observe_launch(False, 0, 0)
+        result = tracker.snapshot(1, {}, False, containers=[dict(pid=975382, ppid=976)])
+        self.assertEqual(result['state'], 'process_conflict')
+
 
 if __name__ == '__main__':
     unittest.main()

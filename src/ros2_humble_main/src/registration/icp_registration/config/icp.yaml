@@ -87,6 +87,12 @@
     gicp_fitness_epsilon: 0.0001
     gicp_correspondence_randomness: 12
 
+    # Xingji robust INITIAL requests have a 30 s budget and large coarse
+    # errors. Tracking/legacy retain the six/four-iteration low-latency profile.
+    initial_ndt_maximum_iterations: 20
+    initial_gicp_maximum_iterations: 40
+    initial_gicp_maximum_optimizer_iterations: 12
+
     # Final acceptance gates. `fitness` returned by the Action is the
     # matched-point RMSE in metres, not PCL's squared fitness score.
     metric_maximum_distance: 0.4
@@ -95,6 +101,9 @@
     minimum_planar_eigen_ratio: 0.01
     minimum_matched_points: 350
     maximum_vertical_correction: 0.35
+    # Only robust continuous Xingji tracking; initial/legacy limits stay above.
+    tracking_maximum_rmse: 0.22
+    tracking_maximum_vertical_correction: 0.45
     maximum_tilt_deg: 8.0
     minimum_refined_xy_stddev: 0.05
     refined_yaw_stddev_deg: 5.0

@@ -11,7 +11,9 @@ import json
 import os
 from pathlib import Path
 import signal
+import secrets
 import subprocess
+import sys
 import threading
 import time
 
@@ -25,6 +27,9 @@ from rclpy.node import Node
 from lzp_interface.msg import LaunchStatus
 from lzp_interface.srv import ControlLaunch
 from .saved_map_lock import saved_map_write_busy
+from .launch_process import (
+    KILL_SIGNAL, OWNER_TOKEN_ENV, live_group_members, nav2_process_conflicts,
+)
 
 
 class LaunchManagerService(Node):
@@ -554,11 +559,29 @@ class LaunchManagerService(Node):
                 if self.mode_switch_delay_sec:
                     time.sleep(self.mode_switch_delay_sec)
 
-            if self._get_managed_process(mode) is not None:
-                self.get_logger().info(
-                    f'{mode} is already running; no duplicate launch was '
-                    'created.')
-                return True, f'{mode} is already running.'
+            existing = self._get_managed_process(mode)
+            if existing is not None:
+                if existing.poll() is None:
+                    self.get_logger().info(
+                        f'{mode} is already running; no duplicate launch was '
+                        'created.')
+                    return True, f'{mode} is already running.'
+                stopped, message = self._stop_mode_locked(mode)
+                if not stopped:
+                    return False, f'Cannot restart {mode}: {message}'
+
+            try:
+                conflicts = nav2_process_conflicts()
+            except (OSError, RuntimeError) as error:
+                return False, f'无法确认旧导航进程是否已退出：{error}'
+            if conflicts:
+                details = ', '.join(
+                    f"PID {item['pid']} (PPID {item['ppid']})"
+                    for item in conflicts)
+                message = ('检测到未退出的导航容器 ' + details +
+                           '；本次未启动新进程。请先停止旧后台并清理残留，再重试导航服务。')
+                self.get_logger().error('NAV_LAUNCH_CONFLICT ' + message)
+                return False, message
 
             command = ['ros2', 'launch', self.launch_package, self.LAUNCH_FILES[mode]]
             mapping_filter_mode = None
@@ -571,13 +594,20 @@ class LaunchManagerService(Node):
                 'stdin': subprocess.DEVNULL,
                 'env': self._prepare_fastdds_environment(),
             }
+            owner_token = secrets.token_hex(16)
+            popen_kwargs['env'][OWNER_TOKEN_ENV] = owner_token
             if os.name == 'posix':
-                # Give the launch tree its own process group.  Stopping a mode
-                # then reaches ros2 launch and all nodes it started.
+                # The guard stays alive until every group member exits and
+                # also cleans this group if the backend owner is killed.
                 popen_kwargs['start_new_session'] = True
+                command = [sys.executable, '-m', 'lzp_service.launch_process',
+                           '--owner-pid', str(os.getpid()),
+                           '--shutdown-timeout', str(getattr(self, 'shutdown_timeout_sec', 8.0)),
+                           '--'] + command
 
             try:
                 process = subprocess.Popen(command, **popen_kwargs)
+                process._robot_owner_token = owner_token
             except OSError as error:
                 self.get_logger().error(f'Unable to start {mode}: {error}')
                 return False, f'Unable to start {mode}: {error}'
@@ -594,9 +624,10 @@ class LaunchManagerService(Node):
                 time.sleep(self.startup_check_sec)
             exit_code = process.poll()
             if exit_code is not None:
-                self._remove_process_if_current(mode, process)
+                stopped, cleanup = self._stop_mode_locked(mode)
                 self.get_logger().error(f'{mode} exited during startup (exit code {exit_code}).')
-                return False, f'{mode} exited during startup (exit code {exit_code}).'
+                return False, (f'{mode} exited during startup (exit code {exit_code}).' +
+                               ('' if stopped else ' ' + cleanup))
 
             self.get_logger().info(f'Started {mode} with PID {process.pid}.')
             return True, f'Started {mode}.'
@@ -613,31 +644,27 @@ class LaunchManagerService(Node):
 
         pid = process.pid
         try:
-            self._signal_process_tree(process, signal.SIGTERM)
-            try:
-                process.wait(timeout=self.shutdown_timeout_sec)
-            except subprocess.TimeoutExpired:
+            self._signal_process_tree(process, signal.SIGINT)
+            if not self._wait_process_tree(process, self.shutdown_timeout_sec):
                 self.get_logger().warn(
                     f'{mode} (PID {pid}) did not stop within '
                     f'{self.shutdown_timeout_sec:.1f}s; forcing it to stop.')
-                self._signal_process_tree(process, signal.SIGKILL)
-                try:
-                    process.wait(timeout=self.force_kill_timeout_sec)
-                except subprocess.TimeoutExpired:
+                self._signal_process_tree(process, KILL_SIGNAL)
+                if not self._wait_process_tree(process, self.force_kill_timeout_sec):
                     # Preserve the record so status remains truthful and a
                     # later stop request can retry rather than starting a
                     # conflicting mode.
                     return False, f'{mode} did not stop after a forced kill.'
         except ProcessLookupError:
-            # It exited between poll() and signaling, which is a successful
-            # idempotent stop rather than an error.
+            # Still verify the complete group below; leader exit alone does
+            # not prove that a component container has exited.
             pass
         except OSError as error:
-            if process.poll() is None:
+            if self._process_tree_alive(process):
                 self.get_logger().error(f'Unable to stop {mode} (PID {pid}): {error}')
                 return False, f'Unable to stop {mode}: {error}'
 
-        if process.poll() is None:
+        if self._process_tree_alive(process):
             return False, f'{mode} is still running after the stop request.'
 
         self._remove_process_if_current(mode, process)
@@ -680,16 +707,36 @@ class LaunchManagerService(Node):
     def _signal_process_tree(self, process, signum):
         """Signal the entire launch process group, not only ros2 launch."""
         if os.name == 'posix':
-            os.killpg(os.getpgid(process.pid), signum)
-        elif signum == signal.SIGKILL:
+            # start_new_session fixes PGID=PID; getpgid(leader) fails once the
+            # leader is reaped, while its orphaned children still own the PGID.
+            if (process.poll() is not None and
+                    getattr(process, '_robot_owner_token', None) is not None and
+                    not self._process_tree_alive(process)):
+                return
+            os.killpg(process.pid, signum)
+        elif signum == KILL_SIGNAL:
             process.kill()
         else:
             process.terminate()
 
+    def _process_tree_alive(self, process):
+        if process.poll() is None:
+            return True
+        return os.name == 'posix' and bool(live_group_members(
+            process.pid, owner_token=getattr(process, '_robot_owner_token', None)))
+
+    def _wait_process_tree(self, process, timeout):
+        deadline = time.monotonic() + timeout
+        while self._process_tree_alive(process):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        return True
+
     def _get_managed_process(self, mode):
         with self.process_lock:
             process = self.running_processes.get(mode)
-            if process is not None and process.poll() is not None:
+            if process is not None and not self._process_tree_alive(process):
                 del self.running_processes[mode]
                 self.get_logger().warn(
                     f'{mode} exited unexpectedly (exit code {process.returncode}).')
@@ -706,7 +753,7 @@ class LaunchManagerService(Node):
             exited = [
                 (mode, process.returncode)
                 for mode, process in self.running_processes.items()
-                if process.poll() is not None
+                if not self._process_tree_alive(process)
             ]
             for mode, exit_code in exited:
                 del self.running_processes[mode]

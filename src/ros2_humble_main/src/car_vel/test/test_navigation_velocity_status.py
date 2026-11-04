@@ -15,6 +15,12 @@ class NavigationVelocityStatusTests(unittest.TestCase):
         self.terrain()
 
     def terrain(self, **changes):
+        # These tests isolate velocity presentation, with a healthy independent
+        # localization publisher. Missing/failed localization is tested by the
+        # arbiter and end-to-end recovery suites.
+        self.node._global_localization_callback(NS(data=json.dumps(dict(
+            ready=True,scope='xingji_3d',body_generation=1,
+            stamp_ns=int(self.fixture.now*1e9)))))
         value = dict(safe=True, speed_limit_mps=.25, navigation_mode='terrain_3d',
             navigation_active=True, evidence_source='current_anchored', state='ready',
             reason='保持越障步态，速度由Nav2控制', observed_terrain_type='curb',
@@ -42,7 +48,9 @@ class NavigationVelocityStatusTests(unittest.TestCase):
     def test_expired_controller_command_is_reported_and_not_replayed(self):
         self.fixture.command()
         self.node._tick()
-        self.fixture.now += .35
+        self.fixture.now += .2
+        self.terrain()  # Localization keeps its heartbeat; only cmd_vel ages.
+        self.fixture.now += .15
         self.node._lio_pause_callback(NS(data=False))
         self.node._navigation_pause_callback(NS(data=False))
         self.terrain()
@@ -113,6 +121,22 @@ class NavigationVelocityStatusTests(unittest.TestCase):
         status = self.guard()
         self.assertEqual(status['stream_reason_code'], 'controller_stream_stale')
         self.assertIsNone(status['controller_stream']['request_velocity'])
+        self.assertEqual(self.fixture.last_velocity(), (0., 0.))
+
+    def test_deliberate_velocity_discard_is_not_a_smoother_transport_failure(self):
+        raw = self.fixture.module.Twist()
+        raw.linear.x = .25
+        self.node._controller_diagnostic_callback(raw)
+        self.fixture.command()
+        self.node._navigation_pause_callback(NS(data=True))
+        self.node._navigation_pause_callback(NS(data=False))
+        self.terrain()
+        self.node._tick()
+        status = self.guard()
+        self.assertEqual(status['reason_code'], 'upstream_discarded')
+        self.assertEqual(status['stream_reason_code'], '')
+        self.assertFalse(status['input_fresh'])
+        self.assertIsNone(status['request_velocity'])
         self.assertEqual(self.fixture.last_velocity(), (0., 0.))
 
 

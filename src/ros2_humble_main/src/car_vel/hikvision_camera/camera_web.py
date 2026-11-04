@@ -46,7 +46,7 @@ from ordinary_camera import (CameraSourceStore, HttpCameraSource, DEFAULT_BODY_U
                              validate_config, discover_usb_cameras, check_usb_device,
                              source_kind, source_label)
 from behavior_project import BehaviorSupervisor
-from behavior_speech import BehaviorSpeechService
+from behavior_speech import BehaviorSpeechService, PATROL_SAFETY_KEY
 from c12_control import C12Control, COMMANDS as C12_COMMANDS
 from c12_recording import C12Recorder
 from c12_stream import C12Streams, C12OrdinarySource, VISIBLE_URL, INFRARED_URL
@@ -2461,6 +2461,12 @@ class CameraGateway:
     def inspection_speech(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Proxy only the two fixed inspection environment speech keys."""
         key = str(payload.get("key", "")).strip()
+        if key == PATROL_SAFETY_KEY:
+            if (not self._inspection_task_id or payload.get('task_id') != self._inspection_task_id
+                    or self._inspection_mode not in ('transit', 'inspection')):
+                return dict(success=True, key=key, queued=False)
+            return dict(success=True, key=key, voice_backend='local',
+                        queued=self._behavior_speech.announce_patrol_safety())
         if key not in {"thermal_high", "co2_high"}:
             raise ValueError("环境语音告警类型无效")
         if not self._yolo.status()["running"]:

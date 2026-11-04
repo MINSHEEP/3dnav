@@ -111,6 +111,7 @@ class TestFastDdsPreflight(unittest.TestCase):
 
     def setUp(self):
         self.module = _load_launch_manager_module()
+        self.module.nav2_process_conflicts = lambda: []
         self.logger = _Logger()
         manager_type = self.module.LaunchManagerService
         self.manager = manager_type.__new__(manager_type)

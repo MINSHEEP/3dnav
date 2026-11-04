@@ -88,9 +88,9 @@ vm.runInContext(`function clearThreeDPoseDraft(message = '') {
   navigationPointCloudViewer.clearDraftPose();
   navigationPointCloudViewer.clearPreviewPath();
 }\n${updateUi[0]}\nupdateThreeDPoseUi();`, context);
-assert.strictEqual(context.threeDPoseDraft, null,
-  'a degraded localization/navigation state must invalidate a 3D preview');
-assert(previewCleared, 'a stale preview line must be removed from the viewer');
+assert(context.threeDPoseDraft,
+  'temporary readiness loss must retain evidence while preventing Start');
+assert(!previewCleared, 'a temporary data wait must not erase the preview');
 assert.strictEqual(controls['btn-three-d-start-goal'].disabled, true,
   'a stale preview must not leave Start enabled');
 previewCleared = false;
@@ -101,9 +101,9 @@ context.threeDPoseDraft = {
 context.goalReadinessIssue = () => '';
 context.singleGoalRefreshState = 'refreshed';
 vm.runInContext('updateThreeDPoseUi();', context);
-assert.strictEqual(context.threeDPoseDraft, null,
-  'a successful localization refresh must still invalidate the old preview');
-assert(previewCleared, 'refresh must remove its old preview line');
+assert(context.threeDPoseDraft,
+  'a same-identity stationary refresh must retain the preview');
+assert(!previewCleared, 'refresh alone must not erase the preview');
 context.threeDPoseDraft = {
   kind: 'goal', groundValid: true, busy: false,
   previewId: 'new-preview', previewedAtMs: Date.now(), refreshState: 'refreshed',
@@ -126,6 +126,7 @@ let cloudRenders = 0;
 let cloudClears = 0;
 const identityContext = {
   savedMapCloud: null,
+  recoverActiveRouteMap() {},
   document: { getElementById: () => cloudStatus },
   navigationPointCloudViewer: {
     setPointCloud() { cloudRenders += 1; return { renderedPoints: 3, sourcePoints: 4 }; },

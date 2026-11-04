@@ -180,7 +180,7 @@
                         <label>轮次间隔（分钟）<input id="loop-interval" type="number" min="0" max="100000" step="1" value="30"></label>
                         <label class="checkbox-line full"><input id="bidirectional" type="checkbox">启用往返巡检（每轮方向交替）</label>
                     </div>
-                    <p class="hint">巡检速度沿用导航页面的 Nav2 参数。未启用往返且有下一轮时，机器人会先直接返回路线起点，返程不检测。</p>
+                    <p class="hint">巡检前向速度上限沿用设置页的导航速度档位。启用往返时，请至少设置 2 轮，返程也执行检测。未启用往返且有下一轮时，机器人会先直接返回路线起点，返程不检测。</p>
                     <p class="hint">星玑 3D 巡检全程固定越障模式。可通行平地、台阶、坡道和粗糙地面共用导航速度上限，不再按地形额外调速或等待提速确认；检测点停留和任务暂停仍正常停车。越障反馈失效时零速停车。</p>
                 </section>
                 <section class="section">
@@ -281,7 +281,7 @@
         inspectionPointCloudViewer = new window.PointCloudViewer(
             document.getElementById('inspection-pointcloud-canvas'),
             document.getElementById('map-wrapper'),
-            { maxPoints: 120000, fullResolution: true }
+            { maxPoints: 120000, fullResolution: true, markerScale: 0.25 }
         );
     } catch (error) {
         const status = document.getElementById('inspection-pointcloud-status');
@@ -311,7 +311,6 @@
         map_2d: '2D地图导航', terrain_3d: '3D地形增强导航'
     };
     const THREE_D_STATUS_MAX_AGE_MS = 6000;
-    const THREE_D_PREVIEW_MAX_AGE_MS = 18000;
 
     let session;
     let standingConfirmed = false;
@@ -349,6 +348,8 @@
     let cameraStateTimer = null;
     let thermalConfigVersion = null;
     let serviceBusy = false;
+    let inspectionStartPending = false;
+    let inspectionStartCancelPending = false;
     let storageWarningShown = false;
     let inspectionDraft = draftStore.load();
     let draftRestoreInFlight = false;
@@ -742,9 +743,6 @@
             || (localizedMapName && localizedMapName !== loadedMapName)) {
             return '请先确认站立、Nav2 和当前地图定位。';
         }
-        if (document.getElementById('bidirectional').checked) {
-            return '3D 巡检暂不支持往返方向交替；请取消勾选，或切换 2D 模式。';
-        }
         return '';
     }
 
@@ -757,7 +755,7 @@
             })).sort((a, b) => a.route_point_id - b.route_point_id),
             map_name: loadedMapName, map_load_id: currentMapLoadId,
             mode: effectiveNavigationMode(), body_generation: robotBodyGeneration,
-            localization_ready: localizationReady, localized_map: localizedMapName,
+            localized_map: localizedMapName,
             loop_count: Math.max(1, Math.trunc(Number(
                 document.getElementById('loop-count').value) || 1)),
             bidirectional: document.getElementById('bidirectional').checked
@@ -767,7 +765,6 @@
     function currentThreeDPreview() {
         const preview = threeDRoutePreview;
         return preview && preview.previewId
-            && Date.now() - preview.atMs < THREE_D_PREVIEW_MAX_AGE_MS
             && preview.fingerprint === threeDPreviewFingerprint()
             && !threeDRouteIssue() ? preview : null;
     }
@@ -777,7 +774,9 @@
         const issue = threeDBaseIssue();
         if (issue && (threeDInitialDraft || threeDRoutePreview)) {
             clearThreeDInitialDraft();
-            invalidateThreeDPreview(issue);
+        }
+        if (threeDRoutePreview && threeDRoutePreview.fingerprint !== threeDPreviewFingerprint()) {
+            invalidateThreeDPreview('地图、路线或任务配置变化，请重新预览。');
         }
         const topView = inspectionPointCloudViewer && inspectionPointCloudViewer.isTopView();
         const initialReady = !issue && !serviceBusy && initialPoseMode && topView
@@ -1197,7 +1196,9 @@
         document.getElementById('btn-skip-task').disabled =
             !active || paused || !SKIPPABLE_TASK_STATES.has(taskState.state)
             || serviceBusy;
-        document.getElementById('btn-cancel-task').disabled = !active || serviceBusy;
+        document.getElementById('btn-cancel-task').disabled = inspectionStartPending
+            ? inspectionStartCancelPending : (!active || serviceBusy);
+        document.getElementById('btn-cancel-task').textContent = inspectionStartPending ? '取消启动' : '终止任务';
         document.querySelectorAll('#tab-settings input').forEach((input) => {
             input.disabled = active;
         });
@@ -1608,12 +1609,14 @@
             return;
         }
         if (terrain3d && currentThreeDPreview() !== preview) {
-            log('保存检测点模板期间，三维巡检预览已过期或配置发生变化；请重新预览后再启动。');
+            log('保存检测点模板期间，三维巡检预览或配置发生变化；请重新预览后再启动。');
             updateUi();
             return;
         }
         serviceBusy = true;
+        inspectionStartPending = true;
         updateUi();
+        log('正在确认巡检启动和路线预约；可点击“取消启动”。');
         try {
             const result = await session.call(
                 '/inspection/start', UI.TYPES.startInspectionTask,
@@ -1636,12 +1639,31 @@
         } catch (error) {
             log(`启动巡检任务失败：${error.message || error}`);
         } finally {
-            serviceBusy = false;
+            inspectionStartPending = false;
+            serviceBusy = inspectionStartCancelPending;
             updateUi();
         }
     }
 
     async function controlTask(command) {
+        if (inspectionStartPending && command === 'cancel') {
+            if (inspectionStartCancelPending) return;
+            inspectionStartCancelPending = true;
+            updateUi();
+            try {
+                const result = await session.call('/inspection/control', UI.TYPES.controlInspectionTask, { command });
+                if (!result.success) throw new Error(result.message || '取消启动失败');
+                invalidateThreeDPreview('启动已取消；重新启动前请重新预览。');
+                log(result.message);
+            } catch (error) {
+                log(`取消启动失败：${error.message || error}`);
+            } finally {
+                inspectionStartCancelPending = false;
+                if (!inspectionStartPending) serviceBusy = false;
+                updateUi();
+            }
+            return;
+        }
         if (!taskState.active || serviceBusy) return;
         const pauseControls = pauseControlState(taskState);
         if (command === 'resume' && !pauseControls.canResume) {
@@ -1856,6 +1878,10 @@
         const mapLoadId = currentMapLoadId;
         const routeId = Number(route.id);
         const requestSession = session;
+        const bidirectional = document.getElementById('bidirectional').checked;
+        const loopCount = Math.max(1, Math.trunc(Number(
+            document.getElementById('loop-count').value) || 1));
+        const includesReturn = bidirectional && loopCount > 1;
         threeDNotice = '正在逐段校验路线；静止定位过期时自动请求无运动刷新，不会启动巡检。';
         serviceBusy = true;
         updateUi();
@@ -1864,9 +1890,7 @@
                 '/navigation/preview_3d_route', UI.TYPES.preview3dRoute,
                 { route_id: routeId, start_point_id: 0, point_limit: 0,
                     reverse: false, map_name: mapName, map_load_id: mapLoadId,
-                    loop_count: Math.max(1, Math.trunc(Number(
-                        document.getElementById('loop-count').value) || 1)),
-                    continuous: false },
+                    loop_count: loopCount, continuous: false, bidirectional },
                 90000);
             if (generation !== threeDPreviewGeneration
                 || session !== requestSession || !requestSession.connected
@@ -1900,8 +1924,8 @@
             threeDRoutePreview = {
                 previewId: String(result.preview_id), fingerprint, atMs: Date.now()
             };
-            threeDNotice = `整条路线预览通过（${points.length} 个路径点）；`
-                + '请在 18 秒内检查后点击“开始任务”，否则重新预览。'
+            threeDNotice = `${includesReturn ? '往返路线' : '整条路线'}预览通过（${points.length} 个路径点）；`
+                + '预览不设操作倒计时；地图、路线或配置改变后需重新预览，开始时复核当前定位与路径。'
                 + '预览不证明近场没有新出现的坑洞。';
             log(threeDNotice);
         } catch (error) {

@@ -16,6 +16,9 @@ window.__refreshFixture = {
     prepare: async () => {
         loadedMapName='fixture_map'; navigationMapReady=true; pendingMapName='';
         currentMapLoadName=loadedMapName; currentMapLoadId='load-1';
+        unified3DStatus={scope:'xingji_3d', transform_model:'se3_map_odom_v1',
+            map_name:loadedMapName, map_load_id:currentMapLoadId, body_generation:1, ready:true};
+        unified3DStatusAtMs=Date.now();
         navigationSafetyReady=true; localizationReady=true;
         localizationHealth=LOCALIZATION_HEALTH.GOOD;
         lioFaultLatched=false; navigationActive=false; relocalizationActive=false;
@@ -108,6 +111,9 @@ window.__refreshFixture = {
         await page.goto('http://navigation.test/navigation.html');
         await page.waitForFunction(()=>window.__refreshFixture&&window.__refreshFixture.ready());
         heartbeat=setInterval(()=>{
+            publish('/localization/status',{data:JSON.stringify({scope:'xingji_3d',
+                transform_model:'se3_map_odom_v1',map_name:'fixture_map',map_load_id:'load-1',
+                body_generation:1,ready:true})});
             publish('/robot_body/status',{data:JSON.stringify(body)});
             publish('/navigation/mode',{data:JSON.stringify({mode:'terrain_3d',goal_preflight_pose_max_age_sec:3})});
         },500);
@@ -129,8 +135,7 @@ window.__refreshFixture = {
         await page.waitForFunction(()=>!document.querySelector('#btn-three-d-start-goal').disabled);
         assert.equal(starts,0,'preview must never start navigation');
         await page.waitForTimeout(3200);
-        assert(wire.some(message=>message.op==='call_service'&&message.service==='/request_nomotion_update'),
-            'reading a preview must maintain localization without issuing navigation');
+        assert.equal(starts, 0, 'authority heartbeats maintain readiness without issuing navigation');
         assert(await start.isEnabled());
         assert.equal(starts,0);
         await page.evaluate(()=>window.__refreshFixture.age());

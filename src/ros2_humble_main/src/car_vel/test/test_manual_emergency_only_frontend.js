@@ -19,7 +19,7 @@ function context(mode = 'single') {
         routeExecutionStatus: {mode}, latestGlobalPlanPoints: [],
         mapSnapshotRecovery: {cancel() {ctx.snapshotCancelled=true;}},
         savedMapCloud: {dispose() {ctx.fullMapDisposed=true;}},
-        stopThreeDPreviewPoseRefresh() {}, navigationSafetyRetryTimer: null, localizationWatchdogTimer: null,
+        stopThreeDPreviewPoseRefresh() {}, automaticTerrainWatchdogTimer: null, navigationSafetyRetryTimer: null, localizationWatchdogTimer: null,
         clearRelocalizationWatchdog() {}, clearNoMotionUpdateRequests() {}, requestRelocalizationCancel() {},
         clearGlobalPlan() {}, setGlobalPlanStatus() {}, mapCanvas: {clearGoalPose() {}},
         localizationReady: true, localizationHealth: 'good', localizationHealthReason: '',

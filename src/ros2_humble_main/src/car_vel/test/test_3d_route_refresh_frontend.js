@@ -42,7 +42,7 @@ function context() {
     ctx.requestNoMotionUpdate = async () => {calls.push('/request_nomotion_update'); return true;};
     vm.createContext(ctx);
     for (const name of ['clearThreeDRoutePreview', 'stopThreeDRoutePoseRefresh',
-        'maintainThreeDRoutePoseFreshness', 'threeDRoutePreviewFresh',
+        'maintainThreeDRoutePoseFreshness', 'threeDRoutePreviewFresh', 'threeDRoutePreviewMatches',
         'previewThreeDRoute', 'startRouteNavigation']) vm.runInContext(method(name), ctx);
     return ctx;
 }
@@ -56,7 +56,8 @@ function context() {
         await ctx.timers.shift()();
     }
     assert(ctx.calls.filter(x => x === '/request_nomotion_update').length > 1);
-    assert.equal(ctx.now, 19000, 'maintenance ends at 18-second preview expiry');
+    assert.equal(ctx.now, 19000, 'stationary updates are bounded to 18 requests; preview remains valid');
+    assert(vm.runInContext('threeDRoutePreviewFresh()', ctx), 'bounded refresh must not expire unchanged preview');
     assert(!ctx.calls.includes('/start_route'), 'preview and its timer never start navigation');
 
     for (const change of ['clear', 'disconnect', 'map', 'body', 'localization', 'busy', 'failure']) {

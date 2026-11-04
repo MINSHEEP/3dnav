@@ -51,6 +51,7 @@ const identity = navigation.match(/function trackCurrentMapLoadIdentity\(message
 const issue = navigation.match(/function threeDInteractionIssue\(nowMs = Date\.now\(\)\) \{[^]*?\n    \}/)[0];
 const context = {
   savedMapCloud: null,
+  recoverActiveRouteMap() {},
   terrainReloadRequired: { mapName: 'map_a', loadId: 'old' },
   currentMapLoadName: 'map_a', currentMapLoadId: 'old',
   loadedMapName: 'map_a', pendingMapName: '', navigationMapReady: true,

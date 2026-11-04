@@ -16,6 +16,8 @@ def harness():
     names = ('_preview_3d_route_callback', '_plan_3d_route_segments',
              '_validate_3d_route_segments', '_route_preview_points', '_route_digest',
              '_preview_3d_snapshot', '_preview_3d_snapshot_matches', '_pose_yaw',
+             '_preview_3d_change_reason',
+             '_preview_3d_identity_matches', '_recheck_3d_start',
              '_verify_3d_route_start_ticket',
              '_reserve_3d_inspection_route_callback', '_prepare_3d_route_start',
              '_reserve_3d_inspection_route_checked', '_prepare_3d_route_start_checked')
@@ -49,6 +51,21 @@ def harness():
 
 
 class RouteRefreshTests(unittest.TestCase):
+    def test_preview_reports_measured_start_shift_instead_of_generic_staleness(self):
+        node, request, _ = harness()
+        real_plan = node._plan_3d_route_segments
+        def plan(*args):
+            result = real_plan(*args)
+            node._latest_amcl_pose.pose.pose.position.x += .3
+            return result
+        node._plan_3d_route_segments = plan
+        response = node._preview_3d_route_callback(request, NS())
+        self.assertFalse(response.valid)
+        self.assertEqual(response.code, 'preview_stale')
+        self.assertIn('起点平移 0.300 m', response.message)
+        self.assertIsNone(node._preview_token)
+        self.assert_no_motion(node)
+
     def advance_stationary(self, node, clock, seconds=4):
         clock.now += seconds
         node._robot_body_received_at = clock.now
@@ -102,6 +119,38 @@ class RouteRefreshTests(unittest.TestCase):
         self.assertFalse(replay.allowed)
         self.assertIsNone(ticket)
 
+    def test_explicit_route_start_waits_for_short_sensor_recovery(self):
+        node,request,clock=harness()
+        preview=node._preview_3d_route_callback(request,NS())
+        self.assertTrue(preview.valid)
+        request.preview_id=preview.preview_id
+        start=clock.now
+        node._global_localization_check=lambda: (
+            NS(allowed=False,code='global_localization_recovering',message='sensor hold')
+            if clock.now < start+.4 else None)
+        result,ticket=node._prepare_3d_route_start(request)
+        self.assertTrue(result.allowed,result.message)
+        self.assertIsNotNone(ticket)
+        self.assertIsNone(node._preview_token)
+        self.assert_no_motion(node)
+
+    def test_stop_or_replacement_during_explicit_start_wait_prevents_late_start(self):
+        for change in ('cancel','replacement'):
+            node,request,clock=harness()
+            preview=node._preview_3d_route_callback(request,NS())
+            request.preview_id=preview.preview_id
+            node._global_localization_check=lambda:NS(
+                allowed=False,code='global_localization_recovering',message='sensor hold')
+            def interrupt():
+                if change=='cancel':node._preview_request_generation+=1
+                else:node._preview_token={'id':'newer-preview'}
+            clock.on_sleep=interrupt
+            result,ticket=node._prepare_3d_route_start(request)
+            self.assertFalse(result.allowed)
+            self.assertEqual(result.code,'preview_canceled')
+            self.assertIsNone(ticket)
+            self.assert_no_motion(node)
+
     def test_manual_refresh_rejects_changed_evidence_and_expired_confirmation(self):
         for change in ('position', 'yaw', 'map', 'terrain', 'body', 'route',
                        'cancel', 'replacement', 'expiry', 'timeout', 'segments'):
@@ -114,7 +163,7 @@ class RouteRefreshTests(unittest.TestCase):
                 def update(_):
                     pose = sample(21_000_000_000)
                     if change == 'position':
-                        pose.pose.pose.position.x += 0.3
+                        pose.pose.pose.position.x += 0.5
                     elif change == 'yaw':
                         pose.pose.pose.orientation.z = 0.5
                         pose.pose.pose.orientation.w = 0.8660254
@@ -136,8 +185,7 @@ class RouteRefreshTests(unittest.TestCase):
                     elif change == 'expiry':
                         clock.now += 30
                     elif change == 'segments':
-                        node._validate_3d_route_segments = lambda *a: (
-                            NS(allowed=False, code='blocked', message='blocked'), None)
+                        node._traversability_grid.data.costs[1][1] = 100
                     return Future()
                 node._nomotion_update_client.call_async.side_effect = (
                     (lambda _: Future()) if change == 'timeout' else update)
@@ -168,6 +216,71 @@ class RouteRefreshTests(unittest.TestCase):
         self.assertEqual(node._inspection_route_authorization['owner_token'], 'inspection-1')
         self.assert_no_motion(node)
 
+    def test_round_trip_previews_both_directions_and_authorizes_return(self):
+        node, request, _ = harness()
+        route = node._database.get_route(8)
+        route['points'].append({'id': 2, 'x': 4.2, 'y': 1.2})
+        node._database.get_route = lambda _: copy.deepcopy(route)
+        node._traversability_grid = fixtures._Grid([[0] * 8 for _ in range(5)])
+        planned_goals = []
+
+        blocked_return = True
+
+        def plan(goal):
+            start, end = goal.start.pose.position, goal.goal.pose.position
+            planned_goals.append(end.x)
+            status = 6 if blocked_return and start.x > end.x else 4
+            result = NS(status=status, result=NS(
+                path=fixtures._path((start.x, start.y), (end.x, end.y))))
+            return Future(NS(accepted=True, get_result_async=lambda: Future(result)))
+
+        node._preview_action_client.send_goal_async.side_effect = plan
+        request.bidirectional, request.loop_count = True, 2
+        failed = node._preview_3d_route_callback(request, NS())
+        self.assertFalse(failed.valid)
+        self.assertEqual(failed.code, 'planner_failed')
+        self.assertIsNone(node._preview_token)
+
+        blocked_return = False
+        planned_goals.clear()
+        preview = node._preview_3d_route_callback(request, NS())
+        self.assertTrue(preview.valid, preview.message)
+        self.assertEqual(planned_goals, [3.2, 4.2, 3.2])
+        request.preview_id, request.owner_token = preview.preview_id, 'inspection-1'
+        reserved = node._reserve_3d_inspection_route_callback(request, NS())
+        self.assertTrue(reserved.success, reserved.message)
+        node._inspection_task_active = True
+        node._inspection_task_id = request.owner_token
+        request.loop_count, request.reverse = 1, True
+        result, ticket = node._prepare_3d_route_start(request)
+        self.assertTrue(result.allowed, result.message)
+        self.assertIsNotNone(ticket)
+        self.assertEqual(planned_goals[-2:], [4.2, 3.2])
+        self.assert_no_motion(node)
+
+    def test_round_trip_cannot_use_a_forward_only_preview(self):
+        node, request, _ = harness()
+        preview = node._preview_3d_route_callback(request, NS())
+        self.assertTrue(preview.valid, preview.message)
+        request.preview_id, request.owner_token = preview.preview_id, 'inspection-1'
+        request.bidirectional = True
+        result = node._reserve_3d_inspection_route_callback(request, NS())
+        self.assertFalse(result.success)
+        self.assertIsNone(node._inspection_route_authorization)
+
+        request.bidirectional = False
+        preview = node._preview_3d_route_callback(request, NS())
+        self.assertTrue(preview.valid, preview.message)
+        request.preview_id = preview.preview_id
+        self.assertTrue(node._reserve_3d_inspection_route_callback(request, NS()).success)
+        node._inspection_task_active = True
+        node._inspection_task_id = request.owner_token
+        request.reverse = True
+        result, ticket = node._prepare_3d_route_start(request)
+        self.assertEqual(result.code, 'inspection_direction_unpreviewed')
+        self.assertIsNone(ticket)
+        self.assert_no_motion(node)
+
     def test_inspection_reservation_timeout_grants_no_lease(self):
         node, request, clock = harness()
         preview = node._preview_3d_route_callback(request, NS())
@@ -188,7 +301,7 @@ class RouteRefreshTests(unittest.TestCase):
         self.advance_stationary(node, clock)
         def update(_):
             corrected = sample(21_000_000_000)
-            corrected.pose.pose.position.x += 0.3
+            corrected.pose.pose.position.x += 0.5
             node._amcl_pose_callback(corrected)
             return Future()
         node._nomotion_update_client.call_async.side_effect = update
@@ -213,6 +326,29 @@ class RouteRefreshTests(unittest.TestCase):
         self.assertTrue(result.allowed, result.message)
         self.assertEqual(ticket['owner_token'], request.owner_token)
         self.assertEqual(node._preview_action_client.send_goal_async.call_count, 2)
+        self.assert_no_motion(node)
+
+    def test_authorized_patrol_point_boundary_waits_for_short_match_recovery(self):
+        node,request,clock=self.patrol()
+        start=clock.now
+        node._global_localization_check=lambda: (
+            NS(allowed=False,code='global_localization_recovering',message='hold')
+            if clock.now < start+.3 else None)
+        result,ticket=node._prepare_3d_route_start(request)
+        self.assertTrue(result.allowed,result.message)
+        self.assertEqual(ticket['owner_token'],'inspection-1')
+        self.assertGreaterEqual(clock.now-start,.3)
+        self.assertLess(clock.now-start,2.1)
+        self.assert_no_motion(node)
+
+    def test_cancel_during_patrol_match_wait_revokes_continuation(self):
+        node,request,clock=self.patrol()
+        node._global_localization_check=lambda:NS(
+            allowed=False,code='global_localization_recovering',message='hold')
+        clock.on_sleep=lambda:setattr(node,'_inspection_route_authorization',None)
+        result,ticket=node._prepare_3d_route_start(request)
+        self.assertFalse(result.allowed)
+        self.assertIsNone(ticket)
         self.assert_no_motion(node)
 
     def test_patrol_pause_cancel_or_new_generation_cannot_reuse_refresh(self):

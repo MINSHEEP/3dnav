@@ -145,7 +145,10 @@ class Nav2TimingProfileNode(Node):
     def _tick(self):
         now = time.monotonic()
         self._observe_controller_instance()
-        mode = self._mode if now - self._mode_at <= 2.0 else ''
+        # A navigation mode is a latched configuration event, not a sensor
+        # heartbeat. Silence cannot revoke an already confirmed parameter or
+        # reset its fallback. Explicit changes/invalid messages still update it.
+        mode = self._mode
         body = self._body if now - self._body_at <= 2.0 else ''
         active = self._active or now - self._active_at > 1.0
         self._policy.set_context(mode, body, active=active,
@@ -198,6 +201,9 @@ class Nav2TimingProfileNode(Node):
         status = self._policy.status()
         status.update(stamp_ns=self.get_clock().now().nanoseconds,
             navigation_mode=mode, body_id=body, navigation_active=active,
+            mode_message_age_sec=(round(now-self._mode_at, 3) if self._mode else None),
+            mode_context_source='latched_configuration',
+            activity_confirmed=0.0 <= now-self._active_at <= 1.0,
             controller_gid=self._controller_gid,
             actual_verified_age_sec=(round(now - self._last_read, 3) if self._last_read else None),
             baseline_params_file_note='基线来自实际回读；持久记录用于节点重启恢复',
@@ -205,6 +211,7 @@ class Nav2TimingProfileNode(Node):
         message = ('控制器候选轨迹计算量已降低，速度和指令有效期保持原设置'
                    if status['ready'] and status['actual_batch_size'] != status['baseline_batch_size']
                    else '已使用原控制器参数' if status['ready'] else
+                   '等待有效的导航模式和本体配置，未修改控制器参数' if status['profile'] == 'unknown' else
                    '等待导航空闲后同步控制器计算配置' if active else
                    '正在同步控制器计算配置')
         if status['error']:

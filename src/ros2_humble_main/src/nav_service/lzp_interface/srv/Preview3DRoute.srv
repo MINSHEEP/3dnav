@@ -7,6 +7,8 @@ int32 loop_count
 bool continuous
 string map_name
 string map_load_id
+# Preview the forward and return legs for alternating inspection rounds.
+bool bidirectional
 ---
 bool valid
 string code

@@ -20,7 +20,7 @@ for (const token of [
 
 for (const token of [
   "subscribe('/terrain_observation'", "subscribe('/terrain_costmap/status'",
-  "subscribe('/Odometry'", "subscribe('/amcl_pose'",
+  "subscribe('/Odometry'", "subscribe('/localization/navigation_pose'",
   '实时地形', '任务执行中禁止修改',
 ]) {
   if (!html.includes(token)) throw new Error(`missing live safety contract: ${token}`);
