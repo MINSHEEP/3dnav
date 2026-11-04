@@ -1,0 +1,7 @@
+# 请求
+lzp_interface/Waypoint waypoint
+---
+# 响应
+int32 id
+bool success
+string message

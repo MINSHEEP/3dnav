@@ -1,0 +1,129 @@
+schema: ros2_mid360_localization_map
+version: 1
+map_name: ceshi3_remap1
+frame_id: map
+pcd_file: ceshi3_remap1.pcd
+point_count: 41822
+pcd_size_bytes: 502036
+pcd_sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c
+voxel_size: 0.1
+created_at_utc: '2026-10-10T08:08:27.560457+00:00'
+map_geometry:
+  image: ceshi3_remap1.pgm
+  width: 1038
+  height: 495
+  resolution: 0.05000000074505806
+  origin:
+  - -17.65
+  - -15.9
+  - 0.0
+  negate: 0
+  occupied_thresh: 0.65
+  free_thresh: 0.196
+terrain_grid:
+  schema: quadruped_terrain_grid
+  version: 1
+  filename: ceshi3_remap1.terrain.npz
+  map_name: ceshi3_remap1
+  frame_id: map
+  source_pcd_sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c
+  size_bytes: 91514
+  sha256: 84ba200218249a52484755ef5ac371f9e18a22ff180e3797de46a1ec8fac3611
+  resolution: 0.25
+  width: 202
+  height: 101
+  origin_x: -16.0
+  origin_y: -15.5
+  cell_count: 20402
+  known_cells: 4911
+  blocked_cells: 1059
+  generation:
+    algorithm: free_space_lower_envelope_v2
+    parameters:
+      blocked_slope_deg: 28.0
+      blocked_step_m: 0.18
+      caution_slope_deg: 12.0
+      caution_step_m: 0.08
+      maximum_cells: 400000
+      minimum_confidence: 0.35
+      overhead_min_clearance_m: 0.75
+      overhead_search_radius_m: 1.0
+      resolution: 0.25
+      roughness_caution_m: 0.05
+      special_slope_deg: 18.0
+      special_step_m: 0.12
+    quality:
+      blocked_supported_cells: 741
+      component_count: 70
+      coverage_ratio: 0.624168
+      known_supported_cells: 4406
+      largest_component_cells: 3464
+      largest_component_ratio: 0.945157
+      state: ready
+      supported_free_cells: 7059
+      traversable_supported_cells: 3665
+      warnings: []
+    source: complete_localization_pcd
+    source_pcd_sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c
+coordinate_system:
+  map_frame: map
+  pcd_frame: map
+  capture_frame: odom
+  projected_map_frame: odom
+  pcd_to_map: identity
+  compatibility: The saved 2D map and PCD share mapping-session odom coordinates,
+    which become the saved map frame on reload.
+pcd:
+  file: ceshi3_remap1.pcd
+  point_count: 41822
+  size_bytes: 502036
+  sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c
+localization_pcd:
+  filename: ceshi3_remap1.pcd
+  point_count: 41822
+  size_bytes: 502036
+  sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c
+  format: binary
+  fields:
+  - x
+  - y
+  - z
+  voxel_size: 0.1
+  filter:
+    type: distinct_frame_voxel_persistence
+    mode: protected
+    min_observations: 6
+    observation_stride: 3
+    received_frames: 2074
+    sampled_frames: 692
+    tracked_voxels: 155568
+    ground_preservation:
+      enabled: true
+      cell_size: 0.2
+      max_height_above_envelope: 0.08
+      max_slope_deg: 30.0
+      min_neighbor_cells: 3
+      min_observations: 3
+      min_stable_span_frames: 6
+      protected_voxels_at_save: 13084
+capture:
+  source_topic: /cloud_registered
+  projected_map_topic: /projected_map
+  projected_map_stamp_ns: 1791619705936616659
+  pcd_capture_unix_ns: 1791619707105494241
+files:
+  map_yaml:
+    filename: ceshi3_remap1.yaml
+    size_bytes: 153
+  map_image:
+    filename: ceshi3_remap1.pgm
+    size_bytes_at_creation: 513826
+  localization_pcd:
+    filename: ceshi3_remap1.pcd
+    size_bytes: 502036
+    sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c
+  terrain_grid:
+    filename: ceshi3_remap1.terrain.npz
+    size_bytes: 91514
+    sha256: 84ba200218249a52484755ef5ac371f9e18a22ff180e3797de46a1ec8fac3611
+    source_pcd_sha256: ccb1245ab4bbb7d89aeaee026e22d7e668e99655c4e9a728b33a3beefe6cc90c

@@ -1,0 +1,5 @@
+# Keep Ultralytics dependency resolution on CPU-only PyTorch.  The installer
+# adds the official PyTorch CPU index while applying these exact local-version
+# pins, so a general PyPI mirror cannot replace them with a CUDA build.
+torch==2.10.0+cpu
+torchvision==0.25.0+cpu

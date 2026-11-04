@@ -1,0 +1,6 @@
+string mode
+---
+bool success
+string message
+string mode
+uint64 version

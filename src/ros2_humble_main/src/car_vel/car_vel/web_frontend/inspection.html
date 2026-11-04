@@ -1,0 +1,2515 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>巡检任务 · 四足机器人巡检</title>
+    <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
+    <link rel="stylesheet" href="inspection.css?v=20261027-behavior-controls">
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
+    <script src="velocity_guard_widget.js?v=20261103-terrain-advisory"></script>
+    <script src="pointcloud_viewer.js?v=20261022-complete-pcd"></script>
+    <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
+    <script src="air_quality_widget.js?v=20261102-detection"></script>
+    <script src="behavior_widget.js?v=20261103-frame-cache"></script>
+    <script src="inspection_draft_state.js?v=20260811-page-reentry"></script>
+</head>
+<body>
+<div class="app-shell inspection-app">
+    <header class="topbar">
+        <div class="brand">四足机器人巡检</div>
+        <nav class="page-nav" aria-label="功能页面">
+            <a href="mapping.html">建图</a>
+            <a href="map_editor.html">修图</a>
+            <a href="navigation.html">地形导航</a>
+            <a href="campus_navigation.html">园区导航</a>
+            <a class="active" href="inspection.html" aria-current="page">巡检任务</a>
+            <a href="inspection_reports.html">巡检报告</a>
+            <a href="recognition_records.html">人车识别</a>
+            <a href="remote_control.html">遥控</a>
+            <a href="camera.html">USB相机</a>
+            <a href="settings.html">设置</a>
+        </nav>
+        <div class="topbar-statuses">
+            <div id="battery-status" class="battery-status stale">电量 --（状态失联）</div>
+            <div id="camera-top-status" class="page-status">○ 相机检查中</div>
+            <div id="task-top-status" class="page-status">○ 暂无任务</div>
+            <div id="connection-status" class="page-status">○ 正在连接 ROS2…</div>
+        </div>
+    </header>
+
+    <main class="inspection-workspace">
+        <aside class="inspection-column" aria-label="USB相机与检测点配置">
+            <section class="section">
+                <div class="section-title">普通相机与热成像</div>
+                <div class="inspection-camera-grid">
+                    <div class="inspection-camera-panel">
+                        <strong>普通摄像头</strong>
+                        <div id="camera-frame" class="inspection-camera-frame">
+                            <img id="camera-image" alt="普通摄像头实时画面（来源由设置页选择）">
+                            <div class="camera-badges">
+                                <span id="camera-view-badge" class="camera-badge">YOLO 结果</span>
+                                <span id="camera-mode-badge" class="camera-badge">模式 --</span>
+                            </div>
+                            <div id="camera-message" class="inspection-camera-message">正在连接相机视频…</div>
+                        </div>
+                    </div>
+                    <div class="inspection-camera-panel">
+                        <strong>热成像</strong>
+                        <div id="thermal-camera-frame" class="inspection-camera-frame thermal">
+                            <img id="thermal-camera-image" alt="USB热成像实时画面">
+                            <div class="camera-badges">
+                                <span id="thermal-temperature-badge" class="camera-badge">最高温 -- ℃</span>
+                                <span id="thermal-alarm-badge" class="camera-badge">检测 --</span>
+                            </div>
+                            <div id="thermal-camera-message" class="inspection-camera-message">正在连接热成像…</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="camera-mini-grid">
+                    <div><span>采集设备</span><strong id="camera-device">/dev/video0</strong></div>
+                    <div><span>观察方式</span><strong id="camera-view">固定视角</strong></div>
+                    <div><span>画面帧龄</span><strong id="camera-age">--</strong></div>
+                    <div><span>热成像状态</span><strong id="thermal-camera-state">检查中</strong></div>
+                    <div><span>当前最高温</span><strong id="thermal-camera-temperature">-- ℃</strong></div>
+                    <div><span>生效阈值</span><strong id="thermal-camera-threshold">-- ℃</strong></div>
+                </div>
+                <div id="inspection-behavior" class="behavior-controls" aria-label="人员行为识别设置与状态"></div>
+                <form id="inspection-thermal-config" class="inspection-thermal-config">
+                    <label id="inspection-threshold-label" for="inspection-thermal-threshold">巡检高温报警阈值</label>
+                    <div class="row">
+                        <input id="inspection-thermal-threshold" class="flex" type="number" step="0.1" required>
+                        <span>℃</span>
+                        <button id="btn-inspection-threshold" type="submit">应用阈值</button>
+                    </div>
+                    <p id="inspection-threshold-help" class="hint">任务未启动时修改全局巡检默认值；任务运行时仅修改本次任务。</p>
+                </form>
+                <div class="row inspection-camera-actions" style="margin-top:10px">
+                    <button id="btn-camera-view" class="flex" type="button">切换原始画面</button>
+                    <button id="btn-behavior-view" class="flex" type="button">查看行为画面</button>
+                    <button id="btn-camera-reconnect" class="flex" type="button">重连视频</button>
+                    <button id="btn-camera-fullscreen" class="flex" type="button">全屏</button>
+                    <button id="btn-camera-snapshot" class="flex" type="button">截图</button>
+                    <button id="btn-thermal-fullscreen" class="flex" type="button">热图全屏</button>
+                </div>
+                <p id="camera-hint" class="hint">任务运行时复用两路共享视频；检测点稳定 1 秒后并行进行视觉与高温精检 2 秒。</p>
+            </section>
+
+            <section class="section">
+                <div class="section-title">环境传感器（M701）</div>
+                <div id="inspection-air-quality" data-air-quality-widget aria-live="polite"></div>
+            </section>
+
+            <section class="section">
+                <div class="section-title">路线检测点配置</div>
+                <p class="hint" style="margin-top:0">勾选路线点后，固定视角精检一次；3D 模式也可点击点云地图上的编号点切换检测点。可选择是否保存原图和 YOLO 标注图。</p>
+                <div id="checkpoint-list" class="checkpoint-list" style="margin-top:9px">
+                    <div class="inspection-empty">请先在地图上方加载地图并选择路线</div>
+                </div>
+                <div class="row" style="margin-top:10px">
+                    <button id="btn-save-template" class="primary flex" type="button" disabled>保存为该路线长期模板</button>
+                </div>
+            </section>
+        </aside>
+
+        <section class="inspection-map-column" aria-label="巡检地图">
+            <div class="inspection-map-toolbar">
+                <select id="map-selector" aria-label="已保存地图"><option value="">正在读取地图…</option></select>
+                <button id="btn-load-map" class="primary" type="button">加载地图</button>
+                <select id="route-selector" aria-label="巡检路线"><option value="">请先加载地图</option></select>
+                <button id="btn-refresh-routes" type="button" disabled>刷新路线</button>
+                <button id="btn-initial-mode" type="button" disabled>设置初始位置</button>
+            </div>
+            <div id="inspection-3d-toolbar" class="inspection-3d-toolbar" hidden>
+                <span id="inspection-3d-action-status" aria-live="polite">等待当前地图的三维点云与地面校验。</span>
+                <a class="button-link" href="navigation.html" title="在地形导航的三维点云图中新增、移动和保存路线点">在三维导航页编辑路线</a>
+                <button id="btn-inspection-confirm-initial" type="button" disabled>确认三维初始点</button>
+                <button id="btn-inspection-preview" type="button" disabled>预览巡检路线（不运动）</button>
+            </div>
+            <div class="inspection-legend" aria-label="地图图例">
+                <span><i class="legend-dot normal"></i>普通点</span>
+                <span><i class="legend-dot inspect"></i>检测点</span>
+                <span><i class="legend-dot current"></i>当前点</span>
+                <span><i class="legend-dot done"></i>已完成</span>
+                <span><i class="legend-dot failed"></i>失败/跳过</span>
+                <span><i class="legend-dot alert"></i>异常</span>
+                <span><i class="legend-line global-path"></i>全局规划路径</span>
+            </div>
+            <div id="map-wrapper" class="map-wrapper inspection-map-wrapper">
+                <canvas id="map-canvas" aria-label="二维巡检地图"></canvas>
+                <canvas id="inspection-pointcloud-canvas" hidden aria-label="三维巡检点云地图"></canvas>
+                <div id="map-overlay" class="map-overlay blocked">请选择并加载地图，然后选择一条已保存路线。</div>
+                <div id="inspection-navigation-mode" class="inspection-navigation-mode">导航模式 --</div>
+                <div id="inspection-2d-zoom" class="zoom-controls" aria-label="二维地图缩放">
+                    <button id="btn-zoom-in" type="button" title="放大">＋</button>
+                    <button id="btn-zoom-out" type="button" title="缩小">－</button>
+                    <button id="btn-reset-view" type="button" title="复位视图">⌂</button>
+                </div>
+                <div id="inspection-pointcloud-controls" class="pointcloud-controls" aria-label="三维点云视角" hidden>
+                    <button id="btn-inspection-pointcloud-reset" type="button">适应全图</button>
+                    <button id="btn-inspection-pointcloud-top" type="button">俯视选点</button>
+                </div>
+                <div id="inspection-pointcloud-status" class="pointcloud-status waiting" hidden>等待当前地图的全局三维点云</div>
+            </div>
+        </section>
+
+        <aside class="inspection-column" aria-label="任务状态与控制">
+            <div class="inspection-tabs" role="tablist" aria-label="巡检信息">
+                <button class="choice-active" data-tab="settings" type="button">任务设置</button>
+                <button data-tab="progress" type="button">执行进度</button>
+                <button data-tab="alerts" type="button">告警 <span id="alert-count"></span></button>
+                <button data-tab="recognition" type="button">人车识别</button>
+                <button data-tab="history" type="button">历史</button>
+            </div>
+
+            <div id="tab-settings" class="inspection-tab">
+                <section class="section">
+                    <div class="section-title">新建巡检任务</div>
+                    <div class="field-grid">
+                        <label class="full">任务名称<input id="task-name" type="text" maxlength="128" placeholder="例如：一楼白班巡检"></label>
+                        <label>循环次数<input id="loop-count" type="number" min="1" max="10000" step="1" value="1"></label>
+                        <label>轮次间隔（分钟）<input id="loop-interval" type="number" min="0" max="100000" step="1" value="30"></label>
+                        <label class="checkbox-line full"><input id="bidirectional" type="checkbox">启用往返巡检（每轮方向交替）</label>
+                    </div>
+                    <p class="hint">巡检前向速度上限沿用设置页的导航速度档位。启用往返时，请至少设置 2 轮，返程也执行检测。未启用往返且有下一轮时，机器人会先直接返回路线起点，返程不检测。</p>
+                    <p class="hint">星玑 3D 巡检全程固定越障模式。可通行平地、台阶、坡道和粗糙地面共用导航速度上限，不再按地形额外调速或等待提速确认；检测点停留和任务暂停仍正常停车。越障反馈失效时零速停车。</p>
+                </section>
+                <section class="section">
+                    <div class="section-title">当前模板摘要</div>
+                    <div class="status-grid">
+                        <div class="status-card"><span class="label">路线点</span><span id="summary-points" class="value">0</span></div>
+                        <div class="status-card"><span class="label">检测点</span><span id="summary-checkpoints" class="value">0</span></div>
+                        <div class="status-card"><span class="label">速度</span><span class="value">跟随导航</span></div>
+                    </div>
+                </section>
+            </div>
+
+            <div id="tab-progress" class="inspection-tab" hidden>
+                <section class="section">
+                    <div class="section-title">任务进度</div>
+                    <div class="status-grid">
+                        <div class="status-card"><span class="label">任务状态</span><span id="progress-state" class="value">空闲</span></div>
+                        <div class="status-card"><span class="label">当前轮次</span><span id="progress-loop" class="value">0/0</span></div>
+                        <div class="status-card"><span class="label">当前检查点</span><span id="progress-point" class="value">--</span></div>
+                        <div class="status-card"><span class="label">已完成点</span><span id="progress-completed" class="value">0/0</span></div>
+                        <div class="status-card"><span class="label">检测点</span><span id="progress-detected" class="value">0/0</span></div>
+                        <div class="status-card"><span class="label">预计剩余</span><span id="progress-eta" class="value">--</span></div>
+                        <div class="status-card"><span class="label">导航模式</span><span id="progress-navigation-mode" class="value">--</span></div>
+                        <div class="status-card"><span class="label">图片存储剩余</span><span id="progress-storage" class="value">--</span></div>
+                    </div>
+                    <progress id="task-progress" class="task-progress-bar" max="100" value="0"></progress>
+                    <div id="task-message" class="task-message">暂无巡检任务</div>
+                    <p id="velocity-guard-reason" class="hint" aria-live="polite" hidden></p>
+                    <div id="navigation-motion-status" aria-live="polite" hidden></div>
+                </section>
+                <section class="section">
+                    <div class="section-title">检查点列表</div>
+                    <div id="progress-list" class="inspection-progress-list"><div class="inspection-empty">尚未选择路线</div></div>
+                </section>
+                <section class="section">
+                    <div class="section-title">运行日志</div>
+                    <div id="log-area" class="log-area" aria-live="polite"></div>
+                </section>
+            </div>
+
+            <div id="tab-alerts" class="inspection-tab" hidden>
+                <section class="section">
+                    <div class="section-title">告警记录（确认前持续保留）</div>
+                    <div id="alert-list" class="inspection-alert-list"><div class="inspection-empty">暂无告警</div></div>
+                </section>
+            </div>
+
+            <div id="tab-recognition" class="inspection-tab" hidden>
+                <section class="section">
+                    <div class="row">
+                        <div class="section-title" style="margin:0;flex:1">当前任务最近5条识别</div>
+                        <a class="button-link" href="recognition_records.html">管理档案与记录</a>
+                    </div>
+                    <p class="hint">仅记录人脸/车牌，不触发安全告警，不影响巡检异常结论。</p>
+                    <div id="recognition-latest" class="inspection-recognition-list"><div class="inspection-empty">当前任务暂无识别记录</div></div>
+                </section>
+            </div>
+
+            <div id="tab-history" class="inspection-tab" hidden>
+                <section class="section">
+                    <div class="row">
+                        <div class="section-title" style="margin:0;flex:1">长期任务历史</div>
+                        <button id="btn-refresh-history" type="button">刷新</button>
+                    </div>
+                    <div id="history-list" class="inspection-history-list" style="margin-top:10px"><div class="inspection-empty">正在读取历史…</div></div>
+                    <div id="history-detail" style="margin-top:10px"></div>
+                </section>
+            </div>
+
+            <div class="inspection-controls">
+                <button id="btn-start-task" class="success" type="button" disabled>开始任务</button>
+                <button id="btn-pause-task" class="warning" type="button" disabled>暂停</button>
+                <button id="btn-resume-task" type="button" disabled>继续</button>
+                <button id="btn-skip-task" type="button" disabled>跳过当前点</button>
+                <button id="btn-cancel-task" class="danger" type="button" disabled>终止任务</button>
+            </div>
+        </aside>
+    </main>
+</div>
+
+<script>
+(() => {
+    'use strict';
+    const UI = window.RobotUi;
+    const draftStore = window.InspectionDraftState.createInspectionDraftStore(
+        window.sessionStorage);
+    const connectionStatus = document.getElementById('connection-status');
+    const batteryStatus = document.getElementById('battery-status');
+    const mapOverlay = document.getElementById('map-overlay');
+    const log = UI.createLogger(document.getElementById('log-area'));
+    const mapCanvas = new UI.MapCanvas(
+        document.getElementById('map-canvas'),
+        document.getElementById('map-wrapper')
+    );
+    UI.bindZoomButtons(mapCanvas);
+    let inspectionPointCloudViewer = null;
+    try {
+        inspectionPointCloudViewer = new window.PointCloudViewer(
+            document.getElementById('inspection-pointcloud-canvas'),
+            document.getElementById('map-wrapper'),
+            { maxPoints: 120000, fullResolution: true, markerScale: 0.25 }
+        );
+    } catch (error) {
+        const status = document.getElementById('inspection-pointcloud-status');
+        status.className = 'pointcloud-status error';
+        status.textContent = `三维点云视图不可用：${error.message || error}。3D 巡检保持禁止启动。`;
+        log(status.textContent);
+    }
+
+    const cameraHost = window.location.hostname || '127.0.0.1';
+    const CAMERA_BASE = `http://${cameraHost}:8766`;
+    const RELOCALIZATION_REQUEST_TOPIC = '/relocalization/request';
+    const RELOCALIZATION_STATUS_TOPIC = '/relocalization/status';
+    const SKIPPABLE_TASK_STATES = new Set(['navigating', 'inspecting']);
+    const directionLabels = {
+        current: '当前', front: '前方', left: '左侧', right: '右侧',
+        back: '后方', full: '全向慢转'
+    };
+    const stateLabels = {
+        idle: '空闲', preparing: '准备中', starting_route: '启动路线',
+        navigating: '导航中', point_hold: '已到检查点', inspecting: '精检中',
+        releasing_point: '切换下一点', returning_to_start: '返回起点',
+        interval_wait: '轮次间隔', pausing: '正在暂停',
+        paused: '已暂停', resuming: '继续中',
+        completed: '已完成', cancelled: '已终止', failed: '失败'
+    };
+    const navigationModeLabels = {
+        map_2d: '2D地图导航', terrain_3d: '3D地形增强导航'
+    };
+    const THREE_D_STATUS_MAX_AGE_MS = 6000;
+
+    let session;
+    let standingConfirmed = false;
+    let standingRequestPending = false;
+    let standingRetryTimer = null;
+    let standingAttemptCount = 0;
+    let navigationStartPending = false;
+    let nav2Ready = false;
+    let localizationReady = false;
+    let localizedMapName = '';
+    let loadedMapName = '';
+    let mapReady = false;
+    let pendingMapName = '';
+    let pendingMapRequestAccepted = false;
+    let pendingMapStatusConfirmed = false;
+    let pendingMapRasterReady = false;
+    let mapSnapshotRecovery = null;
+    let savedMapCloud = null;
+    let mapLoadTimeout = null;
+    let maps = [];
+    let routes = [];
+    let route = null;
+    let routeSelectionGeneration = 0;
+    let template = { checkpoints: [] };
+    let taskState = {
+        state: 'idle', active: false, paused: false, point_statuses: {}
+    };
+    let alerts = [];
+    let recognitionLatest = [];
+    let latestOdometryStamp = null;
+    let initialPoseMode = false;
+    let cameraView = 'yolo';
+    let cameraRetryTimer = null;
+    let thermalCameraRetryTimer = null;
+    let cameraStateTimer = null;
+    let thermalConfigVersion = null;
+    let serviceBusy = false;
+    let inspectionStartPending = false;
+    let inspectionStartCancelPending = false;
+    let storageWarningShown = false;
+    let inspectionDraft = draftStore.load();
+    let draftRestoreInFlight = false;
+    let pendingDraftRouteId = 0;
+    let pageReleased = false;
+    let selectedNavigationMode = '';
+    let navigationModeSeen = false;
+    let globalPathPoints = [];
+    let globalPathStatus = {};
+    let inspectionMapView = '2d';
+    let currentMapLoadId = '';
+    let currentMapLoadName = '';
+    let cloudIdentity = null;
+    let pendingGlobalCloud = null;
+    let pendingGlobalCloudStampNs = '';
+    let acceptedGlobalCloud = null;
+    let selectedModeAtMs = 0;
+    let robotBodyStatus = null;
+    let robotBodyAtMs = 0;
+    let robotBodyGeneration = null;
+    let threeDInitialDraft = null;
+    let threeDInitialGeneration = 0;
+    let threeDRoutePreview = null;
+    let threeDPreviewGeneration = 0;
+    let threeDNotice = '';
+
+    function selectedMap() {
+        return String(document.getElementById('map-selector').value || '').trim();
+    }
+
+    function selectedRouteId() {
+        return Number(document.getElementById('route-selector').value) || 0;
+    }
+
+    function applyInspectionDraftForm(draft) {
+        if (!draft) return;
+        document.getElementById('task-name').value = draft.taskName || '';
+        document.getElementById('loop-count').value = String(draft.loopCount || 1);
+        document.getElementById('loop-interval').value = String(draft.loopInterval || 0);
+        document.getElementById('bidirectional').checked = Boolean(draft.bidirectional);
+    }
+
+    function saveInspectionDraft() {
+        if (taskState.active) {
+            draftStore.clear();
+            inspectionDraft = null;
+            return null;
+        }
+        const mapName = loadedMapName || selectedMap()
+            || (inspectionDraft && inspectionDraft.mapName) || '';
+        if (!mapName) return inspectionDraft;
+        const routeId = selectedRouteId() || (route && route.id)
+            || (inspectionDraft && inspectionDraft.routeId) || 0;
+        const checkpoints = route && Number(route.id) === Number(routeId)
+            ? template.checkpoints
+            : (inspectionDraft && Number(inspectionDraft.routeId) === Number(routeId)
+                ? inspectionDraft.checkpoints : []);
+        inspectionDraft = draftStore.save({
+            mapName,
+            routeId,
+            taskName: document.getElementById('task-name').value,
+            loopCount: document.getElementById('loop-count').value,
+            loopInterval: document.getElementById('loop-interval').value,
+            bidirectional: document.getElementById('bidirectional').checked,
+            checkpoints
+        });
+        return inspectionDraft;
+    }
+
+    function clearInspectionDraft() {
+        draftStore.clear();
+        inspectionDraft = null;
+        pendingDraftRouteId = 0;
+    }
+
+    async function restoreInspectionDraft() {
+        const draft = inspectionDraft;
+        if (!draft || taskState.active || draftRestoreInFlight || !nav2Ready
+            || !session || !session.connected || pendingMapName) return false;
+        applyInspectionDraftForm(draft);
+        if (loadedMapName === draft.mapName && mapReady) {
+            await refreshRoutes(draft.routeId);
+            if (draft.routeId && (!route || Number(route.id) !== Number(draft.routeId))) {
+                log(`上次巡检草稿中的路线已不存在，已保留任务参数并清除路线配置。`);
+                inspectionDraft = draftStore.save({ ...draft, routeId: 0, checkpoints: [] });
+                return false;
+            }
+            return true;
+        }
+        draftRestoreInFlight = true;
+        try {
+            await refreshMaps(draft.mapName);
+            if (!maps.includes(draft.mapName)) {
+                log(`上次巡检草稿中的地图“${draft.mapName}”已不存在，已清除该草稿。`);
+                clearInspectionDraft();
+                return false;
+            }
+            document.getElementById('map-selector').value = draft.mapName;
+            pendingDraftRouteId = Math.max(
+                0, Math.trunc(Number(draft.routeId) || 0));
+            mapOverlay.textContent = `已恢复上次选择的地图“${draft.mapName}”；请点击“加载地图”确认后再恢复巡检路线。`;
+            mapOverlay.classList.add('blocked');
+            log(`已恢复上次巡检草稿；地图不会自动加载，请点击“加载地图”确认。`);
+            updateUi();
+            return false;
+        } finally {
+            draftRestoreInFlight = false;
+        }
+    }
+
+    function parseJson(value, fallback) {
+        try {
+            const parsed = JSON.parse(String(value || ''));
+            return parsed === null ? fallback : parsed;
+        } catch (_error) {
+            return fallback;
+        }
+    }
+
+    function effectiveNavigationMode() {
+        return String(
+            (taskState.active && taskState.navigation_mode)
+            || selectedNavigationMode || '');
+    }
+
+    function isTerrain3D() {
+        return effectiveNavigationMode() === 'terrain_3d';
+    }
+
+    function isConfirmedMap2D(nowMs = Date.now()) {
+        return Boolean(session && session.connected && navigationModeSeen
+            && nowMs - selectedModeAtMs <= THREE_D_STATUS_MAX_AGE_MS
+            && effectiveNavigationMode() === 'map_2d');
+    }
+
+    function confirmedRobotBody(nowMs = Date.now()) {
+        const body = robotBodyStatus;
+        const selected = body && body.config && body.config.selected;
+        const profile = body && body.config && body.config.profiles
+            && body.config.profiles[selected];
+        const state = body && body.status || {};
+        if (!session || !session.connected || !navigationModeSeen
+            || nowMs - selectedModeAtMs > THREE_D_STATUS_MAX_AGE_MS
+            || !body || nowMs - robotBodyAtMs > THREE_D_STATUS_MAX_AGE_MS
+            || body.switching || body.connected !== true || !selected
+            || !profile || profile.navigation_verified !== true
+            || body.active_body !== selected || body.error
+            || state.stale === true
+            || state.emergency_latched === true
+            || state.hardware_error === true || state.error) return '';
+        return String(selected);
+    }
+
+    function inspectionInteractionMode(nowMs = Date.now()) {
+        if (isConfirmedMap2D(nowMs)) return 'map_2d';
+        if (!isTerrain3D()) return 'blocked';
+        const body = confirmedRobotBody(nowMs);
+        if (body === 'xingji') return 'xingji_3d';
+        if (body === 'gangben_zsl1') return 'gangben_legacy_3d';
+        return 'blocked';
+    }
+
+    function isXingjiTerrain3D() {
+        return inspectionInteractionMode() === 'xingji_3d';
+    }
+
+    function isGangbenTerrain3D() {
+        return inspectionInteractionMode() === 'gangben_legacy_3d';
+    }
+
+    function cloudStampNs(message) {
+        const stamp = message && message.header && message.header.stamp;
+        const seconds = Number(stamp && stamp.sec);
+        const nanoseconds = Number(stamp && stamp.nanosec);
+        if (!Number.isSafeInteger(seconds) || seconds < 0
+            || !Number.isInteger(nanoseconds) || nanoseconds < 0
+            || nanoseconds >= 1000000000) return '';
+        return (BigInt(seconds) * 1000000000n + BigInt(nanoseconds)).toString();
+    }
+
+    function clearThreeDInitialDraft() {
+        threeDInitialGeneration += 1;
+        threeDInitialDraft = null;
+        if (inspectionPointCloudViewer) inspectionPointCloudViewer.clearDraftPose();
+    }
+
+    function invalidateThreeDPreview(reason = '') {
+        threeDPreviewGeneration += 1;
+        threeDRoutePreview = null;
+        if (inspectionPointCloudViewer) inspectionPointCloudViewer.clearPreviewPath();
+        if (reason && isXingjiTerrain3D()) threeDNotice = reason;
+    }
+
+    function invalidateThreeDCloud(reason, cancelTransfer = true) {
+        if (cancelTransfer) savedMapCloud?.cancel();
+        acceptedGlobalCloud = null;
+        pendingGlobalCloud = null;
+        pendingGlobalCloudStampNs = '';
+        clearThreeDInitialDraft();
+        invalidateThreeDPreview(reason);
+        if (inspectionPointCloudViewer) inspectionPointCloudViewer.clear();
+        const status = document.getElementById('inspection-pointcloud-status');
+        if (inspectionPointCloudViewer) {
+            status.className = 'pointcloud-status waiting';
+            status.textContent = reason || '等待当前地图的三维点云。';
+        }
+    }
+
+    function tryAcceptGlobalCloud() {
+        if (savedMapCloud && inspectionMapView === '3d' && currentMapLoadId && currentMapLoadName
+            && (mapReady || (pendingMapName && pendingMapRequestAccepted && pendingMapStatusConfirmed))
+            && !(acceptedGlobalCloud?.completeSavedMap && cloudIdentity?.load_id === currentMapLoadId
+                && cloudStampNs(acceptedGlobalCloud) === cloudIdentity.stamp_ns)
+            && (pendingMapName || loadedMapName) === currentMapLoadName)
+            savedMapCloud.request({map_name:currentMapLoadName,load_id:currentMapLoadId});
+        if (!inspectionPointCloudViewer || !mapReady || !loadedMapName
+            || pendingMapName || !pendingGlobalCloud || !cloudIdentity
+            || !currentMapLoadId || currentMapLoadName !== loadedMapName
+            || cloudIdentity.map_name !== loadedMapName
+            || cloudIdentity.load_id !== currentMapLoadId
+            || cloudIdentity.stamp_ns !== pendingGlobalCloudStampNs) return;
+        const frame = String(pendingGlobalCloud.header
+            && pendingGlobalCloud.header.frame_id || '').replace(/^\/+/, '');
+        if (frame !== 'map') return;
+        if (acceptedGlobalCloud === pendingGlobalCloud) return;
+        const status = document.getElementById('inspection-pointcloud-status');
+        try {
+            const stats = inspectionPointCloudViewer.setPointCloud(pendingGlobalCloud);
+            acceptedGlobalCloud = pendingGlobalCloud;
+            status.className = 'pointcloud-status ready';
+            status.textContent = `完整PCD ${loadedMapName} · 文件 ${stats.sourcePoints.toLocaleString()} 点 · 绘制 `
+                + `${stats.renderedPoints.toLocaleString()} 点 · 无效坐标 ${stats.invalidPoints} 点；仅已校验地面可选。`;
+            renderRouteOnMap();
+            renderGlobalPath();
+        } catch (error) {
+            invalidateThreeDCloud('三维点云解析失败，选点和巡检启动已锁定。', false);
+            status.className = 'pointcloud-status error';
+            status.textContent = `三维点云解析失败：${error.message || error}`;
+        }
+        updateUi();
+    }
+
+    function trackCurrentMapIdentity(message) {
+        const mapName = String(message && message.map_name || '');
+        const loadId = typeof (message && message.load_id) === 'string'
+            ? message.load_id.trim() : '';
+        if (!message || message.success !== true || !mapName || !loadId) {
+            if (mapName === loadedMapName || mapName === pendingMapName) {
+                currentMapLoadName = '';
+                currentMapLoadId = '';
+                invalidateThreeDCloud('当前地图缺少加载标识，三维巡检保持只读。');
+            }
+            return;
+        }
+        if (currentMapLoadId
+            && (currentMapLoadId !== loadId || currentMapLoadName !== mapName)) {
+            savedMapCloud?.cancel();
+            acceptedGlobalCloud = null;
+            clearThreeDInitialDraft();
+            invalidateThreeDPreview('地图重新加载，旧三维点云与路线预览已失效。');
+            if (inspectionPointCloudViewer) inspectionPointCloudViewer.clear();
+        }
+        currentMapLoadName = mapName;
+        currentMapLoadId = loadId;
+        tryAcceptGlobalCloud();
+        updateUi();
+    }
+
+    function trackGlobalCloudIdentity(message) {
+        const raw = parseJson(message && message.data, {});
+        if (currentMapLoadId && raw.load_id && (raw.load_id !== currentMapLoadId
+            || raw.map_name !== currentMapLoadName)) return;
+        if (!raw.map_name || typeof raw.load_id !== 'string' || !raw.load_id
+            || typeof raw.stamp_ns !== 'string' || !/^\d+$/.test(raw.stamp_ns)) {
+            cloudIdentity = null;
+            invalidateThreeDCloud('三维点云身份状态无效，巡检保持只读。');
+            updateUi();
+            return;
+        }
+        if (acceptedGlobalCloud && (raw.map_name !== loadedMapName
+            || raw.load_id !== currentMapLoadId
+            || raw.stamp_ns !== cloudStampNs(acceptedGlobalCloud))) {
+            acceptedGlobalCloud = null;
+            clearThreeDInitialDraft();
+            invalidateThreeDPreview('三维地图证据已更新，请重新校验和预览。');
+            if (inspectionPointCloudViewer) inspectionPointCloudViewer.clear();
+        }
+        cloudIdentity = {
+            map_name: String(raw.map_name),
+            load_id: raw.load_id,
+            stamp_ns: raw.stamp_ns
+        };
+        tryAcceptGlobalCloud();
+        updateUi();
+    }
+
+    function receiveGlobalCloud(message) {
+        if (!message || !message.fields || !message.data
+            || !inspectionPointCloudViewer) return;
+        const stampNs = cloudStampNs(message);
+        if (!stampNs) return;
+        if (pendingGlobalCloudStampNs
+            && BigInt(stampNs) <= BigInt(pendingGlobalCloudStampNs)) return;
+        if (acceptedGlobalCloud && cloudStampNs(acceptedGlobalCloud) !== stampNs) {
+            acceptedGlobalCloud = null;
+            clearThreeDInitialDraft();
+            invalidateThreeDPreview('三维点云版本已更新，请重新预览。');
+            inspectionPointCloudViewer.clear();
+        }
+        pendingGlobalCloud = message;
+        pendingGlobalCloudStampNs = stampNs;
+        tryAcceptGlobalCloud();
+        updateUi();
+    }
+
+    function syncInspectionMapView() {
+        const view = isXingjiTerrain3D() ? '3d' : '2d';
+        savedMapCloud?.setVisible(view === '3d');
+        if (inspectionMapView === view) return;
+        inspectionMapView = view;
+        const is3d = view === '3d';
+        if (session) session.setCloudPreviewVisible?.(is3d);
+        document.getElementById('map-canvas').hidden = is3d;
+        document.getElementById('inspection-pointcloud-canvas').hidden = !is3d;
+        document.getElementById('inspection-2d-zoom').hidden = is3d;
+        document.getElementById('inspection-pointcloud-controls').hidden = !is3d;
+        document.getElementById('inspection-pointcloud-status').hidden = !is3d;
+        document.getElementById('inspection-3d-toolbar').hidden = !is3d;
+        clearThreeDInitialDraft();
+        invalidateThreeDPreview('导航模式已变化，请重新预览巡检路线。');
+        initialPoseMode = false;
+        document.getElementById('btn-initial-mode').classList.remove('choice-active');
+        if (is3d && inspectionPointCloudViewer) {
+            inspectionPointCloudViewer.resize();
+            inspectionPointCloudViewer.setTopView();
+            renderRouteOnMap();
+            renderGlobalPath();
+        } else {
+            mapCanvas.resize();
+        }
+    }
+
+    function threeDBaseIssue(nowMs = Date.now()) {
+        if (!isXingjiTerrain3D() || inspectionMapView !== '3d') {
+            return '当前不是已确认的星玑三维导航模式。';
+        }
+        if (!inspectionPointCloudViewer) return '当前浏览器不支持三维点云视图。';
+        if (!session || !session.connected || !navigationModeSeen
+            || nowMs - selectedModeAtMs > THREE_D_STATUS_MAX_AGE_MS) {
+            return 'ROS2 或三维导航模式状态未确认。';
+        }
+        if (!mapReady || !loadedMapName || pendingMapName) return '请先加载当前地图。';
+        if (selectedMap() !== loadedMapName) {
+            return '地图选择已改变，请先点击“加载地图”。';
+        }
+        if (!currentMapLoadId || currentMapLoadName !== loadedMapName) {
+            return '等待当前地图的加载标识。';
+        }
+        if (!acceptedGlobalCloud || !inspectionPointCloudViewer.cloudTransform
+            || !cloudIdentity || cloudIdentity.map_name !== loadedMapName
+            || cloudIdentity.load_id !== currentMapLoadId
+            || cloudIdentity.stamp_ns !== cloudStampNs(acceptedGlobalCloud)) {
+            return '等待三维点云身份与当前地图匹配。';
+        }
+        if (String(acceptedGlobalCloud.header && acceptedGlobalCloud.header.frame_id || '')
+            .replace(/^\/+/, '') !== 'map') return '点云坐标系不是 map。';
+        const body = robotBodyStatus;
+        const bodyState = body && body.status || {};
+        const selected = body && body.config && body.config.selected;
+        const profile = body && body.config && body.config.profiles
+            && body.config.profiles.xingji;
+        if (!body || nowMs - robotBodyAtMs > THREE_D_STATUS_MAX_AGE_MS
+            || body.switching || body.connected !== true || selected !== 'xingji'
+            || body.active_body !== 'xingji' || body.error
+            || bodyState.emergency_latched === true || bodyState.hardware_error === true
+            || bodyState.error || !profile || profile.navigation_verified !== true) {
+            return '星玑本体状态未确认、已失联或存在故障，三维巡检保持只读。';
+        }
+        if (taskState.active) return '巡检任务正在执行，路线和检测点不可更改。';
+        return '';
+    }
+
+    function threeDRouteIssue() {
+        const issue = threeDBaseIssue();
+        if (issue) return issue;
+        if (!route || !route.id || !(route.points || []).length) return '请先选择已保存路线。';
+        if (String(route.map_name || '') !== loadedMapName) {
+            return '巡检路线不属于当前地图。';
+        }
+        if (!standingConfirmed || !nav2Ready || !localizationReady
+            || (localizedMapName && localizedMapName !== loadedMapName)) {
+            return '请先确认站立、Nav2 和当前地图定位。';
+        }
+        return '';
+    }
+
+    function threeDPreviewFingerprint() {
+        return JSON.stringify({
+            route: route && { id: route.id, points: route.points },
+            checkpoints: (template.checkpoints || []).map((item) => ({
+                route_point_id: Number(item.route_point_id),
+                save_images: Boolean(item.save_images)
+            })).sort((a, b) => a.route_point_id - b.route_point_id),
+            map_name: loadedMapName, map_load_id: currentMapLoadId,
+            mode: effectiveNavigationMode(), body_generation: robotBodyGeneration,
+            localized_map: localizedMapName,
+            loop_count: Math.max(1, Math.trunc(Number(
+                document.getElementById('loop-count').value) || 1)),
+            bidirectional: document.getElementById('bidirectional').checked
+        });
+    }
+
+    function currentThreeDPreview() {
+        const preview = threeDRoutePreview;
+        return preview && preview.previewId
+            && preview.fingerprint === threeDPreviewFingerprint()
+            && !threeDRouteIssue() ? preview : null;
+    }
+
+    function updateThreeDControls() {
+        if (!isXingjiTerrain3D()) return;
+        const issue = threeDBaseIssue();
+        if (issue && (threeDInitialDraft || threeDRoutePreview)) {
+            clearThreeDInitialDraft();
+        }
+        if (threeDRoutePreview && threeDRoutePreview.fingerprint !== threeDPreviewFingerprint()) {
+            invalidateThreeDPreview('地图、路线或任务配置变化，请重新预览。');
+        }
+        const topView = inspectionPointCloudViewer && inspectionPointCloudViewer.isTopView();
+        const initialReady = !issue && !serviceBusy && initialPoseMode && topView
+            && threeDInitialDraft && threeDInitialDraft.valid
+            && threeDInitialDraft.mapLoadId === currentMapLoadId;
+        document.getElementById('btn-inspection-confirm-initial').disabled = !initialReady;
+        document.getElementById('btn-inspection-preview').disabled = Boolean(threeDRouteIssue())
+            || serviceBusy;
+        if (inspectionPointCloudViewer) {
+            inspectionPointCloudViewer.setGroundPoseInteraction(
+                !issue && !serviceBusy && initialPoseMode && topView,
+                handleThreeDInitialPose);
+        }
+        const message = issue || threeDNotice || (initialPoseMode
+            ? (topView ? '在点云图左键拖拽初始位置和朝向；候选点需地面校验后再确认。'
+                : '请先点击“俯视选点”。')
+            : '点击编号路线点可切换检测点；先预览整条路线，再开始任务。');
+        document.getElementById('inspection-3d-action-status').textContent = message;
+    }
+
+    function renderNavigationMode() {
+        const mode = effectiveNavigationMode();
+        const label = navigationModeLabels[mode] || '导航模式未就绪';
+        const badge = document.getElementById('inspection-navigation-mode');
+        badge.textContent = taskState.active
+            ? `${label} · 本任务已锁定` : label;
+        badge.className = `inspection-navigation-mode ${mode || 'unknown'}`;
+        document.getElementById('progress-navigation-mode').textContent = label;
+        syncInspectionMapView();
+        updateThreeDControls();
+    }
+
+    function clearGlobalPath() {
+        globalPathPoints = [];
+        mapCanvas.clearGlobalPath();
+        if (inspectionPointCloudViewer) inspectionPointCloudViewer.clearGlobalPath();
+    }
+
+    function renderGlobalPath() {
+        if (!taskState.active || !mapReady || globalPathPoints.length < 2) {
+            mapCanvas.clearGlobalPath();
+            if (inspectionPointCloudViewer) inspectionPointCloudViewer.clearGlobalPath();
+            return;
+        }
+        const options = {
+            warning: globalPathStatus.state === 'error'
+                || Boolean(globalPathStatus.fallback)
+        };
+        mapCanvas.setGlobalPath(globalPathPoints, options);
+        if (inspectionPointCloudViewer && acceptedGlobalCloud) {
+            inspectionPointCloudViewer.setGlobalPath(globalPathPoints, options);
+        }
+    }
+
+    function applyGlobalPath(message) {
+        const poses = Array.isArray(message && message.poses) ? message.poses : [];
+        globalPathPoints = poses.map((item) => {
+            const position = item && item.pose && item.pose.position;
+            return position ? {
+                x: Number(position.x), y: Number(position.y), z: Number(position.z || 0)
+            } : null;
+        }).filter((point) => point
+            && Number.isFinite(point.x) && Number.isFinite(point.y));
+        renderGlobalPath();
+    }
+
+    function formatDuration(seconds) {
+        const value = Math.max(0, Math.round(Number(seconds) || 0));
+        if (value < 60) return `${value} 秒`;
+        const minutes = Math.floor(value / 60);
+        const rest = value % 60;
+        if (minutes < 60) return `${minutes} 分 ${rest} 秒`;
+        return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+    }
+
+    function formatStorage(bytes) {
+        const value = Number(bytes);
+        if (!Number.isFinite(value) || value < 0) return '--';
+        return `${(value / 1024 ** 3).toFixed(1)} GB`;
+    }
+
+    function escapeText(value) {
+        const span = document.createElement('span');
+        span.textContent = String(value ?? '');
+        return span.innerHTML;
+    }
+
+    function evidenceUrl(path) {
+        return `${CAMERA_BASE}/api/inspection/evidence?path=${encodeURIComponent(path)}`;
+    }
+
+    function checkpointMap() {
+        return new Map((template.checkpoints || []).map((item) => [
+            Number(item.route_point_id), item
+        ]));
+    }
+
+    function checkpointFor(pointId) {
+        return checkpointMap().get(Number(pointId)) || null;
+    }
+
+    function ensureCheckpoint(pointId) {
+        let item = checkpointFor(pointId);
+        if (!item) {
+            item = {
+                route_point_id: Number(pointId), directions: ['current'],
+                zoom_ratio: null, save_images: false
+            };
+            template.checkpoints = [...(template.checkpoints || []), item];
+        }
+        return item;
+    }
+
+    function removeCheckpoint(pointId) {
+        template.checkpoints = (template.checkpoints || []).filter(
+            (item) => Number(item.route_point_id) !== Number(pointId)
+        );
+    }
+
+    function renderRouteOnMap() {
+        if (!route) {
+            mapCanvas.clearRoutePoints();
+            if (inspectionPointCloudViewer) {
+                inspectionPointCloudViewer.clearRoutePoints();
+                inspectionPointCloudViewer.clearCheckpointPoints();
+            }
+            return;
+        }
+        const checkpointIds = new Set(
+            (template.checkpoints || []).map((item) => Number(item.route_point_id))
+        );
+        const alertPointIds = new Set(
+            alerts.filter((item) => !Number(item.acknowledged))
+                .map((item) => Number(item.route_point_id))
+        );
+        const statuses = taskState.point_statuses || {};
+        const points = route.points.map((point) => ({
+            ...point,
+            inspection: checkpointIds.has(Number(point.id)),
+            inspectionStatus: statuses[String(point.id)] || '',
+            alerted: alertPointIds.has(Number(point.id))
+        }));
+        const activeIndex = taskState.active
+            ? points.findIndex((point) => Number(point.id) === Number(taskState.current_point_id))
+            : -1;
+        mapCanvas.setRoutePoints(points, activeIndex, taskState.state || 'idle');
+        if (inspectionPointCloudViewer) {
+            inspectionPointCloudViewer.setRoutePoints(
+                points, activeIndex, taskState.state || 'idle');
+            inspectionPointCloudViewer.setCheckpointPoints(
+                points.filter((point) => point.inspection));
+        }
+    }
+
+    function renderCheckpointList() {
+        const list = document.getElementById('checkpoint-list');
+        list.replaceChildren();
+        if (!route || !(route.points || []).length) {
+            list.innerHTML = '<div class="inspection-empty">请选择包含目标点的路线</div>';
+            updateUi();
+            return;
+        }
+        const locked = Boolean(taskState.active);
+        route.points.forEach((point, index) => {
+            const config = checkpointFor(point.id);
+            const card = document.createElement('div');
+            card.className = `checkpoint-card${config ? ' active' : ''}`;
+            const title = document.createElement('div');
+            title.className = 'checkpoint-title';
+            title.innerHTML = `<strong>${escapeText(point.name || `目标点 ${index + 1}`)}</strong>`
+                + `<span class="checkpoint-index">#${index + 1}</span>`;
+            const terrain = document.createElement('div');
+            terrain.className = 'checkpoint-terrain';
+            terrain.textContent = [
+                point.area_id || '未分区', point.floor_id || '地面',
+                point.terrain_type || 'flat', `${Number(point.z || 0).toFixed(2)} m`
+            ].join(' · ');
+            const enableLabel = document.createElement('label');
+            enableLabel.className = 'checkbox-line';
+            enableLabel.innerHTML = '<input type="checkbox">设为检测点';
+            const enabledInput = enableLabel.querySelector('input');
+            enabledInput.checked = Boolean(config);
+            enabledInput.disabled = locked;
+            enabledInput.addEventListener('change', () => {
+                if (enabledInput.checked) ensureCheckpoint(point.id);
+                else removeCheckpoint(point.id);
+                invalidateThreeDPreview('检测点已更改，请重新预览巡检路线。');
+                saveInspectionDraft();
+                renderCheckpointList();
+                renderRouteOnMap();
+            });
+            card.append(title, terrain, enableLabel);
+            if (config) {
+                const fields = document.createElement('div');
+                fields.className = 'checkpoint-fields';
+                const saveLabel = document.createElement('label');
+                saveLabel.className = 'checkbox-line';
+                saveLabel.innerHTML = '<input type="checkbox">保存固定视角原图和 YOLO 标注图';
+                const saveInput = saveLabel.querySelector('input');
+                saveInput.checked = Boolean(config.save_images);
+                saveInput.disabled = locked;
+                saveInput.addEventListener('change', () => {
+                    ensureCheckpoint(point.id).save_images = saveInput.checked;
+                    invalidateThreeDPreview('检测点配置已更改，请重新预览巡检路线。');
+                    saveInspectionDraft();
+                    updateUi();
+                });
+                fields.append(saveLabel);
+                card.appendChild(fields);
+            }
+            list.appendChild(card);
+        });
+        document.getElementById('summary-points').textContent = String(route.points.length);
+        document.getElementById('summary-checkpoints').textContent = String(
+            (template.checkpoints || []).length
+        );
+        updateUi();
+    }
+
+    function renderProgressList() {
+        const list = document.getElementById('progress-list');
+        list.replaceChildren();
+        if (!route) {
+            list.innerHTML = '<div class="inspection-empty">尚未选择路线</div>';
+            return;
+        }
+        const checkpointIds = new Set(
+            (template.checkpoints || []).map((item) => Number(item.route_point_id))
+        );
+        const statuses = taskState.point_statuses || {};
+        route.points.forEach((point, index) => {
+            const status = statuses[String(point.id)] || (
+                Number(taskState.current_point_id) === Number(point.id) && taskState.active
+                    ? 'current' : 'waiting');
+            const row = document.createElement('div');
+            row.className = 'inspection-progress-row';
+            const labels = {
+                current: '当前', waiting: '等待', completed: '完成',
+                failed: '到达/检测失败', skipped: '已跳过'
+            };
+            row.innerHTML = `<div class="progress-head"><strong>${index + 1}. ${escapeText(point.name)}</strong>`
+                + `<span>${checkpointIds.has(Number(point.id)) ? '检测点' : '普通点'} · ${labels[status] || status}</span></div>`;
+            list.appendChild(row);
+        });
+    }
+
+    function renderTaskState() {
+        const state = taskState.state || 'idle';
+        const top = document.getElementById('task-top-status');
+        if (!taskState.active && !standingConfirmed) {
+            top.textContent = standingRequestPending
+                ? '○ 正在初始化安全模式…' : '○ 等待安全模式初始化';
+            top.className = 'page-status';
+        } else {
+            top.textContent = taskState.active
+                ? `● ${stateLabels[state] || state}`
+                : `○ ${stateLabels[state] || '暂无任务'}`;
+            top.className = `page-status${taskState.active ? ' connected' : ''}`;
+        }
+        document.getElementById('progress-state').textContent = stateLabels[state] || state;
+        document.getElementById('progress-loop').textContent = `${taskState.current_loop || 0}/${taskState.loop_count || 0}`;
+        document.getElementById('progress-point').textContent = taskState.current_point_name || '--';
+        document.getElementById('progress-completed').textContent = `${taskState.completed_points || 0}/${taskState.total_points || 0}`;
+        document.getElementById('progress-detected').textContent = `${taskState.completed_detection_points || 0}/${taskState.total_detection_points || 0}`;
+        document.getElementById('progress-eta').textContent = taskState.active
+            ? formatDuration(taskState.estimated_remaining_seconds) : '--';
+        const storage = document.getElementById('progress-storage');
+        storage.textContent = formatStorage(taskState.storage_free_bytes);
+        storage.classList.toggle('error', Boolean(taskState.storage_warning));
+        if (taskState.storage_warning && !storageWarningShown) {
+            storageWarningShown = true;
+            log(`巡检图片存储空间不足：仅剩 ${storage.textContent}，请删除不需要的历史任务。`);
+        } else if (!taskState.storage_warning) {
+            storageWarningShown = false;
+        }
+        document.getElementById('task-progress').value = Number(taskState.progress_percent) || 0;
+        document.getElementById('task-message').textContent = taskState.message || '暂无巡检任务';
+        renderNavigationMode();
+        if (!taskState.active) clearGlobalPath();
+        else renderGlobalPath();
+        renderRouteOnMap();
+        renderProgressList();
+        updateUi();
+    }
+
+    function renderAlerts() {
+        const list = document.getElementById('alert-list');
+        list.replaceChildren();
+        const unacknowledged = alerts.filter((item) => !Number(item.acknowledged)).length;
+        document.getElementById('alert-count').textContent = unacknowledged ? `(${unacknowledged})` : '';
+        if (!alerts.length) {
+            list.innerHTML = '<div class="inspection-empty">暂无告警</div>';
+            renderRouteOnMap();
+            return;
+        }
+        alerts.forEach((alert) => {
+            const card = document.createElement('article');
+            card.className = `inspection-alert${Number(alert.acknowledged) ? ' acknowledged' : ''}`;
+            const measurement = alert.measurement || {};
+            const isTemperature = alert.measurement_type === 'temperature';
+            const maximum = Number(measurement.max_temperature_c);
+            const threshold = Number(measurement.threshold_c);
+            const measurementLabel = isTemperature
+                ? (Number.isFinite(maximum) && Number.isFinite(threshold)
+                    ? `${maximum.toFixed(1)} ℃ / 阈值 ${threshold.toFixed(1)} ℃`
+                    : '温度数据不完整')
+                : window.RobotBehavior.evidenceLabel(alert);
+            const categoryLabel = isTemperature ? '高温告警' : window.RobotBehavior.categoryLabel(alert.category);
+            card.innerHTML = `<div class="alert-head"><strong>${escapeText(categoryLabel)}</strong><span>${escapeText(measurementLabel)}</span></div>`
+                + `<div class="alert-meta">${escapeText(alert.point_name || '路线途中')} · ${escapeText(directionLabels[alert.direction] || alert.direction || '途中')}<br>${escapeText(alert.last_seen_at || alert.first_seen_at || '')}</div>`;
+            const previewImage = isTemperature
+                ? (alert.thermal_annotated_image || alert.thermal_raw_image)
+                : (alert.behavior_annotated_image || alert.annotated_image);
+            if (previewImage) {
+                const image = document.createElement('img');
+                image.className = 'alert-thumb';
+                image.loading = 'lazy';
+                image.alt = isTemperature ? '高温热成像标注图' : '告警现场标注图';
+                image.src = evidenceUrl(previewImage);
+                card.appendChild(image);
+            }
+            if (!Number(alert.acknowledged)) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = '确认此告警';
+                button.style.marginTop = '8px';
+                button.addEventListener('click', () => acknowledgeAlert(alert.id));
+                card.appendChild(button);
+            }
+            list.appendChild(card);
+        });
+        renderRouteOnMap();
+    }
+
+    function renderRecognitionLatest() {
+        const list = document.getElementById('recognition-latest');
+        list.replaceChildren();
+        if (!recognitionLatest.length) {
+            list.innerHTML = '<div class="inspection-empty">当前任务暂无识别记录</div>';
+            return;
+        }
+        const statusLabels = {
+            registered: '已登记', unregistered: '未登记', uncertain: '不确定'
+        };
+        recognitionLatest.forEach((item) => {
+            const card = document.createElement('article');
+            card.className = `inspection-recognition ${item.status || 'uncertain'}`;
+            card.innerHTML = `<div class="alert-head"><strong>${escapeText(item.category === 'face' ? '人脸' : '车牌')} · ${escapeText(item.display_name || '未知目标')}</strong>`
+                + `<span>${escapeText(statusLabels[item.status] || item.status)}</span></div>`
+                + `<div class="alert-meta">置信度 ${Math.round(Number(item.confidence || 0) * 100)}% · ${escapeText(item.plate_color || '')}<br>${escapeText(item.occurred_at || '')}</div>`;
+            list.appendChild(card);
+        });
+    }
+
+    async function refreshRecognitionLatest() {
+        const taskId = String(taskState.task_id || '');
+        if (!taskId) {
+            recognitionLatest = [];
+            renderRecognitionLatest();
+            return;
+        }
+        try {
+            const response = await fetch(`${CAMERA_BASE}/api/recognition/events?task_id=${encodeURIComponent(taskId)}&limit=5`, {cache: 'no-store'});
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const result = await response.json();
+            recognitionLatest = result.events || [];
+            renderRecognitionLatest();
+        } catch (_error) {
+            const list = document.getElementById('recognition-latest');
+            list.innerHTML = '<div class="inspection-empty">识别记录服务暂不可用</div>';
+        }
+    }
+
+    function pauseControlState(state) {
+        const active = Boolean(state && state.active);
+        // `paused: true` can precede route pause acknowledgement.
+        const pending = state && state.state === 'pausing';
+        const acknowledged = state && state.state === 'paused';
+        const paused = Boolean(state && state.paused) || pending || acknowledged;
+        return {
+            paused,
+            canPause: active && !paused,
+            canResume: active && acknowledged
+        };
+    }
+
+    function updateUi() {
+        syncInspectionMapView();
+        const connected = Boolean(session && session.connected);
+        const active = Boolean(taskState.active);
+        const interactionMode = inspectionInteractionMode();
+        const pauseControls = pauseControlState(taskState);
+        const paused = pauseControls.paused;
+        const hasRoute = Boolean(route && route.id);
+        const localizationMatchesMap = !localizedMapName
+            || localizedMapName === loadedMapName;
+        document.getElementById('btn-load-map').disabled =
+            !connected || !nav2Ready || active || Boolean(pendingMapName);
+        document.getElementById('map-selector').disabled =
+            active || Boolean(pendingMapName);
+        document.getElementById('route-selector').disabled = !mapReady || active;
+        document.getElementById('btn-refresh-routes').disabled = !mapReady || active;
+        document.getElementById('btn-initial-mode').disabled = !mapReady || active
+            || interactionMode === 'blocked'
+            || (interactionMode === 'xingji_3d' && Boolean(threeDBaseIssue()));
+        document.getElementById('btn-save-template').disabled = !connected || !hasRoute || active || serviceBusy;
+        document.getElementById('btn-start-task').disabled =
+            !connected || !standingConfirmed || !mapReady || !hasRoute
+            || !nav2Ready || !localizationReady || !localizationMatchesMap
+            || !navigationModeSeen || active || serviceBusy
+            || interactionMode === 'blocked'
+            || (interactionMode === 'xingji_3d' && !currentThreeDPreview());
+        document.getElementById('btn-pause-task').disabled =
+            !pauseControls.canPause || serviceBusy;
+        document.getElementById('btn-resume-task').disabled = !active
+            || !pauseControls.canResume || serviceBusy;
+        document.getElementById('btn-skip-task').disabled =
+            !active || paused || !SKIPPABLE_TASK_STATES.has(taskState.state)
+            || serviceBusy;
+        document.getElementById('btn-cancel-task').disabled = inspectionStartPending
+            ? inspectionStartCancelPending : (!active || serviceBusy);
+        document.getElementById('btn-cancel-task').textContent = inspectionStartPending ? '取消启动' : '终止任务';
+        document.querySelectorAll('#tab-settings input').forEach((input) => {
+            input.disabled = active;
+        });
+        mapCanvas.setPoseInteraction(
+            (interactionMode === 'map_2d'
+                || interactionMode === 'gangben_legacy_3d')
+                && mapReady && initialPoseMode && !active,
+            handleInitialPose
+        );
+        updateThreeDControls();
+    }
+
+    function scheduleStandingRetry(activeSession) {
+        window.clearTimeout(standingRetryTimer);
+        if (standingConfirmed || !session || !session.connected) return;
+        standingRetryTimer = window.setTimeout(
+            () => ensureInspectionStanding(activeSession), 3000);
+    }
+
+    async function ensureInspectionNavigation(activeSession) {
+        if (navigationStartPending || nav2Ready || !activeSession.connected) return;
+        navigationStartPending = true;
+        updateUi();
+        try {
+            const result = await activeSession.call(
+                '/control_launch', UI.TYPES.controlLaunch,
+                { action: 'start', package_name: 'car_vel', launch_type: 'car_vel' },
+                120000);
+            if (!result.success) throw new Error(result.message || '导航系统启动失败');
+            log('导航系统启动请求已完成，正在等待 Nav2 就绪。');
+        } catch (error) {
+            log(`启动巡检导航系统失败：${error.message || error}`);
+        } finally {
+            navigationStartPending = false;
+            updateUi();
+        }
+    }
+
+    async function ensureInspectionStanding(activeSession) {
+        if (standingConfirmed || standingRequestPending
+            || activeSession !== session || !activeSession.connected) return;
+        standingRequestPending = true;
+        standingAttemptCount += 1;
+        renderTaskState();
+        try {
+            const result = await activeSession.call(
+                '/dog_remote/ensure_standing', UI.TYPES.trigger, {});
+            if (!result.success) throw new Error(result.message || '安全模式初始化失败');
+            standingConfirmed = true;
+            window.clearTimeout(standingRetryTimer);
+            log(result.message || '机器人已站立，已切换越障模式并保持碰撞停止开启。');
+        } catch (error) {
+            if (standingAttemptCount === 1 || standingAttemptCount % 5 === 0) {
+                log(`正在初始化巡检安全模式：${error.message || error}`);
+            }
+            scheduleStandingRetry(activeSession);
+        } finally {
+            standingRequestPending = false;
+            renderTaskState();
+        }
+    }
+
+    async function refreshMaps(preferred) {
+        if (!session || !session.connected) return;
+        try {
+            const result = await session.call('/get_map_list', UI.TYPES.mapList, {});
+            if (!result.success) throw new Error(result.message || '读取地图失败');
+            maps = result.map_names || [];
+            const select = document.getElementById('map-selector');
+            const wanted = preferred || loadedMapName || select.value;
+            select.innerHTML = '<option value="">请选择已保存地图</option>';
+            maps.forEach((name) => select.add(new Option(name, name)));
+            if (maps.includes(wanted)) select.value = wanted;
+        } catch (error) {
+            log(`读取地图列表失败：${error.message || error}`);
+        }
+    }
+
+    function handleInspectionMap(message) {
+        if (!message || !message.info || !message.data) return false;
+        try {
+            mapCanvas.setMap(message.info, message.data);
+        } catch (error) {
+            log(`二维地图栅格化失败：${error.message || error}`);
+            return false;
+        }
+        if (pendingMapName) {
+            pendingMapRasterReady = true;
+            tryCompleteInspectionMapLoad();
+        } else if (loadedMapName) {
+            const becameReady = !mapReady;
+            mapReady = true;
+            if (becameReady) {
+                mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
+                mapOverlay.classList.remove('blocked');
+                refreshRoutes(taskState.route_id || pendingDraftRouteId
+                    || (inspectionDraft && inspectionDraft.routeId));
+            }
+        }
+        tryAcceptGlobalCloud();
+        updateUi();
+        return true;
+    }
+
+    function recoverInspectionMapRaster() {
+        const name = pendingMapName || loadedMapName, identity = currentMapLoadId;
+        if (!name || !mapSnapshotRecovery) return;
+        if (pendingMapName && (!pendingMapRequestAccepted || !pendingMapStatusConfirmed)) return;
+        mapSnapshotRecovery.request(`${name}|${identity}`, () =>
+            (pendingMapName || loadedMapName) === name && currentMapLoadId === identity
+            && (!pendingMapName || (pendingMapRequestAccepted && pendingMapStatusConfirmed)));
+    }
+
+    function clearPendingInspectionMapLoad() {
+        mapSnapshotRecovery?.cancel();
+        pendingMapName = '';
+        pendingMapRequestAccepted = false;
+        pendingMapStatusConfirmed = false;
+        pendingMapRasterReady = false;
+        if (mapLoadTimeout) {
+            window.clearTimeout(mapLoadTimeout);
+            mapLoadTimeout = null;
+        }
+    }
+
+    function failInspectionMapLoad(message) {
+        const mapName = pendingMapName || selectedMap();
+        clearPendingInspectionMapLoad();
+        pendingDraftRouteId = 0;
+        mapReady = false;
+        currentMapLoadId = '';
+        currentMapLoadName = '';
+        invalidateThreeDCloud('地图加载失败，旧三维点云和预览已清除。');
+        clearGlobalPath();
+        mapOverlay.textContent = `地图“${mapName}”加载失败：${message}`;
+        mapOverlay.classList.add('blocked');
+        updateUi();
+        log(mapOverlay.textContent);
+    }
+
+    function tryCompleteInspectionMapLoad() {
+        if (!pendingMapRasterReady) recoverInspectionMapRaster();
+        if (!pendingMapName
+            || !pendingMapRequestAccepted
+            || !pendingMapStatusConfirmed
+            || !pendingMapRasterReady) return false;
+        const mapName = pendingMapName;
+        clearPendingInspectionMapLoad();
+        loadedMapName = mapName;
+        mapReady = true;
+        localizationReady = false;
+        localizedMapName = '';
+        initialPoseMode = false;
+        route = null;
+        invalidateThreeDPreview('地图已加载，请重新选择路线并预览。');
+        clearGlobalPath();
+        template = { checkpoints: [] };
+        document.getElementById('map-selector').value = loadedMapName;
+        mapOverlay.textContent = isXingjiTerrain3D()
+            ? '地图已加载；等待匹配的三维点云后，在点云图设置初始位置并选择巡检路线。'
+            : '地图已显示；请选择巡检路线，必要时点击“设置初始位置”后在地图拖拽。';
+        mapOverlay.classList.remove('blocked');
+        updateUi();
+        const preferredRouteId = pendingDraftRouteId;
+        pendingDraftRouteId = 0;
+        refreshRoutes(preferredRouteId);
+        tryAcceptGlobalCloud();
+        saveInspectionDraft();
+        log(`地图“${mapName}”的状态和二维栅格数据均已加载。`);
+        return true;
+    }
+
+    async function loadMap(options = {}) {
+        const mapName = selectedMap();
+        if (!mapName || taskState.active || pendingMapName) return;
+        if (!nav2Ready) {
+            log('Nav2 尚未就绪，暂不能加载巡检地图。');
+            return;
+        }
+        clearPendingInspectionMapLoad();
+        pendingMapName = mapName;
+        pendingMapRequestAccepted = false;
+        pendingMapStatusConfirmed = false;
+        pendingMapRasterReady = false;
+        const draftRouteId = inspectionDraft
+            && inspectionDraft.mapName === mapName
+            ? inspectionDraft.routeId : 0;
+        pendingDraftRouteId = Math.max(
+            0, Math.trunc(Number(options.preferredRouteId ?? draftRouteId) || 0));
+        mapReady = false;
+        currentMapLoadId = '';
+        currentMapLoadName = '';
+        cloudIdentity = null;
+        invalidateThreeDCloud('正在加载地图，等待对应的三维点云。');
+        clearGlobalPath();
+        serviceBusy = true;
+        updateUi();
+        mapOverlay.textContent = `正在加载地图“${mapName}”…`;
+        mapOverlay.classList.add('blocked');
+        try {
+            const result = await session.call('/switch_map', UI.TYPES.switchMap, {
+                map_name: mapName
+            }, 70000);
+            if (!result.success) throw new Error(result.message || '切换地图失败');
+            pendingMapRequestAccepted = true;
+            mapLoadTimeout = window.setTimeout(() => {
+                if (pendingMapName !== mapName) return;
+                const missing = [];
+                if (!pendingMapStatusConfirmed) missing.push('地图状态');
+                if (!pendingMapRasterReady) missing.push('二维栅格数据');
+                failInspectionMapLoad(
+                    `60 秒内仍未收到${missing.join('和') || '完整加载信号'}`);
+            }, 60000);
+            if (tryCompleteInspectionMapLoad()) return;
+            mapOverlay.textContent = `地图服务器已加载“${mapName}”；正在接收地图状态和二维栅格数据，大地图可能需要几十秒。`;
+            mapOverlay.classList.add('blocked');
+            log(`map_server 已确认加载地图“${mapName}”；正在接收二维栅格数据。`);
+        } catch (error) {
+            failInspectionMapLoad(error.message || error);
+        } finally {
+            serviceBusy = false;
+            updateUi();
+        }
+    }
+
+    function routeFromMessage(message) {
+        return {
+            id: Number(message.id) || 0,
+            name: String(message.name || ''),
+            map_name: String(message.map_name || loadedMapName),
+            points: (message.points || []).map((point, index) => ({
+                id: Number(point.id) || 0,
+                sequence: Number(point.sequence) || index,
+                name: String(point.name || `目标点 ${index + 1}`),
+                x: Number(point.x), y: Number(point.y), z: Number(point.z) || 0,
+                yaw: Number(point.yaw),
+                area_id: String(point.area_id || ''),
+                floor_id: String(point.floor_id || ''),
+                terrain_type: String(point.terrain_type || 'flat'),
+                traversal_mode: String(point.traversal_mode || 'normal'),
+                transition_id: String(point.transition_id || ''),
+                speed_limit_mps: Number(point.speed_limit_mps) || 0
+            }))
+        };
+    }
+
+    async function refreshRoutes(preferredId) {
+        if (!session || !session.connected || !loadedMapName) return;
+        const requestedMap = loadedMapName;
+        try {
+            const result = await session.call('/list_routes', UI.TYPES.listRoutes, {
+                map_name: requestedMap
+            });
+            if (requestedMap !== loadedMapName) return;
+            if (!result.success) throw new Error(result.message || '读取路线失败');
+            routes = (result.routes || []).map(routeFromMessage);
+            const select = document.getElementById('route-selector');
+            const wanted = Number(preferredId || selectedRouteId() || taskState.route_id || 0);
+            select.innerHTML = '<option value="">请选择已保存巡检路线</option>';
+            routes.forEach((item) => {
+                const floors = new Set(item.points.map((point) => point.floor_id).filter(Boolean));
+                const special = item.points.filter((point) => point.traversal_mode !== 'normal').length;
+                const detail = [
+                    `${item.points.length} 点`, floors.size > 1 ? `${floors.size} 层` : '',
+                    special ? `${special} 段特殊地形` : ''
+                ].filter(Boolean).join(' · ');
+                select.add(new Option(`${item.name}（${detail}）`, String(item.id)));
+            });
+            if (routes.some((item) => item.id === wanted)) select.value = String(wanted);
+            await selectRoute(Number(select.value) || 0);
+            if (wanted && !routes.some((item) => item.id === wanted)
+                && inspectionDraft && Number(inspectionDraft.routeId) === wanted) {
+                log('上次巡检草稿中的路线已不存在，已保留任务参数并清除路线配置。');
+                inspectionDraft = draftStore.save({
+                    ...inspectionDraft, routeId: 0, checkpoints: []
+                });
+            }
+        } catch (error) {
+            log(`读取巡检路线失败：${error.message || error}`);
+        }
+    }
+
+    async function selectRoute(routeId) {
+        const generation = ++routeSelectionGeneration;
+        invalidateThreeDPreview('巡检路线已改变，请重新预览。');
+        route = routes.find((item) => item.id === Number(routeId)) || null;
+        const selectedRoute = route;
+        template = { route_id: routeId, checkpoints: [] };
+        if (route && session && session.connected) {
+            try {
+                const result = await session.call(
+                    '/inspection/get_template', UI.TYPES.getInspectionTemplate,
+                    { route_id: Number(route.id) }
+                );
+                if (generation !== routeSelectionGeneration || route !== selectedRoute) return;
+                if (result.success) template = parseJson(result.template_json, template);
+                else log(`读取巡检模板失败：${result.message}`);
+            } catch (error) {
+                if (generation !== routeSelectionGeneration || route !== selectedRoute) return;
+                log(`读取巡检模板失败：${error.message || error}`);
+            }
+        }
+        if (generation !== routeSelectionGeneration || route !== selectedRoute) return;
+        if (!taskState.active && route && inspectionDraft
+            && inspectionDraft.mapName === loadedMapName
+            && Number(inspectionDraft.routeId) === Number(route.id)
+            && Array.isArray(inspectionDraft.checkpoints)) {
+            template = {
+                ...template,
+                route_id: Number(route.id),
+                checkpoints: inspectionDraft.checkpoints.map((item) => ({
+                    ...item,
+                    directions: [...(item.directions || ['current'])]
+                }))
+            };
+        }
+        renderCheckpointList();
+        renderRouteOnMap();
+        renderProgressList();
+        mapOverlay.textContent = route
+            ? (isXingjiTerrain3D()
+                ? `已选择路线“${route.name}”。俯视点云图点击编号点，可切换检测点。`
+                : `已选择路线“${route.name}”。普通点为蓝色，检测点为紫色菱形。`)
+            : '请选择一条已保存路线。';
+        saveInspectionDraft();
+        mapOverlay.classList.toggle('blocked', !route);
+    }
+
+    async function saveTemplate(showLog = true) {
+        if (!route || !session || !session.connected) return false;
+        const normalized = {
+            route_id: route.id,
+            checkpoints: (template.checkpoints || []).map((item) => ({
+                route_point_id: Number(item.route_point_id),
+                directions: ['current'],
+                zoom_ratio: null,
+                save_images: Boolean(item.save_images)
+            }))
+        };
+        serviceBusy = true;
+        updateUi();
+        try {
+            const result = await session.call(
+                '/inspection/save_template', UI.TYPES.saveInspectionTemplate,
+                { route_id: Number(route.id), config_json: JSON.stringify(normalized) }
+            );
+            if (!result.success) throw new Error(result.message || '保存模板失败');
+            template = parseJson(result.template_json, normalized);
+            if (showLog) invalidateThreeDPreview('检测点模板已保存，请重新预览巡检路线。');
+            if (showLog) log(result.message || '巡检模板已保存。');
+            renderCheckpointList();
+            renderRouteOnMap();
+            return true;
+        } catch (error) {
+            log(`保存巡检模板失败：${error.message || error}`);
+            return false;
+        } finally {
+            serviceBusy = false;
+            updateUi();
+        }
+    }
+
+    async function startTask() {
+        if (!route || taskState.active || serviceBusy) return;
+        const interactionMode = inspectionInteractionMode();
+        if (interactionMode === 'blocked') {
+            log('导航模式或本体状态未确认，巡检任务未启动。');
+            return;
+        }
+        if (!session || !session.connected || !standingConfirmed || !mapReady) {
+            log('ROS2、本体站立或地图状态未就绪，巡检任务未启动。');
+            return;
+        }
+        const selectedRouteId = Number(route.id);
+        const selectedMapName = loadedMapName;
+        const terrain3d = interactionMode === 'xingji_3d';
+        const preview = terrain3d ? currentThreeDPreview() : null;
+        if (terrain3d && !preview) {
+            const issue = threeDRouteIssue();
+            threeDNotice = issue || '请先在三维点云图中完成整条巡检路线预览，再单独点击开始任务。';
+            log(threeDNotice);
+            updateUi();
+            return;
+        }
+        if (!nav2Ready || !localizationReady) {
+            log(!nav2Ready
+                ? 'Nav2 尚未就绪，暂不能启动巡检任务。'
+                : '初始定位尚未通过确认，请先设置初始位置。');
+            return;
+        }
+        if (localizedMapName && localizedMapName !== loadedMapName) {
+            log('当前定位结果不属于已加载地图，请重新设置初始位置。');
+            return;
+        }
+        const name = document.getElementById('task-name').value.trim();
+        if (!name) {
+            log('请填写任务名称。');
+            switchTab('settings');
+            return;
+        }
+        if (!await saveTemplate(false)) return;
+        if (inspectionInteractionMode() !== interactionMode
+            || !session.connected || !mapReady
+            || loadedMapName !== selectedMapName
+            || !route || Number(route.id) !== selectedRouteId) {
+            log('保存模板期间本体、导航模式、地图或路线发生变化，请重新确认任务。');
+            updateUi();
+            return;
+        }
+        if (terrain3d && currentThreeDPreview() !== preview) {
+            log('保存检测点模板期间，三维巡检预览或配置发生变化；请重新预览后再启动。');
+            updateUi();
+            return;
+        }
+        serviceBusy = true;
+        inspectionStartPending = true;
+        updateUi();
+        log('正在确认巡检启动和路线预约；可点击“取消启动”。');
+        try {
+            const result = await session.call(
+                '/inspection/start', UI.TYPES.startInspectionTask,
+                {
+                    name,
+                    route_id: Number(route.id),
+                    loop_count: Math.max(1, Math.trunc(Number(
+                        document.getElementById('loop-count').value) || 1)),
+                    loop_interval_minutes: Math.max(0, Number(
+                        document.getElementById('loop-interval').value) || 0),
+                    bidirectional: document.getElementById('bidirectional').checked,
+                    preview_id: terrain3d ? preview.previewId : ''
+                }, terrain3d ? 30000 : 15000
+            );
+            if (!result.success) throw new Error(result.message || '启动任务失败');
+            if (terrain3d) invalidateThreeDPreview('任务已经启动；下次巡检需要重新预览。');
+            clearInspectionDraft();
+            log(`巡检任务“${name}”已启动。`);
+            switchTab('progress');
+        } catch (error) {
+            log(`启动巡检任务失败：${error.message || error}`);
+        } finally {
+            inspectionStartPending = false;
+            serviceBusy = inspectionStartCancelPending;
+            updateUi();
+        }
+    }
+
+    async function controlTask(command) {
+        if (inspectionStartPending && command === 'cancel') {
+            if (inspectionStartCancelPending) return;
+            inspectionStartCancelPending = true;
+            updateUi();
+            try {
+                const result = await session.call('/inspection/control', UI.TYPES.controlInspectionTask, { command });
+                if (!result.success) throw new Error(result.message || '取消启动失败');
+                invalidateThreeDPreview('启动已取消；重新启动前请重新预览。');
+                log(result.message);
+            } catch (error) {
+                log(`取消启动失败：${error.message || error}`);
+            } finally {
+                inspectionStartCancelPending = false;
+                if (!inspectionStartPending) serviceBusy = false;
+                updateUi();
+            }
+            return;
+        }
+        if (!taskState.active || serviceBusy) return;
+        const pauseControls = pauseControlState(taskState);
+        if (command === 'resume' && !pauseControls.canResume) {
+            log('巡检仍在等待路线暂停确认，收到“已暂停”状态后才能继续。');
+            return;
+        }
+        if (command === 'pause' && !pauseControls.canPause) return;
+        if (command === 'cancel' && !window.confirm('确定终止当前巡检任务吗？任务历史和已保存证据仍会保留。')) return;
+        serviceBusy = true;
+        updateUi();
+        try {
+            const result = await session.call(
+                '/inspection/control', UI.TYPES.controlInspectionTask,
+                { command }
+            );
+            if (!result.success) throw new Error(result.message || '任务控制失败');
+            log(result.message);
+        } catch (error) {
+            log(`巡检控制失败：${error.message || error}`);
+        } finally {
+            serviceBusy = false;
+            updateUi();
+        }
+    }
+
+    async function acknowledgeAlert(alertId) {
+        try {
+            const result = await session.call(
+                '/inspection/acknowledge_alert',
+                UI.TYPES.acknowledgeInspectionAlert,
+                { alert_id: Number(alertId) }
+            );
+            if (!result.success) throw new Error(result.message || '确认失败');
+            const item = alerts.find((alert) => Number(alert.id) === Number(alertId));
+            if (item) item.acknowledged = 1;
+            renderAlerts();
+        } catch (error) {
+            log(`确认告警失败：${error.message || error}`);
+        }
+    }
+
+    async function refreshHistory() {
+        if (!session || !session.connected) return;
+        const list = document.getElementById('history-list');
+        try {
+            const result = await session.call(
+                '/inspection/list_history', UI.TYPES.listInspectionHistory,
+                { limit: 100, offset: 0 }
+            );
+            if (!result.success) throw new Error(result.message || '读取历史失败');
+            const history = parseJson(result.history_json, []);
+            list.replaceChildren();
+            if (!history.length) {
+                list.innerHTML = '<div class="inspection-empty">暂无巡检历史</div>';
+                return;
+            }
+            history.forEach((item) => {
+                const card = document.createElement('article');
+                card.className = 'inspection-history';
+                card.innerHTML = `<div class="history-head"><strong>${escapeText(item.name)}</strong><span>${escapeText(stateLabels[item.outcome] || item.outcome || '运行中')}</span></div>`
+                    + `<div class="history-meta">${escapeText(item.route_name)} · ${escapeText(item.started_at)}<br>完成记录 ${item.result_count || 0}，告警 ${item.alert_count || 0}，未确认 ${item.unacknowledged_count || 0}</div>`;
+                const row = document.createElement('div');
+                row.className = 'row';
+                row.style.marginTop = '8px';
+                const view = document.createElement('button');
+                view.className = 'flex';
+                view.textContent = '查看完整报告 →';
+                view.addEventListener('click', () => {
+                    window.location.href = `inspection_reports.html?task_id=${encodeURIComponent(item.task_id)}`;
+                });
+                const remove = document.createElement('button');
+                remove.className = 'danger flex';
+                remove.textContent = '删除';
+                remove.disabled = item.outcome === '';
+                remove.addEventListener('click', () => deleteHistory(item.task_id, item.name));
+                row.append(view, remove);
+                card.appendChild(row);
+                list.appendChild(card);
+            });
+        } catch (error) {
+            list.innerHTML = `<div class="inspection-empty">历史读取失败：${escapeText(error.message || error)}</div>`;
+        }
+    }
+
+    async function showHistory(taskId) {
+        const target = document.getElementById('history-detail');
+        target.innerHTML = '<div class="inspection-empty">正在读取详情…</div>';
+        try {
+            const result = await session.call(
+                '/inspection/get_history', UI.TYPES.getInspectionHistory,
+                { task_id: String(taskId) }
+            );
+            if (!result.success) throw new Error(result.message || '历史不存在');
+            const detail = parseJson(result.history_json, {});
+            target.innerHTML = `<div class="task-message"><strong>${escapeText(detail.name)}</strong><br>`
+                + `${escapeText(detail.route_name)} · ${escapeText(detail.map_name)}<br>`
+                + `开始：${escapeText(detail.started_at)}<br>结束：${escapeText(detail.ended_at || '尚未结束')}<br>`
+                + `点位记录 ${(detail.point_results || []).length} 条，告警 ${(detail.alerts || []).length} 条</div>`;
+        } catch (error) {
+            target.innerHTML = `<div class="inspection-empty">${escapeText(error.message || error)}</div>`;
+        }
+    }
+
+    async function deleteHistory(taskId, name) {
+        if (!window.confirm(`确定永久删除任务“${name}”的历史、告警和全部现场图片吗？此操作无法恢复。`)) return;
+        try {
+            const result = await session.call(
+                '/inspection/delete_history', UI.TYPES.deleteInspectionHistory,
+                { task_id: String(taskId) }
+            );
+            if (!result.success) throw new Error(result.message || '删除失败');
+            document.getElementById('history-detail').replaceChildren();
+            await refreshHistory();
+            log(result.message);
+        } catch (error) {
+            log(`删除巡检历史失败：${error.message || error}`);
+        }
+    }
+
+    function switchTab(name) {
+        document.querySelectorAll('.inspection-tabs button').forEach((button) => {
+            button.classList.toggle('choice-active', button.dataset.tab === name);
+        });
+        document.querySelectorAll('.inspection-tab').forEach((panel) => {
+            panel.hidden = panel.id !== `tab-${name}`;
+        });
+        if (name === 'history') refreshHistory();
+    }
+
+    function backdatedStamp(stamp) {
+        if (!stamp) return { sec: 0, nanosec: 0 };
+        let nanoseconds = Number(stamp.sec) * 1e9 + Number(stamp.nanosec) - 2e8;
+        nanoseconds = Math.max(0, Math.round(nanoseconds));
+        return {
+            sec: Math.floor(nanoseconds / 1e9),
+            nanosec: nanoseconds % 1e9
+        };
+    }
+
+    async function handleThreeDInitialPose(x, y, yaw) {
+        if (!initialPoseMode || threeDBaseIssue()
+            || !inspectionPointCloudViewer.isTopView()) return;
+        clearThreeDInitialDraft();
+        const generation = threeDInitialGeneration;
+        const draft = {
+            x, y, yaw, mapName: loadedMapName,
+            mapLoadId: currentMapLoadId, valid: false
+        };
+        threeDInitialDraft = draft;
+        threeDNotice = '正在校验初始位置的地图地面；尚未发送定位请求。';
+        updateUi();
+        try {
+            const result = await session.call(
+                '/terrain/check_3d_ground', UI.TYPES.check3dGround,
+                { map_name: draft.mapName, map_load_id: draft.mapLoadId, x, y });
+            if (generation !== threeDInitialGeneration || threeDInitialDraft !== draft
+                || draft.mapLoadId !== currentMapLoadId || threeDBaseIssue()) return;
+            if (result.valid !== true || !Number.isFinite(Number(result.ground_z))) {
+                throw new Error(result.message || '该处没有可信的地图地面。');
+            }
+            draft.valid = true;
+            draft.groundZ = Number(result.ground_z);
+            inspectionPointCloudViewer.setDraftPose(x, y, draft.groundZ, yaw);
+            threeDNotice = `候选初始点 (${x.toFixed(2)}, ${y.toFixed(2)}) `
+                + `朝向 ${Math.round(yaw * 180 / Math.PI)}° 已通过地面校验；请点击确认。`;
+        } catch (error) {
+            if (generation === threeDInitialGeneration && threeDInitialDraft === draft) {
+                draft.valid = false;
+                inspectionPointCloudViewer.clearDraftPose();
+                threeDNotice = `初始点不可确认：${error.message || error}`;
+            }
+        } finally {
+            updateUi();
+        }
+    }
+
+    function confirmThreeDInitialPose() {
+        const draft = threeDInitialDraft;
+        if (!draft || !draft.valid || !initialPoseMode || threeDBaseIssue()
+            || draft.mapLoadId !== currentMapLoadId
+            || !inspectionPointCloudViewer.isTopView()) return;
+        if (!latestOdometryStamp) {
+            threeDNotice = '尚未收到 LIO 里程计时间戳，初始点没有发送。';
+            updateUi();
+            return;
+        }
+        clearThreeDInitialDraft();
+        invalidateThreeDPreview('初始定位已改变，请重新预览巡检路线。');
+        if (handleInitialPose(draft.x, draft.y, draft.yaw, '3d')) {
+            localizationReady = false;
+            localizedMapName = '';
+            inspectionPointCloudViewer.setRobotPose(
+                draft.x, draft.y, draft.groundZ, draft.yaw);
+            threeDNotice = '三维初始点已提交，等待定位精修与 AMCL 确认。';
+        } else {
+            threeDNotice = '三维初始点发送失败，请检查里程计与 ROS2 连接。';
+        }
+        updateUi();
+    }
+
+    async function previewThreeDRoute() {
+        const issue = threeDRouteIssue();
+        if (issue || serviceBusy) {
+            threeDNotice = issue || '其他操作尚未结束。';
+            updateUi();
+            return;
+        }
+        invalidateThreeDPreview();
+        const generation = threeDPreviewGeneration;
+        const fingerprint = threeDPreviewFingerprint();
+        const mapName = loadedMapName;
+        const mapLoadId = currentMapLoadId;
+        const routeId = Number(route.id);
+        const requestSession = session;
+        const bidirectional = document.getElementById('bidirectional').checked;
+        const loopCount = Math.max(1, Math.trunc(Number(
+            document.getElementById('loop-count').value) || 1));
+        const includesReturn = bidirectional && loopCount > 1;
+        threeDNotice = '正在逐段校验路线；静止定位过期时自动请求无运动刷新，不会启动巡检。';
+        serviceBusy = true;
+        updateUi();
+        try {
+            const result = await requestSession.call(
+                '/navigation/preview_3d_route', UI.TYPES.preview3dRoute,
+                { route_id: routeId, start_point_id: 0, point_limit: 0,
+                    reverse: false, map_name: mapName, map_load_id: mapLoadId,
+                    loop_count: loopCount, continuous: false, bidirectional },
+                90000);
+            if (generation !== threeDPreviewGeneration
+                || session !== requestSession || !requestSession.connected
+                || loadedMapName !== mapName || currentMapLoadId !== mapLoadId
+                || fingerprint !== threeDPreviewFingerprint()
+                || threeDRouteIssue()) return;
+            if (result.valid !== true || !result.preview_id
+                || String(result.map_name || '') !== mapName) {
+                throw new Error(result.message || '整条路线预览未通过。');
+            }
+            if (String(result.path && result.path.header
+                && result.path.header.frame_id || '').replace(/^\/+/, '') !== 'map') {
+                throw new Error('预览路径坐标系不是 map，禁止启动巡检。');
+            }
+            const poses = result.path && Array.isArray(result.path.poses)
+                ? result.path.poses : [];
+            const points = poses.map((entry) => {
+                const position = entry && entry.pose && entry.pose.position;
+                return {
+                    x: Number(position && position.x),
+                    y: Number(position && position.y),
+                    z: Number(position && position.z)
+                };
+            });
+            if (points.length < 2 || points.some((point) =>
+                !Number.isFinite(point.x) || !Number.isFinite(point.y)
+                || !Number.isFinite(point.z))) {
+                throw new Error('预览缺少完整有效的路径点。');
+            }
+            inspectionPointCloudViewer.setPreviewPath(points);
+            threeDRoutePreview = {
+                previewId: String(result.preview_id), fingerprint, atMs: Date.now()
+            };
+            threeDNotice = `${includesReturn ? '往返路线' : '整条路线'}预览通过（${points.length} 个路径点）；`
+                + '预览不设操作倒计时；地图、路线或配置改变后需重新预览，开始时复核当前定位与路径。'
+                + '预览不证明近场没有新出现的坑洞。';
+            log(threeDNotice);
+        } catch (error) {
+            if (generation === threeDPreviewGeneration) {
+                invalidateThreeDPreview();
+                threeDNotice = `三维巡检路线预览失败：${error.message || error}`;
+                log(threeDNotice);
+            }
+        } finally {
+            serviceBusy = false;
+            updateUi();
+        }
+    }
+
+    function toggleThreeDCheckpoint(event) {
+        if (!isXingjiTerrain3D() || initialPoseMode || !route || taskState.active
+            || threeDBaseIssue() || !inspectionPointCloudViewer.isTopView()) return;
+        const picked = inspectionPointCloudViewer.pickRoutePoint(
+            event.clientX, event.clientY, 20);
+        if (!picked) return;
+        const pointId = Number(picked.id);
+        if (!route.points.some((point) => Number(point.id) === pointId)) return;
+        if (checkpointFor(pointId)) removeCheckpoint(pointId);
+        else ensureCheckpoint(pointId);
+        invalidateThreeDPreview('检测点已更改，请重新预览巡检路线。');
+        saveInspectionDraft();
+        renderCheckpointList();
+        renderRouteOnMap();
+        log(`路线点“${picked.name || pointId}”`
+            + `${checkpointFor(pointId) ? '已设为' : '已取消'}检测点。`);
+    }
+
+    function handleInitialPose(x, y, yaw, source = '2d') {
+        if (!mapReady || !initialPoseMode || taskState.active
+            || (source === '3d' ? !isXingjiTerrain3D() || Boolean(threeDBaseIssue())
+                : !(isConfirmedMap2D() || isGangbenTerrain3D()))) {
+            log('导航模式或地图状态未确认，初始位置未提交；请等待状态刷新后重新选点。');
+            return false;
+        }
+        if (!latestOdometryStamp) {
+            log('尚未收到 LIO 里程计时间戳，暂不能提交初始位置。');
+            return false;
+        }
+        const requestId = `inspection-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const roughPose = UI.initialPoseMessage(
+            x, y, yaw, backdatedStamp(latestOdometryStamp)
+        );
+        const published = session.publish(
+            RELOCALIZATION_REQUEST_TOPIC,
+            UI.TYPES.relocalizationRequest,
+            { rough_pose: roughPose, map_name: loadedMapName, request_id: requestId }
+        );
+        if (!published) {
+            log('初始位置发送失败，请检查 ROS2 连接。');
+            return false;
+        }
+        mapCanvas.setRobotPose(x, y, yaw);
+        initialPoseMode = false;
+        document.getElementById('btn-initial-mode').classList.remove('choice-active');
+        mapOverlay.textContent = '粗初始位置已提交，正在等待三维精修和 AMCL 确认。';
+        log(`已提交粗初始位置：(${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${Math.round(yaw * 180 / Math.PI)}°。`);
+        updateUi();
+        return true;
+    }
+
+    let latestCameraStatus = null;
+    const behaviorWidget = window.RobotBehavior.attach(document.getElementById('inspection-behavior'), {
+        baseUrl: CAMERA_BASE, image: document.getElementById('camera-image'),
+        message: document.getElementById('camera-message'),
+        isPreviewAllowed: () => UI.previewAllowed('ordinary'), onError: log,
+        onStatus: () => { if (latestCameraStatus) renderCameraReadiness(); }
+    });
+    function renderCameraReadiness() {
+        const status = latestCameraStatus || {};
+        const thermal = status.thermal || {};
+        const behavior = behaviorWidget.status;
+        const behaviorEnabled = behavior && ['fall', 'fight', 'smoking'].some(key => behavior.enabled?.[key]);
+        const behaviorReady = behavior && (!behaviorEnabled || (behavior.running && behavior.ready && behavior.fresh));
+        const visualReady = Boolean(status.running && status.ready === true && !status.error);
+        const required = status.requirements || {yolo: true, thermal: true};
+        const fullyReady = Boolean((!required.yolo || visualReady) && (!required.thermal || thermal.ready) && behaviorReady);
+        const available = visualReady || thermal.ready || (behavior?.running && behavior?.fresh);
+        document.getElementById('camera-top-status').textContent = fullyReady
+            ? (!required.yolo && !required.thermal && !behaviorEnabled ? '○ 检测项目已关闭' : '● 巡检识别已就绪')
+            : (available ? '◐ 巡检识别部分可用' : '○ 巡检识别未就绪');
+        document.getElementById('camera-top-status').className = `page-status ${fullyReady ? 'connected' : (available ? '' : 'error')}`;
+    }
+    function cameraStreamUrl() {
+        const path = cameraView === 'yolo'
+            ? '/api/yolo/stream.mjpg' : '/api/stream';
+        return UI.previewUrl(`${CAMERA_BASE}${path}?t=${Date.now()}`);
+    }
+
+    function reconnectCamera() {
+        window.clearTimeout(cameraRetryTimer);
+        if (pageReleased) return;
+        behaviorWidget.setPreviewActive(cameraView === 'behavior');
+        if (cameraView === 'behavior') return;
+        const image = document.getElementById('camera-image');
+        const message = document.getElementById('camera-message');
+        if (!UI.previewAllowed('ordinary')) {
+            message.hidden = false; message.textContent = '普通画面预览已暂停；请在右上角选择来源。';
+            return;
+        }
+        message.hidden = false;
+        message.textContent = cameraView === 'yolo'
+            ? '正在连接 YOLO 结果流…' : '正在连接原始视频…';
+        image.src = cameraStreamUrl();
+    }
+
+    function reconnectThermalCamera() {
+        window.clearTimeout(thermalCameraRetryTimer);
+        if (pageReleased) return;
+        const image = document.getElementById('thermal-camera-image');
+        const message = document.getElementById('thermal-camera-message');
+        if (!UI.previewAllowed('thermal')) {
+            message.hidden = false; message.textContent = '热图预览已暂停（5G默认单路）；右上角可切换，测温与告警不受影响。';
+            return;
+        }
+        message.hidden = false;
+        message.textContent = '正在连接热成像视频…';
+        image.src = UI.previewUrl(`${CAMERA_BASE}/api/thermal/stream.mjpg?t=${Date.now()}`);
+    }
+
+    UI.previewControls();
+    function syncInspectionPreviews() {
+        behaviorWidget.setPreviewActive(false);
+        window.clearTimeout(cameraRetryTimer); window.clearTimeout(thermalCameraRetryTimer);
+        document.getElementById('camera-image').removeAttribute('src');
+        document.getElementById('thermal-camera-image').removeAttribute('src');
+        document.getElementById('camera-image').classList.remove('ready');
+        document.getElementById('thermal-camera-image').classList.remove('ready');
+        reconnectCamera(); reconnectThermalCamera();
+    }
+    window.addEventListener('robot-preview-change', syncInspectionPreviews);
+    document.addEventListener('visibilitychange', syncInspectionPreviews);
+
+    async function refreshCameraState() {
+        try {
+            const response = await fetch(`${CAMERA_BASE}/api/inspection/state`, {
+                cache: 'no-store'
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const status = await response.json();
+            if (pageReleased) return;
+            latestCameraStatus = status;
+            behaviorWidget.observeSource(status.camera_source?.generation ?? status.behavior?.source_epoch);
+            const thermal = status.thermal || {};
+            const infraredOnly = thermal.supports_temperature === false;
+            renderCameraReadiness();
+            document.getElementById('camera-mode-badge').textContent = `模式 ${stateLabels[status.mode] || status.mode}`;
+            document.getElementById('camera-device').textContent = status.device || '/dev/video0';
+            document.getElementById('camera-view').textContent = status.fixed_view === false ? '可移动视角' : '固定视角';
+            document.getElementById('camera-age').textContent = status.frame_age_seconds == null
+                ? '--' : `${Number(status.frame_age_seconds).toFixed(1)} 秒`;
+            document.getElementById('thermal-camera-state').textContent = thermal.ready
+                ? (thermal.alarm_active ? '高温报警' : '在线')
+                : (thermal.error ? '异常' : '等待首帧');
+            document.getElementById('thermal-camera-temperature').textContent = infraredOnly ? '未接入' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
+                ? `${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '-- ℃';
+            const config = thermal.config || {};
+            const wantsTaskScope = Boolean(taskState.active && taskState.task_id);
+            const hasCurrentTaskScope = wantsTaskScope
+                && config.scope === 'task'
+                && String(config.task_id || '') === String(taskState.task_id);
+            const editorThreshold = hasCurrentTaskScope
+                ? Number(config.threshold_c)
+                : Number(config.global_threshold_c ?? config.threshold_c);
+            document.getElementById('thermal-camera-threshold').textContent = Number.isFinite(editorThreshold)
+                ? `${editorThreshold.toFixed(1)} ℃` : '-- ℃';
+            document.getElementById('thermal-temperature-badge').textContent = infraredOnly ? 'C12 · 仅红外画面' : thermal.max_temperature_c != null && Number.isFinite(Number(thermal.max_temperature_c))
+                ? `最高温 ${Number(thermal.max_temperature_c).toFixed(1)} ℃` : '最高温 -- ℃';
+            document.getElementById('thermal-alarm-badge').textContent = infraredOnly ? '测温未接入' : thermal.detection_enabled
+                ? (thermal.alarm_active ? '高温报警' : '检测中') : '检测暂停';
+            document.getElementById('inspection-thermal-threshold').disabled = infraredOnly;
+            document.getElementById('btn-inspection-threshold').disabled = infraredOnly;
+            if (document.activeElement !== document.getElementById('inspection-thermal-threshold')
+                && Number.isFinite(editorThreshold)) {
+                const input = document.getElementById('inspection-thermal-threshold');
+                input.value = editorThreshold.toFixed(1);
+                input.min = config.minimum_c;
+                input.max = config.maximum_c;
+                thermalConfigVersion = wantsTaskScope
+                    ? (hasCurrentTaskScope ? Number(config.version) : 0)
+                    : Number(config.global_version || config.version);
+            }
+            document.getElementById('inspection-threshold-label').textContent = taskState.active
+                ? '本次任务高温报警阈值' : '巡检默认高温报警阈值';
+            await refreshRecognitionLatest();
+        } catch (error) {
+            latestCameraStatus = null;
+            document.getElementById('camera-top-status').textContent = '○ 相机接口失联';
+            document.getElementById('camera-top-status').className = 'page-status error';
+        }
+    }
+
+    const cameraImage = document.getElementById('camera-image');
+    cameraImage.addEventListener('load', () => {
+        if (cameraView === 'behavior' || pageReleased) return;
+        document.getElementById('camera-message').hidden = true;
+    });
+    cameraImage.addEventListener('error', () => {
+        if (cameraView === 'behavior' || pageReleased) return;
+        const message = document.getElementById('camera-message');
+        message.hidden = false;
+        message.textContent = '视频暂不可用，正在自动重连。请确认 USB 相机、YOLO 状态，或关闭多余的视频页面。';
+        cameraRetryTimer = window.setTimeout(reconnectCamera, 2500);
+    });
+    const thermalCameraImage = document.getElementById('thermal-camera-image');
+    thermalCameraImage.addEventListener('load', () => {
+        document.getElementById('thermal-camera-message').hidden = true;
+        window.clearTimeout(thermalCameraRetryTimer);
+    });
+    thermalCameraImage.addEventListener('error', () => {
+        const message = document.getElementById('thermal-camera-message');
+        message.hidden = false;
+        message.textContent = '热成像暂不可用；普通摄像头和巡检控制不受影响，正在自动重连。';
+        thermalCameraRetryTimer = window.setTimeout(reconnectThermalCamera, 2800);
+    });
+
+    session = new UI.RosSession({
+        log,
+        onState: (connected, text) => {
+            UI.setConnectionStatus(connectionStatus, connected, text);
+            if (!connected) {
+                savedMapCloud?.dispose();
+                mapSnapshotRecovery?.cancel();
+                UI.setBatteryDisconnected(batteryStatus);
+                window.RobotAirQuality.setDisconnected(
+                    document.getElementById('inspection-air-quality'),
+                    'ROS2 连接已断开，环境读数已清空。');
+                standingConfirmed = false;
+                navigationStartPending = false;
+                nav2Ready = false;
+                localizationReady = false;
+                localizedMapName = '';
+                standingRequestPending = false;
+                navigationModeSeen = false;
+                selectedNavigationMode = '';
+                selectedModeAtMs = 0;
+                robotBodyStatus = null;
+                robotBodyAtMs = 0;
+                currentMapLoadId = '';
+                currentMapLoadName = '';
+                cloudIdentity = null;
+                invalidateThreeDCloud('ROS2 连接已断开，旧三维点云和预览已清除。');
+                globalPathStatus = {};
+                clearGlobalPath();
+                window.clearTimeout(standingRetryTimer);
+            }
+            updateUi();
+        },
+        onReady: async (activeSession) => {
+            savedMapCloud?.dispose();
+            savedMapCloud = new window.SavedMapCloud(activeSession, (message, info) => {
+                if (info.load_id !== currentMapLoadId || info.map_name !== currentMapLoadName) return;
+                cloudIdentity = {map_name:info.map_name,load_id:info.load_id,stamp_ns:info.stamp_ns};
+                receiveGlobalCloud(message);
+            }, (state, text) => {
+                if (inspectionMapView !== '3d') return;
+                const status = document.getElementById('inspection-pointcloud-status');
+                status.className = `pointcloud-status ${state === 'error' ? 'error' : 'waiting'}`;
+                status.textContent = text;
+                if (state === 'error') {
+                    acceptedGlobalCloud = null; pendingGlobalCloud = null; pendingGlobalCloudStampNs = '';
+                    inspectionPointCloudViewer?.clear();clearThreeDInitialDraft();invalidateThreeDPreview(text);updateUi();
+                }
+            });
+            savedMapCloud.setVisible(inspectionMapView === '3d');
+            mapSnapshotRecovery?.cancel();
+            mapSnapshotRecovery = new UI.MapSnapshotRecovery(activeSession, handleInspectionMap, log);
+            UI.subscribeDogStatus(activeSession, batteryStatus);
+            window.RobotAirQuality.bind(
+                activeSession, document.getElementById('inspection-air-quality'));
+            ensureInspectionStanding(activeSession);
+            ensureInspectionNavigation(activeSession);
+            activeSession.subscribe('/nav2_ready', UI.TYPES.bool, (message) => {
+                const wasReady = nav2Ready;
+                nav2Ready = Boolean(message && message.data);
+                if (nav2Ready && !wasReady) log('Nav2 已就绪，可以加载巡检地图。');
+                if (nav2Ready && !wasReady) restoreInspectionDraft();
+                if (!nav2Ready && wasReady) log('Nav2 已离线，新的地图和任务已锁定。');
+                updateUi();
+            });
+            VelocityGuardWidget.attach(activeSession,
+                document.getElementById('velocity-guard-reason'), UI.TYPES.string, {
+                    onEvent: log, motionElement: document.getElementById('navigation-motion-status') });
+            activeSession.subscribe('/navigation/mode', UI.TYPES.string, (message) => {
+                const status = parseJson(message && message.data, {});
+                const mode = String(status.mode || '');
+                if (!navigationModeLabels[mode]) return;
+                if (selectedNavigationMode && selectedNavigationMode !== mode) {
+                    clearThreeDInitialDraft();
+                    invalidateThreeDPreview('导航模式已更改，请重新预览。');
+                }
+                selectedNavigationMode = mode;
+                navigationModeSeen = true;
+                selectedModeAtMs = Date.now();
+                renderNavigationMode();
+                updateUi();
+            });
+            activeSession.subscribe('/robot_body/status', UI.TYPES.string, (message) => {
+                const status = parseJson(message && message.data, null);
+                const generation = status && status.generation;
+                if (!Number.isSafeInteger(generation) || generation < 0) {
+                    robotBodyStatus = null;
+                    robotBodyAtMs = 0;
+                    invalidateThreeDPreview('本体状态无效，三维巡检预览已失效。');
+                } else {
+                    if (robotBodyGeneration !== null && robotBodyGeneration !== generation) {
+                        clearThreeDInitialDraft();
+                        invalidateThreeDPreview('本体配置已变化，请重新预览巡检路线。');
+                    }
+                    robotBodyStatus = status;
+                    robotBodyAtMs = Date.now();
+                    robotBodyGeneration = generation;
+                }
+                updateUi();
+            }, { queueLength: 1 });
+            activeSession.subscribe('/navigation/global_path/status', UI.TYPES.string, (message) => {
+                globalPathStatus = parseJson(message && message.data, {});
+                renderGlobalPath();
+            });
+            activeSession.subscribe('/navigation/global_path', UI.TYPES.path, (message) => {
+                applyGlobalPath(message);
+            });
+            activeSession.subscribe('/map', UI.TYPES.occupancyGrid, handleInspectionMap);
+            activeSession.subscribe('/current_map_info', UI.TYPES.currentMap, async (message) => {
+                trackCurrentMapIdentity(message);
+                if (!message || !message.map_name) return;
+                if (pendingMapName && String(message.map_name) === pendingMapName) {
+                    if (!message.success) {
+                        failInspectionMapLoad(message.message || '地图服务器返回失败');
+                        return;
+                    }
+                    pendingMapStatusConfirmed = true;
+                    tryCompleteInspectionMapLoad();
+                    return;
+                }
+                if (!message.success) return;
+                const changed = loadedMapName !== String(message.map_name);
+                if (changed) clearGlobalPath();
+                loadedMapName = String(message.map_name);
+                mapReady = !changed && Boolean(mapCanvas.mapInfo && mapCanvas.mapData);
+                if (!mapReady) recoverInspectionMapRaster();
+                document.getElementById('map-selector').value = loadedMapName;
+                if (mapReady) {
+                    mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
+                    mapOverlay.classList.remove('blocked');
+                }
+                if (changed && mapReady) await refreshRoutes(taskState.route_id);
+                tryAcceptGlobalCloud();
+                updateUi();
+            });
+            activeSession.subscribe('/global_localization_map/status', UI.TYPES.string,
+                trackGlobalCloudIdentity, { queueLength: 1 });
+            activeSession.setCloudPreviewVisible?.(inspectionMapView === '3d');
+            activeSession.subscribe('/Odometry', UI.TYPES.odometry, (message) => {
+                if (message && message.header && message.header.stamp) {
+                    latestOdometryStamp = message.header.stamp;
+                }
+            });
+            activeSession.subscribe('/localization/navigation_pose', UI.TYPES.poseWithCovariance, (message) => {
+                const pose = message && message.pose && message.pose.pose;
+                if (!pose || !mapReady) return;
+                mapCanvas.setRobotPose(
+                    Number(pose.position.x), Number(pose.position.y),
+                    UI.yawFromQuaternion(pose.orientation)
+                );
+                if (inspectionPointCloudViewer) inspectionPointCloudViewer.setRobotPose(
+                    Number(pose.position.x), Number(pose.position.y),
+                    Number(pose.position.z || 0),
+                    UI.yawFromQuaternion(pose.orientation));
+            });
+            activeSession.subscribe(RELOCALIZATION_STATUS_TOPIC, UI.TYPES.string, (message) => {
+                const status = parseJson(message && message.data, {});
+                if (!status.state) return;
+                const labels = {
+                    queued: '初始位置精修已排队', running: '正在进行三维初始定位精修',
+                    succeeded: '初始定位成功', fallback_succeeded: '精修失败，粗初始点已生效',
+                    failed: '初始定位失败', canceled: '初始定位已取消'
+                };
+                mapOverlay.textContent = labels[status.state] || status.message || `初始定位：${status.state}`;
+                mapOverlay.classList.toggle('blocked', ['failed', 'canceled'].includes(status.state));
+                const succeeded = Boolean(status.success)
+                    || ['succeeded', 'fallback_succeeded'].includes(status.state);
+                const terminal = Boolean(status.terminal)
+                    || ['succeeded', 'fallback_succeeded', 'failed', 'canceled'].includes(status.state);
+                const wasReady = localizationReady;
+                const oldMapName = localizedMapName;
+                localizationReady = succeeded && terminal;
+                localizedMapName = localizationReady ? String(status.map_name || loadedMapName) : '';
+                if (wasReady !== localizationReady || oldMapName !== localizedMapName) {
+                    invalidateThreeDPreview('定位状态已改变，请重新预览巡检路线。');
+                }
+                updateUi();
+            });
+            activeSession.subscribe('/inspection/status', UI.TYPES.string, (message) => {
+                taskState = parseJson(message && message.data, taskState);
+                if (!taskState.active) clearGlobalPath();
+                if (taskState.active) clearInspectionDraft();
+                if (taskState.map_name && !loadedMapName) {
+                    loadedMapName = taskState.map_name;
+                    refreshMaps(loadedMapName);
+                }
+                if (taskState.route_id && (!route || route.id !== Number(taskState.route_id))) {
+                    refreshRoutes(taskState.route_id);
+                }
+                renderTaskState();
+            });
+            activeSession.subscribe('/inspection/alerts', UI.TYPES.string, (message) => {
+                const payload = parseJson(message && message.data, {});
+                alerts = payload.alerts || [];
+                renderAlerts();
+            });
+            activeSession.subscribe('/inspection/log', UI.TYPES.string, (message) => {
+                const entry = parseJson(message && message.data, {});
+                if (entry.message) log(entry.message);
+            });
+            try {
+                const result = await activeSession.call(
+                    '/inspection/get_state', UI.TYPES.getInspectionState, {}
+                );
+                if (result.success) taskState = parseJson(result.state_json, taskState);
+            } catch (error) {
+                log(`读取巡检后台状态失败：${error.message || error}`);
+            }
+            if (taskState.active) clearInspectionDraft();
+            else applyInspectionDraftForm(inspectionDraft);
+            await refreshMaps(taskState.map_name
+                || (inspectionDraft && inspectionDraft.mapName));
+            if (taskState.map_name) {
+                loadedMapName = taskState.map_name;
+                mapReady = Boolean(mapCanvas.mapInfo && mapCanvas.mapData);
+                if (mapReady) {
+                    mapOverlay.textContent = '地图已显示；请选择巡检路线，必要时可设置初始位置。';
+                    mapOverlay.classList.remove('blocked');
+                    await refreshRoutes(taskState.route_id);
+                }
+            }
+            if (!taskState.map_name) await restoreInspectionDraft();
+            renderTaskState();
+            refreshHistory();
+        }
+    });
+
+    document.querySelectorAll('.inspection-tabs button').forEach((button) => {
+        button.addEventListener('click', () => switchTab(button.dataset.tab));
+    });
+    document.getElementById('btn-load-map').addEventListener('click', loadMap);
+    document.getElementById('btn-refresh-routes').addEventListener('click', () => refreshRoutes());
+    document.getElementById('route-selector').addEventListener('change', (event) => selectRoute(Number(event.target.value)));
+    document.getElementById('btn-initial-mode').addEventListener('click', () => {
+        if (taskState.active) return;
+        initialPoseMode = !initialPoseMode;
+        clearThreeDInitialDraft();
+        document.getElementById('btn-initial-mode').classList.toggle('choice-active', initialPoseMode);
+        const hint = initialPoseMode
+            ? '左键按住拖拽设置机器人初始位置和朝向；右键平移，滚轮缩放。'
+            : '初始位置工具已关闭。';
+        if (isXingjiTerrain3D()) threeDNotice = hint;
+        else mapOverlay.textContent = hint;
+        updateUi();
+    });
+    document.getElementById('btn-inspection-confirm-initial').addEventListener(
+        'click', confirmThreeDInitialPose);
+    document.getElementById('btn-inspection-preview').addEventListener(
+        'click', previewThreeDRoute);
+    document.getElementById('btn-inspection-pointcloud-reset').addEventListener('click', () => {
+        if (inspectionPointCloudViewer) inspectionPointCloudViewer.resetView();
+        updateUi();
+    });
+    document.getElementById('btn-inspection-pointcloud-top').addEventListener('click', () => {
+        if (inspectionPointCloudViewer) inspectionPointCloudViewer.setTopView();
+        updateUi();
+    });
+    document.getElementById('inspection-pointcloud-canvas').addEventListener(
+        'click', toggleThreeDCheckpoint);
+    for (const id of ['loop-count', 'bidirectional', 'loop-interval', 'task-name']) {
+        document.getElementById(id).addEventListener('input', () => {
+            invalidateThreeDPreview('巡检任务配置已改变，请重新预览路线。');
+            saveInspectionDraft();
+            updateUi();
+        });
+    }
+    document.getElementById('map-selector').addEventListener('change', () => {
+        if (selectedMap() !== loadedMapName) {
+            invalidateThreeDPreview('已选择其他地图，请先点击“加载地图”。');
+            updateUi();
+        }
+    });
+    document.getElementById('btn-save-template').addEventListener('click', () => saveTemplate(true));
+    document.getElementById('btn-start-task').addEventListener('click', startTask);
+    document.getElementById('btn-pause-task').addEventListener('click', () => controlTask('pause'));
+    document.getElementById('btn-resume-task').addEventListener('click', () => controlTask('resume'));
+    document.getElementById('btn-skip-task').addEventListener('click', () => controlTask('skip'));
+    document.getElementById('btn-cancel-task').addEventListener('click', () => controlTask('cancel'));
+    document.getElementById('btn-refresh-history').addEventListener('click', refreshHistory);
+    document.getElementById('btn-camera-view').addEventListener('click', () => {
+        cameraView = cameraView === 'yolo' ? 'raw' : 'yolo';
+        document.getElementById('camera-view-badge').textContent = cameraView === 'yolo'
+            ? 'YOLO 结果' : '原始画面';
+        document.getElementById('btn-camera-view').textContent = cameraView === 'yolo'
+            ? '切换原始画面' : '切换 YOLO 结果';
+        document.getElementById('btn-behavior-view').textContent = '查看行为画面';
+        reconnectCamera();
+    });
+    document.getElementById('btn-behavior-view').addEventListener('click', () => {
+        cameraView = cameraView === 'behavior' ? 'raw' : 'behavior';
+        document.getElementById('camera-view-badge').textContent = cameraView === 'behavior'
+            ? '行为识别 · 对应推理帧' : '原始画面';
+        document.getElementById('btn-behavior-view').textContent = cameraView === 'behavior'
+            ? '返回原始画面' : '查看行为画面';
+        document.getElementById('btn-camera-view').textContent = '切换 YOLO 结果';
+        reconnectCamera();
+    });
+    document.getElementById('btn-camera-reconnect').addEventListener('click', reconnectCamera);
+    document.getElementById('btn-camera-fullscreen').addEventListener('click', () => {
+        document.getElementById('camera-frame').requestFullscreen?.();
+    });
+    document.getElementById('btn-thermal-fullscreen').addEventListener('click', () => {
+        document.getElementById('thermal-camera-frame').requestFullscreen?.();
+    });
+    document.getElementById('btn-camera-snapshot').addEventListener('click', () => {
+        const path = cameraView === 'behavior' ? '/api/behavior/frame.jpg' : '/api/snapshot';
+        window.open(`${CAMERA_BASE}${path}?t=${Date.now()}`, '_blank', 'noopener');
+    });
+    document.getElementById('inspection-thermal-config').addEventListener('submit', async event => {
+        event.preventDefault();
+        const activeTask = Boolean(taskState.active && taskState.task_id);
+        if (activeTask && !window.confirm('确定立即修改本次运行中任务的高温报警阈值吗？新阈值只影响后续温度帧。')) return;
+        const button = document.getElementById('btn-inspection-threshold');
+        button.disabled = true;
+        try {
+            const response = await fetch(`${CAMERA_BASE}/api/thermal/config`, {
+                method:'POST', cache:'no-store',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({
+                    threshold_c:Number(document.getElementById('inspection-thermal-threshold').value),
+                    scope:activeTask ? 'task' : 'global',
+                    task_id:activeTask ? String(taskState.task_id) : '',
+                    expected_version:thermalConfigVersion,
+                    actor:'inspection-page'
+                })
+            });
+            const config = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(config.error || `HTTP ${response.status}`);
+            thermalConfigVersion = Number(config.version);
+            log(`${activeTask ? '本次任务' : '巡检默认'}高温阈值已更新为 ${Number(config.threshold_c).toFixed(1)} ℃。`);
+            await refreshCameraState();
+        } catch (error) { log(`保存巡检高温阈值失败：${error.message || error}`); }
+        finally { button.disabled = false; }
+    });
+
+    reconnectCamera();
+    reconnectThermalCamera();
+    refreshCameraState();
+    cameraStateTimer = window.setInterval(refreshCameraState, 2000);
+    const threeDStatusTimer = window.setInterval(() => {
+        if (isTerrain3D()) updateUi();
+    }, 1000);
+    function releaseInspectionPage() {
+        if (pageReleased) return;
+        pageReleased = true;
+        behaviorWidget.dispose();
+        savedMapCloud?.dispose();
+        saveInspectionDraft();
+        window.clearTimeout(cameraRetryTimer);
+        window.clearTimeout(thermalCameraRetryTimer);
+        window.clearTimeout(standingRetryTimer);
+        window.clearInterval(cameraStateTimer);
+        window.clearInterval(threeDStatusTimer);
+        clearPendingInspectionMapLoad();
+        clearGlobalPath();
+        invalidateThreeDCloud('巡检页面已关闭。');
+        cameraImage.removeAttribute('src');
+        thermalCameraImage.removeAttribute('src');
+        session.stop();
+    }
+    window.addEventListener('beforeunload', releaseInspectionPage);
+    window.addEventListener('pagehide', releaseInspectionPage);
+    window.addEventListener('pageshow', (event) => {
+        if (event.persisted && pageReleased) window.location.reload();
+    });
+    renderCheckpointList();
+    renderTaskState();
+    renderAlerts();
+    renderRecognitionLatest();
+    updateUi();
+    log('巡检任务页面已加载，正在连接 ROS2 后台。');
+    session.connect();
+})();
+</script>
+</body>
+</html>

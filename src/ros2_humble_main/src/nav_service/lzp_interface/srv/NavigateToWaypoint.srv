@@ -1,0 +1,5 @@
+# NavigateToWaypoint.srv
+int32 waypoint_id
+---
+bool success
+string message

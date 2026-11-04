@@ -1,0 +1,6 @@
+float64 co2_threshold_ppm
+---
+bool success
+string message
+float64 co2_threshold_ppm
+uint64 version

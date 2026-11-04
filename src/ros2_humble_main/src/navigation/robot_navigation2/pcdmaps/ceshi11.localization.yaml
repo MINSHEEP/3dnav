@@ -1,0 +1,129 @@
+schema: ros2_mid360_localization_map
+version: 1
+map_name: ceshi11
+frame_id: map
+pcd_file: ceshi11.pcd
+point_count: 21224
+pcd_size_bytes: 254860
+pcd_sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4
+voxel_size: 0.1
+created_at_utc: '2026-10-20T03:34:48.072705+00:00'
+map_geometry:
+  image: ceshi11.pgm
+  width: 345
+  height: 259
+  resolution: 0.05000000074505806
+  origin:
+  - -4.2
+  - -7.8500000000000005
+  - 0.0
+  negate: 0
+  occupied_thresh: 0.65
+  free_thresh: 0.196
+terrain_grid:
+  schema: quadruped_terrain_grid
+  version: 2
+  filename: ceshi11.terrain.npz
+  map_name: ceshi11
+  frame_id: map
+  source_pcd_sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4
+  size_bytes: 44476
+  sha256: b3fb33ed40a4867e89f2ad22ed0e2f29c00a7c3d1dd602bdc8b61cd1ac6d480f
+  resolution: 0.25
+  width: 129
+  height: 59
+  origin_x: -11.5
+  origin_y: -9.0
+  cell_count: 7611
+  known_cells: 1708
+  blocked_cells: 754
+  generation:
+    algorithm: clustered_measured_ground_v3
+    parameters:
+      blocked_slope_deg: 28.0
+      blocked_step_m: 0.18
+      caution_slope_deg: 12.0
+      caution_step_m: 0.08
+      maximum_cells: 400000
+      minimum_confidence: 0.35
+      overhead_min_clearance_m: 0.75
+      overhead_search_radius_m: 1.0
+      resolution: 0.25
+      roughness_caution_m: 0.05
+      special_slope_deg: 18.0
+      special_step_m: 0.12
+    quality:
+      blocked_supported_cells: 317
+      component_count: 25
+      coverage_ratio: 0.694656
+      known_supported_cells: 1092
+      largest_component_cells: 732
+      largest_component_ratio: 0.944516
+      state: ready
+      supported_free_cells: 1572
+      traversable_supported_cells: 775
+      warnings: []
+    source: complete_localization_pcd
+    source_pcd_sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4
+coordinate_system:
+  map_frame: map
+  pcd_frame: map
+  capture_frame: odom
+  projected_map_frame: odom
+  pcd_to_map: identity
+  compatibility: The saved 2D map and PCD share mapping-session odom coordinates,
+    which become the saved map frame on reload.
+pcd:
+  file: ceshi11.pcd
+  point_count: 21224
+  size_bytes: 254860
+  sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4
+localization_pcd:
+  filename: ceshi11.pcd
+  point_count: 21224
+  size_bytes: 254860
+  sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4
+  format: binary
+  fields:
+  - x
+  - y
+  - z
+  voxel_size: 0.1
+  filter:
+    type: distinct_frame_voxel_persistence
+    mode: protected
+    min_observations: 6
+    observation_stride: 3
+    received_frames: 1051
+    sampled_frames: 351
+    tracked_voxels: 48448
+    ground_preservation:
+      enabled: true
+      cell_size: 0.2
+      max_height_above_envelope: 0.08
+      max_slope_deg: 30.0
+      min_neighbor_cells: 3
+      min_observations: 3
+      min_stable_span_frames: 6
+      protected_voxels_at_save: 4974
+capture:
+  source_topic: /cloud_registered
+  projected_map_topic: /projected_map
+  projected_map_stamp_ns: 1792467286908254384
+  pcd_capture_unix_ns: 1792467287951113569
+files:
+  map_yaml:
+    filename: ceshi11.yaml
+    size_bytes: 159
+  map_image:
+    filename: ceshi11.pgm
+    size_bytes_at_creation: 89370
+  localization_pcd:
+    filename: ceshi11.pcd
+    size_bytes: 254860
+    sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4
+  terrain_grid:
+    filename: ceshi11.terrain.npz
+    size_bytes: 44476
+    sha256: b3fb33ed40a4867e89f2ad22ed0e2f29c00a7c3d1dd602bdc8b61cd1ac6d480f
+    source_pcd_sha256: c46e4f8332c8cf54364e2763ab6ade4b4ac7193ca4616b3d14b24c702949dfa4

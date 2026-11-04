@@ -1,0 +1,9 @@
+string source_area
+string target_area
+string[] available_modes
+bool has_final_pose
+geometry_msgs/Pose final_pose
+---
+bool success
+string message
+

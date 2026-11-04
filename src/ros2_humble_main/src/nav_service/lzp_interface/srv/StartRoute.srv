@@ -1,0 +1,15 @@
+int64 route_id
+int32 loop_count
+bool continuous
+bool reverse
+bool hold_at_each_point
+string owner_token
+int64 start_point_id
+int32 point_limit
+string navigation_mode
+string preview_id
+int64 authorization_generation
+int64 request_deadline_unix_ns
+---
+bool success
+string message

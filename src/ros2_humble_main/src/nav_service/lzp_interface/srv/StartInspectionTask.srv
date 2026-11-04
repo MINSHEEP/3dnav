@@ -1,0 +1,10 @@
+string name
+int64 route_id
+int32 loop_count
+float64 loop_interval_minutes
+bool bidirectional
+string preview_id
+---
+bool success
+string message
+string task_id

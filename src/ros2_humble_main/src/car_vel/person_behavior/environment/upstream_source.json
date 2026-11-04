@@ -1,0 +1,55 @@
+{
+  "repository": "https://github.com/PaddlePaddle/PaddleDetection",
+  "branch": "release/2.9",
+  "commit": "b25522a0f4bde8c80603f3ba5e3472059972e3b5",
+  "source_url": "https://codeload.github.com/PaddlePaddle/PaddleDetection/tar.gz/b25522a0f4bde8c80603f3ba5e3472059972e3b5",
+  "archive_sha256": "4736ac91fd609bd5b896338e7df72ebd1b6cc32eeec3b8adb1c20198506fd5db",
+  "source_method": "Official GitHub commit archive; file contents preserved, no local Git repository",
+  "symlinks_materialized_for_windows_compatibility": [
+    {
+      "path": "README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/bytetrack/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/bytetrack/detector/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/centertrack/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/deepsort/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/headtracking21/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/mtmct/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/ocsort/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/pedestrian/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "configs/mot/vehicle/README.md",
+      "target": "README_cn.md"
+    },
+    {
+      "path": "deploy/pptracking/README.md",
+      "target": "README_en.md"
+    }
+  ],
+  "reason": "Git clone TLS failure; exact commit obtained from official GitHub API"
+}

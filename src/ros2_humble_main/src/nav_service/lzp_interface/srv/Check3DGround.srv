@@ -1,0 +1,10 @@
+# Read-only ground-height and traversability check in the selected 3-D map.
+string map_name
+string map_load_id
+float64 x
+float64 y
+---
+bool valid
+string code
+string message
+float64 ground_z

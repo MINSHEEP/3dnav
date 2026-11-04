@@ -1,0 +1,8 @@
+string operation
+string lidar_ip
+string host_ip
+uint64 expected_version
+---
+bool success
+string message
+string status_json

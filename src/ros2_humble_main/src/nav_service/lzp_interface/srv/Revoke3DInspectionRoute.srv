@@ -1,0 +1,8 @@
+string owner_token
+string action
+---
+bool success
+bool motion_stopped
+bool route_session_active
+int64 authorization_generation
+string message

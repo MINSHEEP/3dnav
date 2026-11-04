@@ -1,0 +1,6 @@
+string side                  # "left" 或 "right"
+float64[] positions          # 目标关节位置数组
+float64 duration             # 运动持续时间(秒)
+---
+bool success                 # 是否成功
+string message               # 结果消息

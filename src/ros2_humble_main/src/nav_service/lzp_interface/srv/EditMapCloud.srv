@@ -1,0 +1,11 @@
+# Independent saved-map cleanup; preview never changes files.
+string action
+string map_name
+uint32[] indices
+float64 minimum_height_m
+float64 maximum_height_m
+string preview_id
+---
+bool success
+string message
+string result_json

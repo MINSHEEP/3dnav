@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Keep the original public URL usable after splitting the UI into pages. -->
+    <meta http-equiv="refresh" content="0; url=navigation.html" />
+    <script>window.location.replace('navigation.html');</script>
+    <title>机器人远程控制 - ROS2</title>
+    <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Segoe UI','Microsoft YaHei',sans-serif; background:#1a1a2e; color:#eee; height:100vh; overflow:hidden; }
+        .container { display:flex; height:100vh; width:100vw; }
+        .map-wrapper { flex:1; background:#16213e; position:relative; overflow:hidden; cursor:crosshair; transition:border 0.3s ease; border:4px solid transparent; }
+        .map-wrapper.remote-active { border-color:#e94560; box-shadow:inset 0 0 30px rgba(233,69,96,0.2); }
+        #map-canvas { width:100%; height:100%; display:block; }
+        .map-hint { position:absolute; bottom:20px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); padding:8px 20px; border-radius:20px; font-size:14px; color:#aaa; pointer-events:none; user-select:none; }
+        .zoom-controls { position:absolute; bottom:80px; right:20px; display:flex; flex-direction:column; gap:6px; }
+        .zoom-controls button { width:40px; height:40px; border:none; border-radius:8px; background:rgba(0,0,0,0.6); color:#fff; font-size:22px; cursor:pointer; transition:background 0.2s; }
+        .zoom-controls button:hover { background:rgba(233,69,96,0.6); }
+        .panel { width:380px; min-width:320px; background:#1a1a2e; padding:20px 18px; display:flex; flex-direction:column; gap:16px; border-left:2px solid #0f3460; overflow-y:auto; }
+        .panel::-webkit-scrollbar { width:6px; }
+        .panel::-webkit-scrollbar-thumb { background:#0f3460; border-radius:3px; }
+        .panel-title { font-size:22px; font-weight:700; color:#e94560; text-align:center; padding-bottom:8px; border-bottom:2px solid #0f3460; letter-spacing:2px; }
+        .status-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; background:#16213e; border-radius:12px; padding:12px 10px; }
+        .status-item { text-align:center; }
+        .status-item .label { font-size:12px; color:#888; }
+        .status-item .value { font-size:20px; font-weight:600; color:#4fc3f7; }
+        .status-item .value.warning { color:#ffb74d; }
+        .status-item .value.danger { color:#e94560; }
+        .mode-section { display:flex; gap:10px; }
+        .mode-section button { flex:1; padding:12px 0; border:none; border-radius:10px; font-size:16px; font-weight:600; cursor:pointer; transition:all 0.2s; background:#0f3460; color:#888; }
+        .mode-section button.active { background:#e94560; color:#fff; box-shadow:0 0 20px rgba(233,69,96,0.3); }
+        .mode-section button:not(.active):hover { background:#1a3a6a; color:#ccc; }
+        .mode-section button#btn-stop { flex:0.6; background:#4a1a2e; color:#e94560; }
+        .mode-section button#btn-stop:hover { background:#6a2a3e; }
+        .click-mode-section { display:flex; gap:10px; }
+        .click-mode-section button { flex:1; padding:10px 0; border:2px solid #0f3460; border-radius:10px; font-size:14px; font-weight:600; cursor:pointer; transition:all 0.2s; background:transparent; color:#aaa; }
+        .click-mode-section button.active-mode { border-color:#4fc3f7; background:rgba(79,195,247,0.15); color:#fff; }
+        .click-mode-section button:hover { border-color:#4fc3f7; }
+        .remote-toggle-section { display:flex; align-items:center; justify-content:space-between; background:#16213e; border-radius:12px; padding:10px 16px; }
+        .remote-toggle-section .label { font-size:15px; color:#aaa; display:flex; align-items:center; gap:8px; }
+        .remote-toggle-section .label .icon { font-size:20px; }
+        .toggle-switch { position:relative; width:50px; height:28px; background:#0f3460; border-radius:14px; cursor:pointer; transition:background 0.3s; flex-shrink:0; }
+        .toggle-switch.active { background:#e94560; }
+        .toggle-switch .knob { position:absolute; top:3px; left:3px; width:22px; height:22px; background:#fff; border-radius:50%; transition:transform 0.3s; }
+        .toggle-switch.active .knob { transform:translateX(22px); }
+        .remote-status-text { font-size:14px; font-weight:600; min-width:50px; text-align:right; color:#888; }
+        .remote-status-text.active { color:#e94560; }
+        .keyboard-hint { background:#16213e; border-radius:12px; padding:12px; font-size:13px; color:#aaa; line-height:1.8; transition:opacity 0.3s; }
+        .keyboard-hint.disabled { opacity:0.4; }
+        .keyboard-hint kbd { background:#0f3460; padding:2px 8px; border-radius:4px; color:#eee; font-size:12px; }
+        .keyboard-hint .row { display:flex; gap:6px; flex-wrap:wrap; }
+        .keyboard-hint .key-group { display:flex; gap:4px; align-items:center; margin-right:12px; }
+        .speed-control { display:flex; align-items:center; gap:14px; justify-content:center; background:#16213e; border-radius:12px; padding:10px; }
+        .speed-control label { font-size:14px; color:#aaa; }
+        .speed-control input[type="range"] { width:160px; height:4px; -webkit-appearance:none; background:#0f3460; border-radius:2px; outline:none; }
+        .speed-control input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:#e94560; cursor:pointer; }
+        .speed-control .speed-value { font-size:18px; font-weight:600; color:#4fc3f7; min-width:40px; text-align:center; }
+        .action-row { display:flex; gap:10px; }
+        .action-row button { flex:1; padding:12px 0; border:none; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; transition:all 0.2s; background:#0f3460; color:#ccc; }
+        .action-row button:hover { background:#1a3a6a; color:#fff; }
+        .action-row button.success { background:#2e7d32; color:#fff; }
+        .action-row button.success:hover { background:#1b5e20; }
+        .map-library { background:#16213e; border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+        .map-library label { color:#aaa; font-size:13px; }
+        .map-library select { width:100%; border:1px solid #0f3460; border-radius:7px; padding:8px; background:#0d0d1a; color:#eee; }
+        .map-library .compact-row { display:flex; gap:8px; }
+        .map-library button { flex:1; border:0; border-radius:7px; padding:8px 5px; background:#0f3460; color:#eee; cursor:pointer; }
+        .map-library button.danger { background:#6a2a3e; }
+        .editor-active { border-color:#ffb74d !important; background:rgba(255,183,77,.14) !important; color:#fff !important; }
+        .connection-status { text-align:center; font-size:13px; padding:6px; border-radius:8px; background:#16213e; }
+        .connection-status.connected { color:#66bb6a; }
+        .connection-status.disconnected { color:#e94560; }
+        .log-area { background:#0d0d1a; border-radius:10px; padding:10px 12px; height:70px; overflow-y:auto; font-size:13px; font-family:'Consolas',monospace; color:#88c0d0; line-height:1.6; border:1px solid #0f3460; }
+        .log-area::-webkit-scrollbar { width:4px; }
+        .log-area::-webkit-scrollbar-thumb { background:#0f3460; border-radius:2px; }
+        .log-area .log-time { color:#555; }
+        @media (max-width:768px) { .container { flex-direction:column; } .panel { width:100%; min-width:unset; height:50vh; border-left:none; border-top:2px solid #0f3460; } .map-wrapper { height:50vh; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="map-wrapper" id="map-wrapper">
+            <canvas id="map-canvas"></canvas>
+            <div class="map-hint">🖱️ 左键拖拽设置位置+朝向 | 右键平移 | 滚轮缩放</div>
+            <div class="zoom-controls">
+                <button id="btn-zoom-in">＋</button>
+                <button id="btn-zoom-out">－</button>
+                <button id="btn-reset-view">⟲</button>
+            </div>
+        </div>
+        <div class="panel" id="panel">
+            <div class="panel-title">🤖 远程控制</div>
+            <div id="connection-status" class="connection-status disconnected">⚪ 正在连接 ROS2 ...</div>
+            <div class="status-grid">
+                <div class="status-item"><div class="label">🔋 电量</div><div class="value" id="battery-display">--%</div></div>
+                <div class="status-item"><div class="label">📦 速度</div><div class="value" id="speed-display">0.0</div></div>
+                <div class="status-item"><div class="label">📍 模式</div><div class="value" id="mode-display">待机</div></div>
+            </div>
+            <div class="mode-section">
+                <button id="btn-mapping" class="active">🗺️ 建图</button>
+                <button id="btn-navigation">🧭 导航</button>
+                <button id="btn-stop">⏹ 停止</button>
+            </div>
+            <div class="click-mode-section">
+                <button id="btn-initial-pose-mode" class="active-mode">📍 设置初始位姿</button>
+                <button id="btn-goal-mode">🎯 设置导航目标</button>
+            </div>
+            <div class="remote-toggle-section">
+                <span class="label"><span class="icon">🎮</span> 遥控模式</span>
+                <div class="toggle-switch" id="remote-toggle"><div class="knob"></div></div>
+                <span class="remote-status-text" id="remote-status">关闭</span>
+            </div>
+            <div class="keyboard-hint disabled" id="keyboard-hint">
+                <div class="row">
+                    <span class="key-group"><kbd>W</kbd> 前进</span>
+                    <span class="key-group"><kbd>S</kbd> 后退</span>
+                    <span class="key-group"><kbd>A</kbd> 左移</span>
+                    <span class="key-group"><kbd>D</kbd> 右移</span>
+                    <span class="key-group"><kbd>Q</kbd> 左转</span>
+                    <span class="key-group"><kbd>E</kbd> 右转</span>
+                </div>
+                <div class="row">
+                    <span class="key-group"><kbd>R</kbd> 复位位姿</span>
+                    <span class="key-group"><kbd>T</kbd> 急停</span>
+                    <span class="key-group"><kbd>X</kbd> 停止所有运动</span>
+                    <span class="key-group"><kbd>+</kbd>/<kbd>-</kbd> 速度倍率</span>
+                </div>
+                <div class="row">
+                    <span class="key-group"><kbd>Y</kbd> 站起</span>
+                    <span class="key-group"><kbd>U</kbd> 趴下</span>
+                    <span class="key-group"><kbd>I</kbd> 切换模型</span>
+                    <span class="key-group"><kbd>O</kbd> 开关停障</span>
+                    <span class="key-group"><kbd>P</kbd> 原地模式</span>
+                </div>
+                <div style="font-size:12px; color:#666; margin-top:4px;">遥控开启时运动键生效</div>
+            </div>
+            <div class="speed-control">
+                <label>🐢</label>
+                <input type="range" id="speed-slider" min="0.1" max="1.0" step="0.05" value="0.5" />
+                <label>🐇</label>
+                <span class="speed-value" id="speed-label">0.50</span>
+            </div>
+            <div class="action-row">
+                <button class="success" id="btn-save-map">💾 保存地图</button>
+                <button id="btn-initial-pose-reset">📍 复位原点</button>
+            </div>
+            <div class="map-library">
+                <label for="map-selector">已保存地图 / 修图</label>
+                <select id="map-selector"><option value="">加载地图列表…</option></select>
+                <div class="compact-row">
+                    <button id="btn-refresh-maps">刷新</button><button id="btn-load-map">加载</button><button class="danger" id="btn-delete-map">删除</button>
+                </div>
+                <div class="compact-row">
+                    <button id="btn-edit-obstacle">画障碍</button><button id="btn-edit-free">擦除障碍</button>
+                </div>
+                <div class="compact-row">
+                    <button class="success" id="btn-save-edits">保存修图</button><button id="btn-cancel-edits">撤销修图</button>
+                </div>
+            </div>
+            <div class="log-area" id="log-area">
+                <div><span class="log-time">[系统]</span> 等待连接 ROS2 ...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================
+        // 1. 配置
+        // ============================================================
+        const ROSBRIDGE_URL = 'ws://localhost:9090';
+        const MAP_TOPIC = '/map';
+        const AMCL_POSE_TOPIC = '/localization/navigation_pose';
+        const GOAL_TOPIC = '/web_goal_pose';
+        const CMD_VEL_TOPIC = '/cmd_vel';
+        const MAX_LINEAR = 0.35;
+        const MAX_ANGULAR = 0.8;
+
+        let ros = null;
+        let isConnected = false;
+        let clickMode = 'initialpose';
+        let remoteEnabled = false;
+        const keys = { w: false, a: false, s: false, d: false, q: false, e: false };
+        let speedScale = 0.5;
+        let keyControlInterval = null;
+
+        // ============================================================
+        // 2. 地图绘制器（角度修正：使用 atan2(dy, dx)）
+        // ============================================================
+        class MapDrawer {
+            constructor(canvas, container) {
+                this.canvas = canvas;
+                this.container = container;
+                this.ctx = canvas.getContext('2d');
+                this.mapData = null;
+                this.mapInfo = null;
+                this.mapLoaded = false;
+                this.baseZoom = 1.0;
+                this.zoom = 1.0;
+                this.offsetX = 0;
+                this.offsetY = 0;
+                this.minZoomRatio = 0.02;
+                this.maxZoomRatio = 20.0;
+
+                // 右键拖拽平移
+                this.isDragging = false;
+                this.dragStartX = 0;
+                this.dragStartY = 0;
+                this.dragStartOffsetX = 0;
+                this.dragStartOffsetY = 0;
+
+                // 左键拖拽设置朝向
+                this.isSettingPose = false;
+                this.poseStartX = 0;
+                this.poseStartY = 0;
+                this.poseStartMapX = 0;
+                this.poseStartMapY = 0;
+
+                this.robotPose = { x: 0, y: 0, theta: 0 };
+                this.goalPose = null;
+                this.clickMarker = null;
+                this.clickMarkerTimeout = null;
+                this.dragLineEnd = null;
+
+                this.resize();
+                this.setupEvents();
+                this.renderLoop();
+            }
+
+            resize() {
+                const rect = this.container.getBoundingClientRect();
+                this.canvas.width = rect.width || 800;
+                this.canvas.height = rect.height || 600;
+                this.width = this.canvas.width;
+                this.height = this.canvas.height;
+                if (this.mapLoaded) this.resetView();
+            }
+
+            setupEvents() {
+                // 滚轮缩放
+                this.canvas.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    if (!this.mapLoaded) return;
+                    const delta = e.deltaY > 0 ? -0.08 : 0.08;
+                    const rect = this.canvas.getBoundingClientRect();
+                    const mx = e.clientX - rect.left;
+                    const my = e.clientY - rect.top;
+                    const worldX = (mx - this.offsetX) / this.zoom;
+                    const worldY = (my - this.offsetY) / this.zoom;
+                    let newZoomRatio = this.zoom / this.baseZoom + delta;
+                    newZoomRatio = Math.min(Math.max(newZoomRatio, this.minZoomRatio), this.maxZoomRatio);
+                    const newZoom = newZoomRatio * this.baseZoom;
+                    this.zoom = newZoom;
+                    this.offsetX = mx - worldX * this.zoom;
+                    this.offsetY = my - worldY * this.zoom;
+                }, { passive: false });
+
+                // 左键按下：开始设置位姿
+                this.canvas.addEventListener('mousedown', (e) => {
+                    if (e.button !== 0) return;
+                    if (!this.mapLoaded) return;
+                    const rect = this.canvas.getBoundingClientRect();
+                    const px = e.clientX - rect.left;
+                    const py = e.clientY - rect.top;
+                    const worldX = (px - this.offsetX) / this.zoom;
+                    const worldY = (py - this.offsetY) / this.zoom;
+                    const info = this.mapInfo;
+                    const maxWorldX = info.width * info.resolution;
+                    const maxWorldY = info.height * info.resolution;
+                    if (worldX < 0 || worldX > maxWorldX || worldY < 0 || worldY > maxWorldY) return;
+                    const mapX = info.origin.position.x + worldX;
+                    const mapY = info.origin.position.y + (info.height * info.resolution - worldY);
+                    this.isSettingPose = true;
+                    this.poseStartX = px;
+                    this.poseStartY = py;
+                    this.poseStartMapX = mapX;
+                    this.poseStartMapY = mapY;
+                    this.dragLineEnd = { x: px, y: py };
+                });
+
+                // 鼠标移动：跟踪拖拽线 / 右键平移
+                window.addEventListener('mousemove', (e) => {
+                    if (this.isSettingPose) {
+                        const rect = this.canvas.getBoundingClientRect();
+                        const px = e.clientX - rect.left;
+                        const py = e.clientY - rect.top;
+                        this.dragLineEnd = { x: px, y: py };
+                    }
+                    if (this.isDragging) {
+                        const dx = e.clientX - this.dragStartX;
+                        const dy = e.clientY - this.dragStartY;
+                        this.offsetX = this.dragStartOffsetX + dx;
+                        this.offsetY = this.dragStartOffsetY + dy;
+                    }
+                });
+
+                // 鼠标松开：完成设置 / 结束平移
+                window.addEventListener('mouseup', (e) => {
+                    if (e.button === 0 && this.isSettingPose) {
+                        const rect = this.canvas.getBoundingClientRect();
+                        const px = e.clientX - rect.left;
+                        const py = e.clientY - rect.top;
+                        let theta = 0;
+                        const dx = px - this.poseStartX;
+                        const dy = py - this.poseStartY;
+                        if (Math.hypot(dx, dy) > 5) {
+                            // ============================================================
+                            // 角度修正：使用 atan2(dy, dx) 替代 atan2(-dy, dx)
+                            // 这样拖拽方向与机器人朝向完全匹配（上下不再颠倒）
+                            // ============================================================
+                            theta = Math.atan2(dy, dx);
+                        }
+                        if (this.onPoseSet) {
+                            this.onPoseSet(this.poseStartMapX, this.poseStartMapY, theta);
+                        }
+                        this.isSettingPose = false;
+                        this.dragLineEnd = null;
+                        this.clickMarker = { x: this.poseStartMapX, y: this.poseStartMapY };
+                        if (this.clickMarkerTimeout) clearTimeout(this.clickMarkerTimeout);
+                        this.clickMarkerTimeout = setTimeout(() => { this.clickMarker = null; }, 5000);
+                    }
+                    if (e.button === 2 && this.isDragging) {
+                        this.isDragging = false;
+                        this.canvas.style.cursor = 'crosshair';
+                    }
+                });
+
+                // 右键拖拽平移
+                this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+                this.canvas.addEventListener('mousedown', (e) => {
+                    if (e.button === 2) {
+                        this.isDragging = true;
+                        this.dragStartX = e.clientX;
+                        this.dragStartY = e.clientY;
+                        this.dragStartOffsetX = this.offsetX;
+                        this.dragStartOffsetY = this.offsetY;
+                        this.canvas.style.cursor = 'grabbing';
+                    }
+                });
+
+                // 缩放按钮
+                document.getElementById('btn-zoom-in').addEventListener('click', () => {
+                    if (!this.mapLoaded) return;
+                    const cx = this.width / 2, cy = this.height / 2;
+                    const wx = (cx - this.offsetX) / this.zoom;
+                    const wy = (cy - this.offsetY) / this.zoom;
+                    let newZoomRatio = this.zoom / this.baseZoom + 0.15;
+                    newZoomRatio = Math.min(newZoomRatio, this.maxZoomRatio);
+                    const newZoom = newZoomRatio * this.baseZoom;
+                    this.zoom = newZoom;
+                    this.offsetX = cx - wx * this.zoom;
+                    this.offsetY = cy - wy * this.zoom;
+                });
+                document.getElementById('btn-zoom-out').addEventListener('click', () => {
+                    if (!this.mapLoaded) return;
+                    const cx = this.width / 2, cy = this.height / 2;
+                    const wx = (cx - this.offsetX) / this.zoom;
+                    const wy = (cy - this.offsetY) / this.zoom;
+                    let newZoomRatio = this.zoom / this.baseZoom - 0.15;
+                    newZoomRatio = Math.max(newZoomRatio, this.minZoomRatio);
+                    const newZoom = newZoomRatio * this.baseZoom;
+                    this.zoom = newZoom;
+                    this.offsetX = cx - wx * this.zoom;
+                    this.offsetY = cy - wy * this.zoom;
+                });
+                document.getElementById('btn-reset-view').addEventListener('click', () => { this.resetView(); });
+                window.addEventListener('keydown', (e) => { if (e.key === 'r' || e.key === 'R') this.resetView(); });
+                window.addEventListener('resize', () => { this.resize(); });
+            }
+
+            resetView() {
+                if (!this.mapLoaded || !this.mapInfo) return;
+                const info = this.mapInfo;
+                const mapWorldWidth = info.width * info.resolution;
+                const mapWorldHeight = info.height * info.resolution;
+                const margin = 0.08;
+                const availableWidth = this.width * (1 - 2 * margin);
+                const availableHeight = this.height * (1 - 2 * margin);
+                const scaleX = availableWidth / mapWorldWidth;
+                const scaleY = availableHeight / mapWorldHeight;
+                this.baseZoom = Math.min(scaleX, scaleY);
+                this.zoom = this.baseZoom;
+                this.offsetX = (this.width - mapWorldWidth * this.zoom) / 2;
+                this.offsetY = (this.height - mapWorldHeight * this.zoom) / 2;
+            }
+
+            setMapData(info, data) {
+                this.mapInfo = info;
+                this.mapData = data;
+                this.mapLoaded = true;
+                this.resetView();
+                log('🗺️ 地图加载完成');
+            }
+
+            updateRobotPose(x, y, theta) {
+                this.robotPose.x = x;
+                this.robotPose.y = y;
+                this.robotPose.theta = theta;
+            }
+
+            setGoal(x, y) {
+                this.goalPose = { x, y };
+            }
+
+            renderLoop() {
+                this.render();
+                requestAnimationFrame(() => this.renderLoop());
+            }
+
+            render() {
+                const ctx = this.ctx;
+                const W = this.width, H = this.height;
+                ctx.fillStyle = '#16213e';
+                ctx.fillRect(0, 0, W, H);
+
+                if (!this.mapLoaded || !this.mapData) {
+                    ctx.fillStyle = '#4fc3f7';
+                    ctx.font = '20px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('等待地图数据...', W/2, H/2);
+                    return;
+                }
+
+                const info = this.mapInfo;
+                const data = this.mapData;
+                const res = info.resolution;
+                const width = info.width, height = info.height;
+                const originX = info.origin.position.x;
+                const originY = info.origin.position.y;
+
+                const viewX1 = (0 - this.offsetX) / this.zoom;
+                const viewY1 = (0 - this.offsetY) / this.zoom;
+                const viewX2 = (W - this.offsetX) / this.zoom;
+                const viewY2 = (H - this.offsetY) / this.zoom;
+
+                let startCol = Math.max(0, Math.floor(viewX1 / res));
+                let endCol = Math.min(width, Math.ceil(viewX2 / res) + 1);
+                let startRow = Math.max(0, Math.floor(height - viewY2 / res));
+                let endRow = Math.min(height, Math.ceil(height - viewY1 / res) + 1);
+
+                const maxPixels = 200000;
+                const totalPixels = (endCol - startCol) * (endRow - startRow);
+                let step = 1;
+                if (totalPixels > maxPixels) step = Math.ceil(Math.sqrt(totalPixels / maxPixels));
+
+                for (let row = startRow; row < endRow; row += step) {
+                    for (let col = startCol; col < endCol; col += step) {
+                        const idx = row * width + col;
+                        const val = data[idx] || 0;
+                        const wx = col * res;
+                        const wy = (height - row) * res;
+                        const px = wx * this.zoom + this.offsetX;
+                        const py = wy * this.zoom + this.offsetY;
+                        const size = res * this.zoom * step;
+                        this.drawCell(ctx, px, py, size, val);
+                    }
+                }
+
+                // 拖拽线
+                if (this.isSettingPose && this.dragLineEnd) {
+                    const sx = this.poseStartX, sy = this.poseStartY;
+                    const ex = this.dragLineEnd.x, ey = this.dragLineEnd.y;
+                    ctx.save();
+                    ctx.strokeStyle = '#ffaa00';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(sx, sy);
+                    ctx.lineTo(ex, ey);
+                    ctx.stroke();
+                    ctx.restore();
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, 6, 0, 2*Math.PI);
+                    ctx.fillStyle = '#ffaa00';
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                    const angle = Math.atan2(sy - ey, ex - sx);
+                    const arrowLen = 15;
+                    ctx.beginPath();
+                    ctx.moveTo(ex, ey);
+                    ctx.lineTo(ex - arrowLen * 0.7 * Math.cos(angle - 0.5), ey + arrowLen * 0.7 * Math.sin(angle - 0.5));
+                    ctx.lineTo(ex - arrowLen * 0.7 * Math.cos(angle + 0.5), ey + arrowLen * 0.7 * Math.sin(angle + 0.5));
+                    ctx.closePath();
+                    ctx.fillStyle = '#ffaa00';
+                    ctx.fill();
+                }
+
+                // 机器人
+                if (this.robotPose) {
+                    const rx = (this.robotPose.x - originX) / res;
+                    const ry = height - (this.robotPose.y - originY) / res;
+                    const px = rx * res * this.zoom + this.offsetX;
+                    const py = ry * res * this.zoom + this.offsetY;
+                    ctx.save();
+                    ctx.translate(px, py);
+                    ctx.rotate(this.robotPose.theta);
+                    const size = 7.5 * (this.zoom / this.baseZoom) / (0.5 + (this.zoom / this.baseZoom) * 0.5);
+                    ctx.beginPath();
+                    ctx.moveTo(size * 1.2, 0);
+                    ctx.lineTo(-size * 0.8, -size * 0.6);
+                    ctx.lineTo(-size * 0.8, size * 0.6);
+                    ctx.closePath();
+                    ctx.fillStyle = '#e94560';
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 4, 0, Math.PI*2);
+                    ctx.fillStyle = '#fff';
+                    ctx.fill();
+                    ctx.restore();
+                    ctx.fillStyle = '#4fc3f7';
+                    ctx.font = '12px sans-serif';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(`(${this.robotPose.x.toFixed(2)}, ${this.robotPose.y.toFixed(2)})`, px+16, py-6);
+                }
+
+                // 导航目标
+                if (this.goalPose) {
+                    const gx = (this.goalPose.x - originX) / res;
+                    const gy = height - (this.goalPose.y - originY) / res;
+                    const px = gx * res * this.zoom + this.offsetX;
+                    const py = gy * res * this.zoom + this.offsetY;
+                    ctx.beginPath();
+                    ctx.arc(px, py, 12, 0, Math.PI*2);
+                    ctx.strokeStyle = '#4fc3f7';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.arc(px, py, 4, 0, Math.PI*2);
+                    ctx.fillStyle = '#4fc3f7';
+                    ctx.fill();
+                }
+
+                // 点击标记
+                if (this.clickMarker) {
+                    const cx = (this.clickMarker.x - originX) / res;
+                    const cy = height - (this.clickMarker.y - originY) / res;
+                    const px = cx * res * this.zoom + this.offsetX;
+                    const py = cy * res * this.zoom + this.offsetY;
+                    ctx.beginPath();
+                    ctx.arc(px, py, 8, 0, 2*Math.PI);
+                    ctx.fillStyle = 'rgba(255,68,68,0.7)';
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    ctx.font = '12px sans-serif';
+                    ctx.fillStyle = '#ff6666';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(`点击 (${this.clickMarker.x.toFixed(2)}, ${this.clickMarker.y.toFixed(2)})`, px+12, py-4);
+                }
+
+                const percent = (this.zoom / this.baseZoom * 100);
+                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                ctx.font = '13px sans-serif';
+                ctx.textAlign = 'left';
+                ctx.fillText(`缩放: ${percent.toFixed(0)}% | 地图: ${width}x${height}`, 12, 24);
+            }
+
+            drawCell(ctx, x, y, size, value) {
+                if (size < 1) {
+                    ctx.fillStyle = this.valueToColor(value);
+                    ctx.fillRect(x, y, 1, 1);
+                    return;
+                }
+                ctx.fillStyle = this.valueToColor(value);
+                ctx.fillRect(x, y, Math.max(size,1), Math.max(size,1));
+            }
+
+            valueToColor(value) {
+                if (value === -1) return '#4a4a4a';
+                if (value === 0) return '#ffffff';
+                if (value >= 100) return '#1a1a2e';
+                const ratio = value / 100;
+                const r = Math.round(255 * (1 - ratio));
+                const g = Math.round(255 * (1 - ratio * 0.8));
+                const b = Math.round(255 * (1 - ratio * 0.6));
+                return `rgb(${r},${g},${b})`;
+            }
+
+            onPoseSet = null;
+        }
+
+        // ============================================================
+        // 3. 日志
+        // ============================================================
+        function log(msg) {
+            const area = document.getElementById('log-area');
+            const time = new Date().toLocaleTimeString();
+            area.innerHTML += `<div><span class="log-time">[${time}]</span> ${msg}</div>`;
+            area.scrollTop = area.scrollHeight;
+        }
+
+        // ============================================================
+        // 4. 主程序
+        // ============================================================
+        let mapDrawer = null;
+        let cmdVelPub = null;
+        let goalPub = null;
+        let saveMapService = null;
+        let controlLaunchService = null;
+        let getMapListService = null;
+        let switchMapService = null;
+        let deleteMapService = null;
+        let getEditedMapService = null;
+        let setMapPixelsService = null;
+        let saveEditedMapsService = null;
+        let undoMapEditsService = null;
+        let currentMode = 'mapping';
+        let editMode = null;
+        let editingMapName = '';
+        let mapSub = null;
+        let poseSub = null;
+
+        function connectROS() {
+            if (ros && ros.isConnected) { log('⚠️ 已连接'); return; }
+            ros = new ROSLIB.Ros({ url: ROSBRIDGE_URL });
+            ros.on('connection', () => {
+                isConnected = true;
+                document.getElementById('connection-status').className = 'connection-status connected';
+                document.getElementById('connection-status').textContent = '✅ 已连接 ROS2';
+                log('✅ 连接成功');
+                setupPublishers();
+                setupServices();
+                setupSubscribers();
+                initMapDrawer();
+            });
+            ros.on('error', (err) => {
+                log('❌ 连接错误: ' + err);
+                document.getElementById('connection-status').className = 'connection-status disconnected';
+                document.getElementById('connection-status').textContent = '❌ 连接错误';
+            });
+            ros.on('close', () => {
+                isConnected = false;
+                document.getElementById('connection-status').className = 'connection-status disconnected';
+                document.getElementById('connection-status').textContent = '🔴 已断开';
+                log('🔴 断开，重连...');
+                setTimeout(connectROS, 3000);
+            });
+        }
+
+        function setupPublishers() {
+            cmdVelPub = new ROSLIB.Topic({ ros, name: CMD_VEL_TOPIC, messageType: 'geometry_msgs/Twist' });
+            goalPub = new ROSLIB.Topic({ ros, name: GOAL_TOPIC, messageType: 'geometry_msgs/PoseStamped' });
+        }
+
+        function setupServices() {
+            saveMapService = new ROSLIB.Service({ ros, name: '/map_save', serviceType: 'lzp_interface/srv/MapSave' });
+            controlLaunchService = new ROSLIB.Service({ ros, name: '/control_launch', serviceType: 'lzp_interface/srv/ControlLaunch' });
+            getMapListService = new ROSLIB.Service({ ros, name: '/get_map_list', serviceType: 'lzp_interface/srv/GetMapList' });
+            switchMapService = new ROSLIB.Service({ ros, name: '/switch_map', serviceType: 'lzp_interface/srv/SwitchMap' });
+            deleteMapService = new ROSLIB.Service({ ros, name: '/delete_map', serviceType: 'lzp_interface/srv/DeleteMap' });
+            getEditedMapService = new ROSLIB.Service({ ros, name: '/get_edited_map', serviceType: 'lzp_interface/srv/GetEditedMap' });
+            setMapPixelsService = new ROSLIB.Service({ ros, name: '/set_map_pixel_indices', serviceType: 'lzp_interface/srv/SetMapPixelIndices' });
+            saveEditedMapsService = new ROSLIB.Service({ ros, name: '/save_edited_maps', serviceType: 'lzp_interface/srv/SwitchMap' });
+            undoMapEditsService = new ROSLIB.Service({ ros, name: '/undo_map_edits', serviceType: 'lzp_interface/srv/SwitchMap' });
+            refreshMapList();
+        }
+
+        function setupSubscribers() {
+            mapSub = new ROSLIB.Topic({ ros, name: MAP_TOPIC, messageType: 'nav_msgs/msg/OccupancyGrid' });
+            mapSub.subscribe((msg) => {
+                if (mapDrawer && msg.info && !editMode) {
+                    mapDrawer.setMapData(msg.info, msg.data);
+                }
+            });
+            poseSub = new ROSLIB.Topic({ ros, name: AMCL_POSE_TOPIC, messageType: 'geometry_msgs/PoseWithCovarianceStamped' });
+            poseSub.subscribe((msg) => {
+                const p = msg.pose.pose;
+                const q = p.orientation;
+                const siny = 2*(q.w*q.z + q.x*q.y);
+                const cosy = 1 - 2*(q.y*q.y + q.z*q.z);
+                const theta = Math.atan2(siny, cosy);
+                if (mapDrawer) mapDrawer.updateRobotPose(p.position.x, p.position.y, theta);
+            });
+        }
+
+        function initMapDrawer() {
+            const canvas = document.getElementById('map-canvas');
+            const container = document.getElementById('map-wrapper');
+            if (!canvas || !container) { log('❌ 地图容器缺失'); return; }
+            mapDrawer = new MapDrawer(canvas, container);
+            mapDrawer.onPoseSet = (mapX, mapY, theta) => {
+                if (editMode) {
+                    editMapCell(mapX, mapY);
+                    return;
+                }
+                log(`🖱️ 位置 (${mapX.toFixed(3)}, ${mapY.toFixed(3)}) 朝向 ${(theta * 180 / Math.PI).toFixed(1)}°`);
+                if (clickMode === 'initialpose') {
+                    const initPub = new ROSLIB.Topic({ ros, name: '/initialpose', messageType: 'geometry_msgs/PoseWithCovarianceStamped' });
+                    const q = quaternionFromYaw(theta);
+                    const msg = new ROSLIB.Message({
+                        header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+                        pose: {
+                            pose: {
+                                position: { x: mapX, y: mapY, z: 0 },
+                                orientation: { x: q.x, y: q.y, z: q.z, w: q.w }
+                            },
+                            covariance: [0.25,0,0,0,0,0, 0,0.25,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0.25,0,0, 0,0,0,0,0.25,0, 0,0,0,0,0,0.25]
+                        }
+                    });
+                    initPub.publish(msg);
+                    log(`📍 设置初始位姿: (${mapX.toFixed(2)}, ${mapY.toFixed(2)}) 朝向 ${(theta * 180 / Math.PI).toFixed(1)}°`);
+                } else {
+                    const q = quaternionFromYaw(theta);
+                    const msg = new ROSLIB.Message({
+                        header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+                        pose: {
+                            position: { x: mapX, y: mapY, z: 0 },
+                            orientation: { x: q.x, y: q.y, z: q.z, w: q.w }
+                        }
+                    });
+                    goalPub.publish(msg);
+                    if (mapDrawer) mapDrawer.setGoal(mapX, mapY);
+                    log(`🎯 设置导航目标: (${mapX.toFixed(2)}, ${mapY.toFixed(2)}) 朝向 ${(theta * 180 / Math.PI).toFixed(1)}°`);
+                }
+            };
+            log('🗺️ 地图绘制器初始化完成');
+        }
+
+        function quaternionFromYaw(yaw) {
+            const half = yaw / 2;
+            return { x: 0, y: 0, z: Math.sin(half), w: Math.cos(half) };
+        }
+
+        // ============================================================
+        // 5. 遥控与键盘控制
+        // ============================================================
+        function toggleRemote() {
+            remoteEnabled = !remoteEnabled;
+            const toggle = document.getElementById('remote-toggle');
+            const status = document.getElementById('remote-status');
+            const hint = document.getElementById('keyboard-hint');
+            const mapWrapper = document.getElementById('map-wrapper');
+            if (remoteEnabled) {
+                toggle.classList.add('active');
+                status.textContent = '开启';
+                status.className = 'remote-status-text active';
+                hint.classList.remove('disabled');
+                mapWrapper.classList.add('remote-active');
+                log('🎮 遥控模式已开启');
+                if (!keyControlInterval) startKeyControl();
+            } else {
+                toggle.classList.remove('active');
+                status.textContent = '关闭';
+                status.className = 'remote-status-text';
+                hint.classList.add('disabled');
+                mapWrapper.classList.remove('remote-active');
+                log('🎮 遥控模式已关闭');
+                stopKeyControl();
+                Object.keys(keys).forEach(k => keys[k] = false);
+            }
+        }
+
+        function startKeyControl() {
+            if (keyControlInterval) return;
+            keyControlInterval = setInterval(() => {
+                if (!isConnected || !cmdVelPub || !remoteEnabled) {
+                    if (!remoteEnabled) { stopKeyControl(); return; }
+                    return;
+                }
+                let vx = 0, vy = 0, vz = 0;
+                const scale = speedScale * 0.8;
+                if (keys.w) vx += MAX_LINEAR * scale;
+                if (keys.s) vx -= MAX_LINEAR * scale;
+                if (keys.a) vy += MAX_LINEAR * scale;
+                if (keys.d) vy -= MAX_LINEAR * scale;
+                if (keys.q) vz += MAX_ANGULAR * scale;
+                if (keys.e) vz -= MAX_ANGULAR * scale;
+                vx = Math.min(Math.max(vx, -MAX_LINEAR*scale), MAX_LINEAR*scale);
+                vy = Math.min(Math.max(vy, -MAX_LINEAR*scale), MAX_LINEAR*scale);
+                vz = Math.min(Math.max(vz, -MAX_ANGULAR*scale), MAX_ANGULAR*scale);
+                const twist = new ROSLIB.Message({
+                    linear: { x: vx, y: vy, z: 0 },
+                    angular: { x: 0, y: 0, z: vz }
+                });
+                cmdVelPub.publish(twist);
+                const speed = Math.sqrt(vx*vx + vy*vy);
+                document.getElementById('speed-display').textContent = speed.toFixed(2);
+            }, 50);
+        }
+
+        function stopKeyControl() {
+            if (keyControlInterval) { clearInterval(keyControlInterval); keyControlInterval = null; }
+            if (cmdVelPub && isConnected) {
+                const twist = new ROSLIB.Message({ linear: {x:0,y:0,z:0}, angular: {x:0,y:0,z:0} });
+                cmdVelPub.publish(twist);
+                document.getElementById('speed-display').textContent = '0.0';
+            }
+        }
+
+        function setupKeyboard() {
+            document.addEventListener('keydown', (e) => {
+                const key = e.key.toLowerCase();
+                if (['w','a','s','d','q','e'].includes(key)) {
+                    if (!remoteEnabled) { log('⚠️ 遥控模式未开启，按键无效'); return; }
+                    e.preventDefault();
+                    if (!keys[key]) { keys[key] = true; if (!keyControlInterval) startKeyControl(); }
+                    return;
+                }
+                if (key === 'r') { e.preventDefault(); resetInitialPose(); return; }
+                if (key === 't') { e.preventDefault(); stopKeyControl(); log('⏹ 急停'); return; }
+                if (key === 'x') { e.preventDefault(); stopKeyControl(); log('⏹ 停止所有运动'); return; }
+                if (key === '+' || key === '=') {
+                    e.preventDefault();
+                    speedScale = Math.min(1.0, speedScale + 0.05);
+                    document.getElementById('speed-slider').value = speedScale;
+                    document.getElementById('speed-label').textContent = speedScale.toFixed(2);
+                    log(`⚡ 速度倍率: ${speedScale.toFixed(2)}`);
+                    return;
+                }
+                if (key === '-') {
+                    e.preventDefault();
+                    speedScale = Math.max(0.1, speedScale - 0.05);
+                    document.getElementById('speed-slider').value = speedScale;
+                    document.getElementById('speed-label').textContent = speedScale.toFixed(2);
+                    log(`⚡ 速度倍率: ${speedScale.toFixed(2)}`);
+                    return;
+                }
+                if (key === 'y') { e.preventDefault(); log('⌨️ 站起（Y） - 功能待对接'); return; }
+                if (key === 'u') { e.preventDefault(); log('⌨️ 趴下（U） - 功能待对接'); return; }
+                if (key === 'i') { e.preventDefault(); log('⌨️ 切换模型（I） - 功能待对接'); return; }
+                if (key === 'o') { e.preventDefault(); log('⌨️ 开关停障（O） - 功能待对接'); return; }
+                if (key === 'p') { e.preventDefault(); log('⌨️ 切换原地模式（P） - 功能待对接'); return; }
+            });
+            document.addEventListener('keyup', (e) => {
+                const key = e.key.toLowerCase();
+                if (['w','a','s','d','q','e'].includes(key)) {
+                    e.preventDefault();
+                    keys[key] = false;
+                    if (!Object.values(keys).some(v => v)) stopKeyControl();
+                }
+            });
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) { stopKeyControl(); Object.keys(keys).forEach(k => keys[k] = false); }
+            });
+            window.addEventListener('blur', () => {
+                stopKeyControl(); Object.keys(keys).forEach(k => keys[k] = false);
+            });
+        }
+
+        // ============================================================
+        // 6. 模式切换与操作
+        // ============================================================
+        function setLauncherMode(mode) {
+            if (!isConnected) { log('⚠️ 未连接'); return; }
+            const request = new ROSLIB.ServiceRequest({
+                action: 'start',
+                package_name: 'car_vel',
+                launch_type: (mode === 'mapping') ? 'mapping' : 'car_vel'
+            });
+            controlLaunchService.callService(request, (res) => {
+                if (res.success) {
+                    currentMode = mode;
+                    document.getElementById('btn-mapping').className = (mode === 'mapping') ? 'active' : '';
+                    document.getElementById('btn-navigation').className = (mode === 'navigation') ? 'active' : '';
+                    document.getElementById('mode-display').textContent = (mode === 'mapping') ? '建图' : '导航';
+                    log('✅ 切换模式成功: ' + (mode === 'mapping' ? '建图' : '导航'));
+                }
+                else log('❌ 切换失败: ' + res.message);
+            }, (err) => log('❌ 服务错误: ' + err));
+        }
+
+        function setClickMode(mode) {
+            clickMode = mode;
+            document.getElementById('btn-initial-pose-mode').className = (mode === 'initialpose') ? 'active-mode' : '';
+            document.getElementById('btn-goal-mode').className = (mode === 'goal') ? 'active-mode' : '';
+            log(`🖱️ 点击模式: ${mode === 'initialpose' ? '设置初始位姿' : '设置导航目标'}`);
+        }
+
+        function saveMap() {
+            if (!isConnected) { log('⚠️ 未连接'); return; }
+            const mapName = 'map_' + new Date().toISOString().replace(/[-:]/g,'').slice(0,15);
+            const req = new ROSLIB.ServiceRequest({ map_name: mapName });
+            saveMapService.callService(req, (res) => {
+                if (res.success) { log('✅ 地图保存成功: ' + res.message); refreshMapList(mapName); }
+                else log('❌ 保存失败: ' + res.message);
+            }, (err) => log('❌ 保存服务错误: ' + err));
+        }
+
+        function selectedMapName() {
+            return document.getElementById('map-selector').value;
+        }
+
+        function refreshMapList(selectName = '') {
+            if (!isConnected || !getMapListService) return;
+            getMapListService.callService(new ROSLIB.ServiceRequest({}), (res) => {
+                if (!res.success) { log('❌ 获取地图列表失败: ' + res.message); return; }
+                const select = document.getElementById('map-selector');
+                const preferred = selectName || select.value;
+                select.innerHTML = '<option value="">请选择已保存的地图</option>';
+                (res.map_names || []).forEach((name) => {
+                    const option = document.createElement('option');
+                    option.value = name; option.textContent = name; select.appendChild(option);
+                });
+                if (preferred && [...select.options].some(o => o.value === preferred)) select.value = preferred;
+                log(`🗂️ 已读取 ${res.map_names.length} 张地图`);
+            }, (err) => log('❌ 地图列表服务错误: ' + err));
+        }
+
+        function loadEditableMap(mapName) {
+            if (!mapName) { log('⚠️ 请先选择地图'); return; }
+            getEditedMapService.callService(new ROSLIB.ServiceRequest({ map_name: mapName }), (res) => {
+                if (!res.success) { log('❌ 读取地图失败: ' + res.message); return; }
+                const info = {
+                    width: res.width, height: res.height, resolution: res.resolution,
+                    origin: { position: { x: res.origin[0], y: res.origin[1], z: 0 }, orientation: { x:0, y:0, z:0, w:1 } }
+                };
+                mapDrawer.setMapData(info, res.image_data);
+                editingMapName = mapName;
+                log(`🖼️ 已打开地图 ${mapName}${res.has_changes ? '（含未保存修改）' : ''}`);
+            }, (err) => log('❌ 地图读取服务错误: ' + err));
+        }
+
+        function loadSelectedMap() {
+            const mapName = selectedMapName();
+            if (!mapName) { log('⚠️ 请先选择地图'); return; }
+            switchMapService.callService(new ROSLIB.ServiceRequest({ map_name: mapName }), (res) => {
+                if (res.success) {
+                    editingMapName = mapName;
+                    loadEditableMap(mapName);
+                    log('✅ 已请求加载地图: ' + mapName);
+                } else log('❌ 加载地图失败: ' + res.message);
+            }, (err) => log('❌ 地图加载服务错误: ' + err));
+        }
+
+        function deleteSelectedMap() {
+            const mapName = selectedMapName();
+            if (!mapName) { log('⚠️ 请先选择地图'); return; }
+            if (!window.confirm(`确定删除地图“${mapName}”及其关联 3D 地图吗？`)) return;
+            deleteMapService.callService(new ROSLIB.ServiceRequest({ map_name: mapName }), (res) => {
+                if (res.success) { log('✅ 已删除地图: ' + mapName); refreshMapList(); }
+                else log('❌ 删除失败: ' + res.message);
+            }, (err) => log('❌ 删除地图服务错误: ' + err));
+        }
+
+        function setEditMode(mode) {
+            const mapName = selectedMapName();
+            if (!mapName) { log('⚠️ 请先选择地图再修图'); return; }
+            editMode = editMode === mode ? null : mode;
+            editingMapName = mapName;
+            document.getElementById('btn-edit-obstacle').classList.toggle('editor-active', editMode === 'obstacle');
+            document.getElementById('btn-edit-free').classList.toggle('editor-active', editMode === 'free');
+            if (editMode) { loadEditableMap(mapName); log(editMode === 'obstacle' ? '✏️ 修图：左键拖拽画障碍' : '🧽 修图：左键拖拽擦除障碍'); }
+            else log('✏️ 已退出修图模式');
+        }
+
+        function editMapCell(mapX, mapY) {
+            if (!editingMapName || !mapDrawer || !mapDrawer.mapInfo) return;
+            const info = mapDrawer.mapInfo;
+            const x = Math.floor((mapX - info.origin.position.x) / info.resolution);
+            const rosY = Math.floor((mapY - info.origin.position.y) / info.resolution);
+            if (x < 0 || x >= info.width || rosY < 0 || rosY >= info.height) return;
+            const imageY = info.height - 1 - rosY;
+            const radius = 2;
+            const indices = [];
+            for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+                const px = x + dx, py = imageY + dy;
+                if (px >= 0 && px < info.width && py >= 0 && py < info.height) indices.push(py * info.width + px);
+            }
+            const pixelValue = editMode === 'obstacle' ? 0 : 254;
+            setMapPixelsService.callService(new ROSLIB.ServiceRequest({ map_name: editingMapName, indices, pixel_value: pixelValue }), (res) => {
+                if (res.success) loadEditableMap(editingMapName);
+                else log('❌ 修图失败: ' + res.message);
+            }, (err) => log('❌ 修图服务错误: ' + err));
+        }
+
+        function saveEdits() {
+            saveEditedMapsService.callService(new ROSLIB.ServiceRequest({ map_name: editingMapName || selectedMapName() }), (res) => {
+                if (res.success) {
+                    log('✅ ' + res.message + '；请点击“加载”使导航使用新地图');
+                    editMode = null;
+                    document.getElementById('btn-edit-obstacle').classList.remove('editor-active');
+                    document.getElementById('btn-edit-free').classList.remove('editor-active');
+                }
+                else log('❌ 保存修图失败: ' + res.message);
+            }, (err) => log('❌ 保存修图服务错误: ' + err));
+        }
+
+        function cancelEdits() {
+            undoMapEditsService.callService(new ROSLIB.ServiceRequest({ map_name: editingMapName || selectedMapName() }), (res) => {
+                if (res.success) {
+                    log('↩️ ' + res.message); editMode = null; loadEditableMap(editingMapName);
+                    document.getElementById('btn-edit-obstacle').classList.remove('editor-active');
+                    document.getElementById('btn-edit-free').classList.remove('editor-active');
+                }
+                else log('❌ 撤销失败: ' + res.message);
+            }, (err) => log('❌ 撤销修图服务错误: ' + err));
+        }
+
+        function resetInitialPose() {
+            if (!isConnected) { log('⚠️ 未连接'); return; }
+            const initPub = new ROSLIB.Topic({ ros, name: '/initialpose', messageType: 'geometry_msgs/PoseWithCovarianceStamped' });
+            const msg = new ROSLIB.Message({
+                header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+                pose: {
+                    pose: { position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
+                    covariance: [0.25,0,0,0,0,0, 0,0.25,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0.25,0,0, 0,0,0,0,0.25,0, 0,0,0,0,0,0.25]
+                }
+            });
+            initPub.publish(msg);
+            log('📍 复位位姿到原点');
+        }
+
+        // ============================================================
+        // 7. 模拟电量
+        // ============================================================
+        let batteryValue = 85;
+        setInterval(() => {
+            batteryValue += (Math.random()-0.5)*2;
+            batteryValue = Math.min(Math.max(batteryValue,20),100);
+            const el = document.getElementById('battery-display');
+            el.textContent = Math.round(batteryValue) + '%';
+            el.className = 'value' + (batteryValue<30 ? ' danger' : batteryValue<50 ? ' warning' : '');
+        }, 5000);
+
+        // ============================================================
+        // 8. 初始化
+        // ============================================================
+        function init() {
+            log('🚀 启动 Web 控制面板 (角度修正: 拖拽方向即朝向)');
+            connectROS();
+            setupKeyboard();
+
+            const slider = document.getElementById('speed-slider');
+            const label = document.getElementById('speed-label');
+            slider.addEventListener('input', () => {
+                speedScale = parseFloat(slider.value);
+                label.textContent = speedScale.toFixed(2);
+            });
+
+            document.getElementById('remote-toggle').addEventListener('click', toggleRemote);
+            document.getElementById('btn-mapping').addEventListener('click', () => setLauncherMode('mapping'));
+            document.getElementById('btn-navigation').addEventListener('click', () => setLauncherMode('navigation'));
+            document.getElementById('btn-stop').addEventListener('click', () => {
+                if (!isConnected) return;
+                const req = new ROSLIB.ServiceRequest({ action: 'stop', package_name: 'car_vel', launch_type: 'all' });
+                controlLaunchService.callService(req, (res) => {
+                    if (res.success) {
+                        log('⏹️ 已停止所有进程');
+                        document.getElementById('mode-display').textContent = '待机';
+                        document.getElementById('btn-mapping').className = '';
+                        document.getElementById('btn-navigation').className = '';
+                    } else log('❌ 停止失败: ' + res.message);
+                });
+            });
+            document.getElementById('btn-initial-pose-mode').addEventListener('click', () => setClickMode('initialpose'));
+            document.getElementById('btn-goal-mode').addEventListener('click', () => setClickMode('goal'));
+            document.getElementById('btn-save-map').addEventListener('click', saveMap);
+            document.getElementById('btn-initial-pose-reset').addEventListener('click', resetInitialPose);
+            document.getElementById('btn-refresh-maps').addEventListener('click', () => refreshMapList());
+            document.getElementById('btn-load-map').addEventListener('click', loadSelectedMap);
+            document.getElementById('btn-delete-map').addEventListener('click', deleteSelectedMap);
+            document.getElementById('btn-edit-obstacle').addEventListener('click', () => setEditMode('obstacle'));
+            document.getElementById('btn-edit-free').addEventListener('click', () => setEditMode('free'));
+            document.getElementById('btn-save-edits').addEventListener('click', saveEdits);
+            document.getElementById('btn-cancel-edits').addEventListener('click', cancelEdits);
+
+            window.addEventListener('beforeunload', () => { stopKeyControl(); });
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

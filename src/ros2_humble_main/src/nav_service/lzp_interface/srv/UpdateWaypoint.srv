@@ -1,0 +1,4 @@
+lzp_interface/Waypoint waypoint
+---
+bool success
+string message

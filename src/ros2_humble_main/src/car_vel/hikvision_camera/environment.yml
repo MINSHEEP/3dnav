@@ -1,0 +1,19 @@
+name: hikvision-camera
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - tk
+  # 提供 ffmpeg/ffplay，分别用于设备语音转码和本机告警音播放。
+  - ffmpeg>=7,<8
+  # Conda 包已带 evdev，避免目标机现场编译 C 扩展。
+  - pynput=1.8.1
+  - pip
+  - pip:
+      - numpy==2.2.6
+      - opencv-python==4.13.0.92
+      # 与打包的多类别烟头模型版本对齐，兼容 CPU 运行。
+      - torch==2.10.0
+      - torchvision==0.25.0
+      - ultralytics==8.4.104
+      - edge-tts>=7,<8

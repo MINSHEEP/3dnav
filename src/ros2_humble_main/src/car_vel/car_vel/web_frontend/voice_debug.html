@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>语音遥控调试</title>
+    <link rel="stylesheet" href="voice_debug.css?v=20261016-nav-2d">
+    <script defer src="voice_debug.js?v=20261016-nav-2d"></script>
+</head>
+<body data-service-port="">
+<main class="debug-shell">
+    <header class="debug-header">
+        <div><span class="eyebrow">独立调试页面</span><h1>语音与遥控</h1></div>
+        <div class="connection"><span id="service-status" class="badge">正在连接调试服务…</span><button id="reconnect" type="button">重新连接</button></div>
+    </header>
+    <p id="page-message" class="page-message" role="status">正在读取机器人与语音状态。</p>
+    <div class="debug-grid">
+        <section class="panel remote-panel" aria-labelledby="remote-title">
+            <div class="panel-heading"><h2 id="remote-title">机器人遥控</h2><span id="robot-status" class="badge">未连接</span></div>
+            <p class="hint">按住方向按钮移动，松开停止。键盘 W / S 前后，A / D 左右，Q / E 转向，空格停止。</p>
+            <p class="hint">程序启动时自动设置越障模式；前后测距拦截已关闭（仅本页遥控）。</p>
+            <div class="posture-row">
+                <button class="posture-button" type="button" data-posture="stand" disabled>站立</button>
+                <button class="posture-button" type="button" data-posture="lie_down" disabled>趴下</button>
+                <span>当前姿态 <strong id="posture">未知</strong></span>
+            </div>
+            <div class="direction-grid" aria-label="方向控制">
+                <button class="direction" data-direction="turn_left" type="button" disabled><span aria-hidden="true">↶</span>左转<kbd>Q</kbd></button>
+                <button class="direction" data-direction="forward" type="button" disabled><span aria-hidden="true">↑</span>前进<kbd>W</kbd></button>
+                <button class="direction" data-direction="turn_right" type="button" disabled><span aria-hidden="true">↷</span>右转<kbd>E</kbd></button>
+                <button class="direction" data-direction="left" type="button" disabled><span aria-hidden="true">←</span>左移<kbd>A</kbd></button>
+                <button id="stop" class="direction stop" type="button" disabled><span aria-hidden="true">■</span>停止<kbd>空格</kbd></button>
+                <button class="direction" data-direction="right" type="button" disabled><span aria-hidden="true">→</span>右移<kbd>D</kbd></button>
+                <button class="direction back" data-direction="backward" type="button" disabled><span aria-hidden="true">↓</span>后退<kbd>S</kbd></button>
+            </div>
+            <label class="speed-control" for="speed"><span>遥控速度</span><input id="speed" type="range" min="0.1" max="0.6" step="0.1" value="0.4"><output id="speed-value" for="speed">0.4</output></label>
+        </section>
+        <section class="panel voice-panel" aria-labelledby="voice-title">
+            <div class="panel-heading"><h2 id="voice-title">语音调试</h2><span id="voice-status" class="badge">未连接</span></div>
+            <div class="microphone-card">
+                <div><h3>小主机麦克风</h3><p id="microphone-description">已关闭，音频不会传入语音程序。</p></div>
+                <button id="microphone" type="button" role="switch" aria-checked="false" aria-describedby="microphone-description" disabled><span class="switch-track" aria-hidden="true"><span></span></span><span id="microphone-label">开启麦克风</span></button>
+            </div>
+            <div class="phrase-heading"><h3>固定文本输入</h3><p class="hint">这两个按钮始终独立于麦克风开关。</p></div>
+            <button class="phrase-button" id="phrase-first" data-phrase="first" type="button" disabled><span class="phrase-name">第一句 <span aria-hidden="true">↗</span></span><span class="phrase-text">歪歪帮我介绍一下</span></button>
+            <button class="phrase-button" id="phrase-second" data-phrase="second" type="button" disabled><span class="phrase-name">第二句 <span aria-hidden="true">↗</span></span><span class="phrase-text">歪歪下一步介绍实验班</span></button>
+            <div class="conversation" aria-live="polite"><div><span class="conversation-label">最近输入</span><p id="last-input">等待语音或按钮输入</p></div><div><span class="conversation-label">程序回复</span><p id="last-reply">等待回复，语音由小主机扬声器播放</p></div></div>
+        </section>
+    </div>
+    <section class="panel navigation-panel" aria-labelledby="navigation-title">
+        <div class="panel-heading"><h2 id="navigation-title">导航与讲解</h2><span id="navigation-status" class="badge">尚未启动</span></div>
+        <p class="hint">二维导航 · 地图 shiyanshi1 · 路线 luxian1。遥控方向、停止和姿态按钮可随时结束导航并接管；讲解会继续播放。</p>
+        <p class="hint"><a href="#anchor-picker">首次使用：点击这里查看地图、设置区域a</a></p>
+        <div class="navigation-buttons">
+            <button data-navigation="prepare" type="button" disabled>开始导航</button>
+            <button data-navigation="route1" type="button" disabled>导航1<span>点3 → 点11 ＋ 第一句</span></button>
+            <button data-navigation="route2" type="button" disabled>导航2<span>点3 → 点11 ＋ 第二句</span></button>
+        </div>
+        <p id="navigation-message" class="hint" role="status">点击“开始导航”，加载二维地图并自动校正区域a初始点。</p>
+        <details id="anchor-picker" open>
+            <summary>地图 · 设置区域a的大概位置与朝向</summary>
+            <p class="hint">先在下图区域a附近按住鼠标或手指，向机器人面朝的方向拖动。保存后启动导航并校正；以后会复用此位置。</p>
+            <p id="anchor-map-message" class="hint" role="status">正在读取已保存的地图，不需要等待机器人站立或导航启动。</p>
+            <div id="anchor-map-wrap" class="anchor-map-wrap" hidden><canvas id="anchor-map" aria-label="区域a初始位置选择地图"></canvas></div>
+            <div class="anchor-actions"><span id="anchor-description">等待地图。</span><button id="save-anchor" type="button" disabled>保存区域a并校正</button><button id="reset-anchor" type="button" disabled>重新设置区域a</button></div>
+        </details>
+    </section>
+    <section class="panel log-panel" aria-labelledby="log-title"><div class="panel-heading"><h2 id="log-title">调试记录</h2><button id="clear-log" type="button">清空</button></div><div id="log" class="log" role="log" aria-live="polite"><p class="log-placeholder">连接后将在这里显示操作结果。</p></div></section>
+    <footer>页面离开或连接超时后自动关闭麦克风并停止运动。麦克风开关不影响文本发送和语音播放。</footer>
+</main>
+</body>
+</html>

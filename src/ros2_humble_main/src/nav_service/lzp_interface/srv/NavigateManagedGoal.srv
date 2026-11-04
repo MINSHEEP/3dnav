@@ -1,0 +1,6 @@
+geometry_msgs/PoseStamped goal
+string owner_token
+bool require_yaw
+---
+bool success
+string message

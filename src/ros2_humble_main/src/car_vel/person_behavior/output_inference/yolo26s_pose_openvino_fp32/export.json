@@ -1,0 +1,39 @@
+{
+  "model": "yolo26s-pose",
+  "source": {
+    "source_url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-pose.pt",
+    "sha256": "a083adb42303728ae14c4bd6bd56d80da46f82fb2564dbd6f31dcc92ea321646",
+    "bytes": 24151790
+  },
+  "ultralytics": "8.4.198",
+  "torch": "2.5.1+cpu",
+  "openvino": "2024.6.0-17404-4c0f47d2335-releases/2024/6",
+  "precision": "FP32; original pretrained weights, no quantization",
+  "opset": 17,
+  "export_compatibility": "batch=1 row Gather instead of GatherElements; PyTorch outputs checked exactly equal",
+  "input": {
+    "images": [
+      1,
+      3,
+      640,
+      640
+    ]
+  },
+  "output": {
+    "output0": [
+      1,
+      300,
+      57
+    ]
+  },
+  "layout": "xyxy,score,class0,17*(x,y,confidence); end-to-end, no external NMS",
+  "reference_check": {
+    "people": 1,
+    "max_abs_error": 0.0001220703125
+  },
+  "files": {
+    "model.bin": "8afd917c80f3519c6f86506d892f7f5b2d933e00158f1d4531a3578abab5c38d",
+    "model.onnx": "8ddab090d79885021a2ca2c9deee7d35345d25c5d7b35e8c46b7300a9a0b7606",
+    "model.xml": "eb37986fcdd594d16cad2c1c64e752d048abbb5b72744e3be13d2c5a6c527779"
+  }
+}

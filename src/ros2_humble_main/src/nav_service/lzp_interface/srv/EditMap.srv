@@ -1,0 +1,10 @@
+string map_name
+string action  # "add_obstacle", "remove_obstacle", "clear_area", "set_value"
+int32 x1  # 第一个点的x坐标
+int32 y1  # 第一个点的y坐标
+int32 x2  # 第二个点的x坐标
+int32 y2  # 第二个点的y坐标
+uint8 obstacle_value  # 0-100, 100 is occupied, 0 is free space
+---
+bool success
+string message

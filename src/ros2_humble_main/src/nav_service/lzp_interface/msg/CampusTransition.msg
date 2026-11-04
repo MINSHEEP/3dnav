@@ -1,0 +1,11 @@
+string transition_id
+string source_area
+string target_area
+float64 distance_m
+bool bidirectional
+lzp_interface/TerrainObservation observation
+bool executable
+geometry_msgs/Pose source_pose
+geometry_msgs/Pose target_pose
+bool has_elevation_change
+float64 elevation_change_m

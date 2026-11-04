@@ -1,0 +1,57 @@
+# Rough robot pose in the map frame. The action server never republishes this
+# pose and never owns map->odom; the caller decides whether to pass the result
+# to the scoped authority, or retains the legacy AMCL initialization.
+geometry_msgs/PoseWithCovarianceStamped rough_pose
+string map_name
+
+# Maximum correction accepted relative to rough_pose.
+# search_xy is metres and search_yaw is radians.
+float32 search_xy
+float32 search_yaw
+
+# End-to-end deadline in seconds. A value <= 0 uses the server default.
+float32 timeout_sec
+
+# Opt-in for Xingji 3D only; legacy callers keep their existing contract.
+bool robust_validation
+bool tracking
+string map_load_id
+---
+uint16 CODE_OK=0
+uint16 CODE_CANCELLED=1
+uint16 CODE_INVALID_GOAL=10
+uint16 CODE_MAP_NAME_INVALID=11
+uint16 CODE_METADATA_MISSING=12
+uint16 CODE_METADATA_INVALID=13
+uint16 CODE_PCD_MISSING=14
+uint16 CODE_PCD_CHECKSUM_MISMATCH=15
+uint16 CODE_PCD_LOAD_FAILED=16
+uint16 CODE_CLOUD_TIMEOUT=20
+uint16 CODE_CLOUD_INVALID=21
+uint16 CODE_TF_UNAVAILABLE=22
+uint16 CODE_NDT_FAILED=30
+uint16 CODE_GICP_FAILED=31
+uint16 CODE_VALIDATION_FAILED=32
+uint16 CODE_TIMEOUT=33
+uint16 CODE_INTERNAL_ERROR=34
+
+bool success
+uint16 code
+string message
+geometry_msgs/PoseWithCovarianceStamped refined_pose
+
+# fitness is the matched-point RMSE in metres; overlap is in [0, 1].
+float32 fitness
+float32 overlap
+# Metres and radians respectively.
+float32 correction_xy
+float32 correction_yaw
+bool candidate_verified
+uint32 candidates_checked
+# Geometry used by the returned pose and its quality metrics. Robust Xingji
+# 3D clients require se3_map_odom_v1; legacy output remains planar.
+string transform_model
+---
+string stage
+float32 progress
+string message

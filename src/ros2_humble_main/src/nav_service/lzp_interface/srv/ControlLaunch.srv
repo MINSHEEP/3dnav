@@ -1,0 +1,7 @@
+string action     # "start" 或 "stop"
+string package_name  # package name
+string launch_type # launch_type
+
+---
+bool success
+string message

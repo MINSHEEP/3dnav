@@ -1,0 +1,46 @@
+{
+  "source_project": "Supplied local person-behavior-recognition",
+  "version": "v4-smoking-near-face-conservative-20261030",
+  "integration_date": "2026-11-02",
+  "scope": "Merge smoking rules/model with shared CPU pose and separate capture-clock fight worker; no retraining",
+  "preserved": "Original fall/fight weights and temporal limits; CPU IR workaround, protocol and inspection integration",
+  "files": [
+    {
+      "path": "pphuman_runtime/smoking_filter.py",
+      "supplied_sha256": "d43cd485a7d0133c4b3596f312da26aa5b22a6bc4382ac5a624cf74ec4e06d29",
+      "bundled_sha256": "d43cd485a7d0133c4b3596f312da26aa5b22a6bc4382ac5a624cf74ec4e06d29"
+    },
+    {
+      "path": "pphuman_runtime/smoking_hand_to_mouth.py",
+      "supplied_sha256": "f525dbaeccb848c4dad60487c4bcccca2aa229bb97071ee291f7cdcb32a055fc",
+      "bundled_sha256": "f525dbaeccb848c4dad60487c4bcccca2aa229bb97071ee291f7cdcb32a055fc"
+    },
+    {
+      "path": "pphuman_runtime/smoking_temporal.py",
+      "supplied_sha256": "4e9c01f651b7f319b4f232ce698fe428b3d0c6fe8ff9ef1f753dfda0244ec3cb",
+      "bundled_sha256": "4e9c01f651b7f319b4f232ce698fe428b3d0c6fe8ff9ef1f753dfda0244ec3cb"
+    }
+  ],
+  "adapted_files": [
+    {
+      "path": "pphuman_runtime/runtime_yolo.py",
+      "upstream_sha256": "cac998338234f786bbee8be0abac82a368d0fc03696a25c6e01e236b06e319cf",
+      "bundled_sha256": "7c5fbcf3c620eb80a7dc69ac62849f21877a5fe6a3b42b85e287c256d55f013f"
+    },
+    {
+      "path": "pphuman_runtime/yolo_backend.py",
+      "upstream_sha256": "defdd612da42d7ad6e75832d4fb9920cd647a9a1a4c06865015d79e6a5994876",
+      "bundled_sha256": "0f46949eaf0ca7b8cf7398e01be618e2589b54faca35ca60b14fc83966e8f2e1"
+    },
+    {
+      "path": "pphuman_runtime/worker.py",
+      "upstream_sha256": "cf409f5faa81e7d629d84458f48c970726d2f86927b8e5973165bb31a3cea0d1",
+      "bundled_sha256": "2c9e477652907a350a5640b7c3249eb04eb4fc745e39f0f6b71bb26a146a58c9"
+    },
+    {
+      "path": "pphuman_runtime/protocol.py",
+      "upstream_sha256": "b3997973603a9aa377fed81d159599d6ed7dd46ce4f8c35cffe6454eafa0f44d",
+      "bundled_sha256": "fc97f627b35c7699aa39de1420d40ad3accf5a87af8aa65ffb3e673555b9830d"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+lzp_interface/TerrainObservation observation
+string[] available_modes
+---
+bool success
+lzp_interface/TerrainAssessment assessment
+

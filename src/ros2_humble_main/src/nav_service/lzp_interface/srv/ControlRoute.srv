@@ -1,0 +1,6 @@
+string command
+string owner_token
+int64 authorization_generation
+---
+bool success
+string message

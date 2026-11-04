@@ -1,0 +1,30 @@
+# ROS 2 / colcon
+**/build/
+**/install/
+**/log/
+**/.cache/
+# 临时文件与本地输出
+.codex_tmp/
+**/.planning/
+/outputs/
+/tmp/
+/src/tmp/
+/.pytest_cache/
+/analysis/
+/diagnostics/
+/outputs/
+
+# Python 缓存
+**/__pycache__/
+*.pyc
+
+# 本地环境配置
+.env
+.env.local
+
+# 地图编辑备份与锁文件
+**/.cloud-edit-backups/
+**/.saved-map-write.lock
+
+# Livox 编译产物
+/src/Livox_SDK2/build-target/

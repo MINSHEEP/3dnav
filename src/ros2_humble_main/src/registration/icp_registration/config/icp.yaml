@@ -1,0 +1,109 @@
+/icp_registration:
+  ros__parameters:
+    use_sim_time: false
+
+    # The action loads <map_name>.pcd and <map_name>.localization.yaml only
+    # when /relocalize is called. Legacy PCDs without validated metadata are
+    # deliberately rejected.
+    pcd_directory: "/home/a/3dnav/src/ros2_humble_main/src/navigation/robot_navigation2/pcdmaps"
+    metadata_schema: "ros2_mid360_localization_map"
+    metadata_version: 1
+
+    # Navigation-mode publication of the validated saved localization PCD.
+    # This is a low-rate visualization/perception source, not a raw 3-D global
+    # path search. The cached full cloud remains available to NDT/GICP.
+    global_map_topic: "/global_localization_map"
+    global_map_publish_period_sec: 3.0
+    global_map_maximum_points: 120000
+
+    pointcloud_topic: "/cloud_registered"
+    map_frame: "map"
+    odom_frame: "odom"
+    base_frame: "base_footprint"
+
+    # Goal fields use metres/radians. Zero values select these defaults. The
+    # hard limits implement the agreed automatic-acceptance envelope.
+    default_search_xy: 3.0
+    default_search_yaw_deg: 90.0
+    hard_max_search_xy: 3.0
+    hard_max_search_yaw_deg: 90.0
+    default_timeout_sec: 30.0
+    maximum_timeout_sec: 30.0
+
+    # Five timestamped frames retain more observed structure. Require all five
+    # to pass consistency checks, rather than weakening the acceptance ratio.
+    accumulation_frames: 5
+    minimum_consistent_frames: 5
+    cloud_wait_timeout_sec: 3.0
+    tf_lookup_retry_sec: 0.25
+
+    # Live-cloud filtering in base_footprint coordinates. The points themselves
+    # remain in odom, matching /cloud_registered's actual frame contract.
+    source_min_range: 0.55
+    # Match the live-cloud radius to the 8 m target ROI. The extra 3 m ROI
+    # search margin covers the maximum accepted rough-pose correction.
+    source_max_range: 8.0
+    source_min_z: -0.15
+    source_max_z: 2.5
+    source_self_radius: 0.55
+    source_self_min_z: -0.5
+    source_self_max_z: 0.7
+
+    # Conservative 4 GB RAM / low-CPU limits.
+    rough_leaf_size: 0.45
+    fine_leaf_size: 0.15
+    minimum_points_per_frame: 250
+    # NDT uses the coarser voxel cloud and therefore needs its own lower count
+    # gate. GICP and final quality checks still use the denser 700-point cloud.
+    minimum_rough_source_points: 250
+    minimum_source_points: 700
+    minimum_target_points: 1200
+    maximum_raw_points_per_frame: 80000
+    maximum_rough_source_points: 4000
+    maximum_fine_source_points: 8000
+    maximum_rough_target_points: 18000
+    maximum_fine_target_points: 30000
+    maximum_map_points: 1000000
+    maximum_pcd_mebibytes: 64
+    roi_radius: 8.0
+    roi_min_z: -1.5
+    roi_max_z: 3.0
+
+    # Sample the centre and eight XY boundary positions at 0/±45/±90 degrees.
+    # Cheap nearest-neighbour scores shortlist 9 of 45 candidates for NDT;
+    # final GICP and all quality checks remain mandatory.
+    ndt_resolution: 1.0
+    ndt_step_size: 0.2
+    ndt_transformation_epsilon: 0.01
+    ndt_maximum_iterations: 6
+    ndt_yaw_hypotheses: 5
+    ndt_maximum_fitness: 2.0
+
+    # Fine GICP.
+    gicp_maximum_iterations: 6
+    gicp_maximum_optimizer_iterations: 4
+    gicp_maximum_correspondence_distance: 0.6
+    gicp_transformation_epsilon: 0.001
+    gicp_fitness_epsilon: 0.0001
+    gicp_correspondence_randomness: 12
+
+    # Xingji robust INITIAL requests have a 30 s budget and large coarse
+    # errors. Tracking/legacy retain the six/four-iteration low-latency profile.
+    initial_ndt_maximum_iterations: 20
+    initial_gicp_maximum_iterations: 40
+    initial_gicp_maximum_optimizer_iterations: 12
+
+    # Final acceptance gates. `fitness` returned by the Action is the
+    # matched-point RMSE in metres, not PCL's squared fitness score.
+    metric_maximum_distance: 0.4
+    maximum_rmse: 0.20
+    minimum_overlap: 0.55
+    minimum_planar_eigen_ratio: 0.01
+    minimum_matched_points: 350
+    maximum_vertical_correction: 0.35
+    # Only robust continuous Xingji tracking; initial/legacy limits stay above.
+    tracking_maximum_rmse: 0.22
+    tracking_maximum_vertical_correction: 0.45
+    maximum_tilt_deg: 8.0
+    minimum_refined_xy_stddev: 0.05
+    refined_yaw_stddev_deg: 5.0

@@ -1,0 +1,4 @@
+# ResumeNavigation.srv
+---
+bool success
+string message

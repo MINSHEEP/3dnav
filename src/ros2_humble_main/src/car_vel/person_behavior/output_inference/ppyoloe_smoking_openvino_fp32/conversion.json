@@ -1,0 +1,10 @@
+{
+  "source_sha256": "3d71de53a5876459017db3d8acaee26d49c98a335511d7a27ecbedb034343ae2",
+  "fixed_squeeze_axes": [
+    "Squeeze.0",
+    "Squeeze.2"
+  ],
+  "input_batch": 1,
+  "weights": "unchanged FP32",
+  "status": "experimental_not_promoted"
+}

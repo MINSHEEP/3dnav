@@ -1,0 +1,6 @@
+# 请求不需要参数
+---
+# 响应
+bool success
+string message
+string map_name

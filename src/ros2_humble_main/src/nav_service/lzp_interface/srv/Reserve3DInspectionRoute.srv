@@ -1,0 +1,9 @@
+# Consume a recent whole-route preview for exactly one inspection task.
+string preview_id
+string owner_token
+int64 route_id
+int32 loop_count
+bool bidirectional
+---
+bool success
+string message

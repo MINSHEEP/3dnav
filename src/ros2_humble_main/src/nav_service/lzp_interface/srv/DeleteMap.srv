@@ -1,0 +1,6 @@
+# 请求
+string map_name
+---
+# 响应
+bool success
+string message

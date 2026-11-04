@@ -1,0 +1,6 @@
+# Consume one recent preview after repeating all navigation safety checks.
+string preview_id
+---
+bool success
+string code
+string message

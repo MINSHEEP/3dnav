@@ -1,0 +1,11 @@
+string source_area
+string target_area
+string[] available_modes
+bool allow_unavailable_modes
+---
+bool success
+string message
+lzp_interface/CampusRouteSegment[] segments
+float64 total_cost
+bool requires_hardware_adapter
+
