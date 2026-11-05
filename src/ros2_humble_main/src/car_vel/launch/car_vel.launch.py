@@ -125,6 +125,7 @@ def generate_launch_description():
             'cancel_confirmation_timeout_sec': 12.0,
             'amcl_confirmation_timeout_sec': 10.0,
             'rough_amcl_timeout_sec': 15.0,
+            'initial_scan_match_ratio': 0.50,
         }],
     )
 

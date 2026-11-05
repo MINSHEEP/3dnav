@@ -86,17 +86,17 @@ def test_stable_amcl_requires_scan_quality_and_accepts_coarse_correction():
     c.amcl_position_std_limit=.55;c.amcl_yaw_std_limit=.5
     c.search_xy=3.;c.search_yaw=math.pi/2
     c.amcl_max_gap=.75;c.amcl_position_spread_limit=.15;c.amcl_yaw_spread_limit=.3
-    c.amcl_sample_count=5;c.amcl_hold=1.5;c.scan_match_ratio=.65
+    c.amcl_sample_count=5;c.amcl_hold=1.5;c.scan_match_ratio=.50
     statuses=[]
     c._publish_status=lambda *a,**kw:statuses.append((a,kw))
     candidate=NS(pose=NS(pose=pose()))
     c.amcl_wait=dict(generation=1,candidate=candidate,source='rough',amcl_stamp_before=0,window=None,metrics={},refinement_error='')
-    c._initial_scan_quality=lambda m:({'match_ratio':0.,'valid_beams':81},'poor fit')
+    c._initial_scan_quality=lambda m:({'match_ratio':.49,'valid_beams':81},'poor fit')
     def sample(sec,nsec=0):
         return NS(header=NS(stamp=NS(sec=sec,nanosec=nsec)),pose=NS(pose=pose(x=1.5),covariance=[.01]*36))
     for sec in range(1,7):c._amcl_callback(sample(sec))
     assert c.amcl_wait is not None and c.amcl_wait['window'] is None
-    c._initial_scan_quality=lambda m:({'match_ratio':.95,'valid_beams':81},'good fit')
+    c._initial_scan_quality=lambda m:({'match_ratio':.51,'valid_beams':81},'good fit')
     for i in range(5):c._amcl_callback(sample(10+i//2,(i%2)*500000000))
     assert c.amcl_wait is None
     assert statuses[-1][1]['success'] is True
