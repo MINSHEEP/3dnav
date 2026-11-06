@@ -1,0 +1,6 @@
+# 手册 5.13；服务成功仅表示请求成功，最终状态以连接状态回调为准。
+uint16 SDK=1
+uint16 JOYSTICK=2
+uint16 authority
+---
+SdkResult result

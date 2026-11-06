@@ -1,0 +1,12 @@
+# 手册 5.12；不提供自动充电、退桩或不存在的 X 腿命令。
+uint16 DAMPING=0xA101
+uint16 FIXEDSTAND=0xA102
+uint16 FIXEDDOWN=0xA103
+uint16 MOVE=0xA104
+uint16 MOVE_TANK=0xA108
+uint16 mode
+# 5.12.3 第 9 条重启后在桩站立例外，默认不作该确认。
+bool confirm_reboot_on_dock
+---
+SdkResult result
+uint16 sport_status

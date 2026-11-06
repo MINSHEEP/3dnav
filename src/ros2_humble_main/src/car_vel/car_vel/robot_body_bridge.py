@@ -397,7 +397,7 @@ def run_worker(body, profile, generation, frozen, pipe):
             try:
                 from car_vel.xuanji_bridge import XuanjiBridge
             except ImportError as error:
-                raise RuntimeError('璇玑依赖未加载：请先编译并 source sw01_ws/install/setup.bash') from error
+                raise RuntimeError('璇玑依赖未加载：请在本 3dnav 工作空间编译 astrall_driver、astrall_interfaces 和 car_vel，再加载 install/setup.bash') from error
             node = XuanjiBridge(profile, frozen=frozen)
         else:
             raise ValueError('不支持的本体')

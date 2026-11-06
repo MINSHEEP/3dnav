@@ -131,18 +131,14 @@ ros2 launch car_vel launch_manager.launch.py
 ## 璇玑 Hypertron 轮式四足
 
 设置页新增 `xuanji`。旧配置加载时只补上璇玑默认项，保留原本体、版本和参数。
-璇玑复用 `sw01_ws` 的 `astrall_driver` / `astrall_interfaces`，通过 SDK 1.1.1 控制；
-仅选中璇玑时加载并启动该驱动。其他底盘无需安装 Astrall。
-生产启动显式设置 `use_fake_sdk=false`，关闭厂商雷达和 RGB 数据，不启动假雷达或旧键盘 WS 程序。
-
-部署前编译现有 SDK 工作区的 `astrall_driver` 及依赖，并在启动主程序的同一个环境依次加载
-`sw01_ws/install/setup.bash`、本项目 `install/setup.bash`。SDK 运行环境为 Linux x86_64 / ROS 2 Humble。
-主程序仍编译 `lzp_interface lzp_service car_vel`，入口仍为 `car_vel launch_manager.launch.py`。
-厂商 SDK、驱动与运行库需要一并部署到工控机；不要只复制本项目 Python 文件。
+璇玑的 `astrall_sdk_vendor`、`astrall_interfaces`、`astrall_driver` 和 SDK 1.1.1 库均位于本仓库 `src/ros2_humble_main/src/driver/astrall`。
+在 3dnav 根目录运行 `./scripts/build_workspace.sh --packages-select astrall_sdk_vendor astrall_interfaces astrall_driver car_vel --cmake-args -DBUILD_TESTING=OFF`，完成后仅加载本项目 `install/setup.bash`。
+运行环境为 Linux x86_64 / ROS 2 Humble；桥接层拒绝启动来自其他安装目录的璇玑驱动。更新后重启后台以清除进程继承的旧路径。
+SDK 自带雷达、相机均关闭，沿用主机传感器。不要同时启动另一个 SDK Demo 或 WS 控制程序。
 
 网络默认机器人 `10.18.10.100`、主机 `10.18.10.201`，SDK 端口 `3600/3601`。
 这些值只传给驱动校验，网页不会修改网卡；主机网卡由现场配置。
-不可同时运行 `sw01_ws` 原键盘/WS 控制程序，它会争用 SDK 会话。
+不可同时运行原键盘/WS 控制程序，它会争用 SDK 会话。
 
 遥控页使用 W/S 前后、A/D 横移（最高 0.2 m/s）、Q/E 原地转向。导航速度出口拦截横移、倒车，
 同时收到前进和转向时优先原地转向。先将遥控器三档开关回到 1 档，按 9 申请 SDK 控制权并等待 ctrl:1；
@@ -162,7 +158,7 @@ Y/2 只请求固定站立，等待 0xB102 后按 4 进入 MOVE，等待 0xB104 �
 真机遥控响应和导航路径跟踪仍需现场验证。
 
 璇玑真机心跳与普通查询使用厂商默认 20 ms ACK 等待时间（10 Hz 心跳不变）。
-`sw01_ws` 的 `control_parameters.cpp` 必须同步本轮修改：普通查询允许 1–20 ms，
+本仓库驱动 `control_parameters.cpp` 中普通查询允许 1–20 ms，
 运动调用使用厂商默认 20 ms，且不得超过 20 ms 控制周期；旧驱动会拒绝新参数。
 速度流超时停车仍为 250 ms。网页显示实际控制权和数值模式；0x8020 表示遥控器未释放，
 0x8022 表示 SDK 无控制权，需处理控制权并复位后重新申请，不绕过厂商限制。

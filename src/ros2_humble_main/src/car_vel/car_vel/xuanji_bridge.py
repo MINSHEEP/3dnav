@@ -76,7 +76,12 @@ class XuanjiBridge(Node):
         self.create_service(SetTraversalMode, '/dog_remote/set_traversal_mode', self.traversal, callback_group=group)
         self.create_timer(0.05, self.tick)
         self.create_timer(0.25, self.publish_status)
-        executable = Path(get_package_prefix('astrall_driver')) / 'lib/astrall_driver/astrall_driver_node'
+        install_root = Path(get_package_prefix('car_vel')).parent.resolve()
+        driver_prefix = Path(get_package_prefix('astrall_driver')).resolve()
+        for package in ('astrall_driver', 'astrall_interfaces', 'astrall_sdk_vendor'):
+            if Path(get_package_prefix(package)).resolve() != install_root / package:
+                raise RuntimeError(f'{package} 必须来自当前 3dnav/install；请重新编译并重启后台清除旧工作空间环境')
+        executable = driver_prefix / 'lib/astrall_driver/astrall_driver_node'
         params = dict(use_fake_sdk=False, enable_lidar=False, enable_rgb=False,
                       robot_ip=profile['robot_ip'], local_ip=profile['local_ip'],
                       sdk_port=3600, sdk_client_port=profile['port'],

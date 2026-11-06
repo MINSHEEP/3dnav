@@ -1,0 +1,62 @@
+/**:
+  ros__parameters:
+    use_fake_sdk: true
+    # 仅校验固定 SDK 网络要求；不会修改 SDK 网络地址或本机网卡。
+    robot_ip: "10.18.10.100"
+    local_ip: "10.18.10.200"
+    sdk_port: 3600
+    sdk_client_port: 3601
+    init_timeout_ms: 1000
+    sdk_timeout_ms: 5
+    heartbeat_timeout_ms: 5
+    heartbeat_period_ms: 100
+    system_poll_period_ms: 200
+    state_publish_period_ms: 100
+    # 每类仅保存最新未交付样本；发布后移除，超龄不重发。
+    telemetry_publish_period_ms: 4
+    telemetry_query_period_ms: 200
+    telemetry_max_age_ms: 300
+    # 0 表示禁用；其余按 SDK 枚举映射，摇杆固定 50Hz。
+    imu_frequency_hz: 250
+    wheel_speed_frequency_hz: 50
+    joystick_frequency_hz: 50
+    # 只控制同一 SDK 会话的 UDP 启停，不创建相机/雷达 SDK 会话。
+    enable_rgb: false
+    enable_lidar: false
+    imu_topic: "imu/data"
+    wheel_speed_topic: "wheel_speeds"
+    joystick_topic: "joystick"
+    system_status_topic: "system_status"
+    power_status_topic: "power_status"
+    sport_status_topic: "sport_status"
+    device_info_topic: "device_info"
+    imu_frame_id: "base_link"
+    base_frame_id: "base_link"
+    control_period_ms: 20
+    control_sdk_timeout_ms: 2
+    cmd_vel_timeout_ms: 250
+    max_forward_velocity: 1.0
+    max_lateral_velocity: 1.0
+    max_yaw_velocity: 1.0
+    mode_switch_timeout_ms: 3000
+    mode_state_freshness_ms: 250
+    mode_poll_period_ms: 50
+    allow_reboot_on_dock_stand: false
+    text_rate_hz: 4.0
+    cmd_vel_topic: "cmd_vel"
+    lidar_bind_address: "0.0.0.0"
+    point_cloud_port: 6100
+    lidar_odometry_port: 6101
+    lidar_wire_format: "native_le"
+    lidar_max_points: 100000
+    lidar_frame_timeout_ms: 100
+    lidar_max_age_ms: 300
+    point_cloud_topic: "lidar/points"
+    lidar_odometry_topic: "lidar/odom"
+    odom_frame_id: "odom"
+    lidar_frame_id: "lidar"
+    lidar_pose_reference: "base"
+    lidar_quaternion_scale: 1.0
+    lidar_max_position_m: 1000000.0
+    lidar_timestamp_mode: "receive"
+    lidar_source_time_tolerance_ms: 1000

@@ -1,10 +1,52 @@
 # 3dnav 部署、编译与运行手册
 
-更新日期：2026-11-04。
+更新日期：2026-11-06。
 
 交付与复测入口：[全功能验收清单](FIELD_ACCEPTANCE.md) · [排查、备份与恢复手册](TROUBLESHOOTING.md)。先按验收清单中的时间预算选择测试，再逐项记录未测范围。
 
-## test 分支整合说明
+## 当前璇玑集成与构建入口
+
+三种底盘（星玑、钢镚 ZSL-1 点足、璇玑 Hypertron 轮式四足）由同一个 3dnav 仓库管理。璇玑 SDK 1.1.1 的头文件、x86_64 厂商库和三个 ROS 包已纳入 `src/ros2_humble_main/src/driver/astrall/`，不再依赖旧 SDK 工作空间；无需子模块或另行下载。SDK 库不支持本次未验证的 ARM/Windows 运行环境。
+
+在 3dnav 根目录构建：
+
+```bash
+./scripts/build_workspace.sh --parallel-workers 2 --cmake-args -DBUILD_TESTING=OFF -DROS_EDITION=ROS2 -DHUMBLE_ROS=humble -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+只更新璇玑接口和控制代码时：
+
+```bash
+./scripts/build_workspace.sh --packages-select astrall_sdk_vendor astrall_interfaces astrall_driver car_vel --parallel-workers 2 --cmake-args -DBUILD_TESTING=OFF
+source install/setup.bash
+ros2 pkg prefix astrall_driver
+ros2 pkg prefix astrall_interfaces
+ros2 pkg prefix astrall_sdk_vendor
+```
+
+三个前缀均应位于当前 3dnav/install 下。源码路径含中文时，Humble 接口生成器不能使用中文构建路径，脚本自动将可重建的 build 产物放到 `/tmp/3dnav-build-<路径摘要>`；源码和 install 仍在本仓库内。构建脚本会先清除外部工作空间路径，再仅加载 `/opt/ros/humble`，防止生成的 setup 文件继续串联旧 SDK 环境。不要复制其他机器的 build/install，也不要在后台启动前加载外部 SDK 工作空间。若命令行之前加载过旧环境，使用新终端。后台更新后重启 `3dnav-backend.service`；重启前保存地图、停止任务并确认机器狗安全停稳。
+
+调用链：网页本体选择 → `/robot_body/select` → 唯一本体 worker → `XuanjiBridge` → 守护进程 → `3dnav/install/astrall_driver` 中的节点 → `3dnav/install/astrall_sdk_vendor` 中的厂商库。桥接层拒绝加载其他安装目录的璇玑驱动。
+
+- 独立遥控：`/dog_remote/cmd_vel`，W/S 前后、A/D 横移（上限 0.2）、Q/E 原地转向。
+- 移动建图：`/dog_remote/ensure_mapping_motion` 确认准备完成后，`/cmd_vel_teleop` → 速度仲裁器 → `/cmd_vel_safe` → 本体；支持 W/S 前后与 Q/E 转向，定位暂停时停车，需人工重新开启。
+- 导航：现有规划器 → 速度仲裁器 → `/cmd_vel_safe`；璇玑使用单独生成的 DiffDrive 参数，禁止横移、倒车，机身轮廓与雷达安装参数须现场标定确认。
+- 雷达与相机使用现有主机设备，璇玑 SDK 自带雷达和相机输出关闭；不要并行启动旧 SDK Demo/WS 程序。
+
+遥控开始：手柄三档开关回 1 档 → 9 取得控制权 → Y 等待固定站立 0xB102 → 4 等待 MOVE 0xB104。R 在停稳后重启 SDK 会话、解除锁定，不自动站立或恢复移动。电量来自 SDK 实际反馈。详见[本体与操作指南](src/ros2_humble_main/src/car_vel/ROBOT_BODY_SELECTION.md)和[SDK 集成目录](src/ros2_humble_main/src/driver/astrall/README.md)。
+
+安装路径检查：
+
+```bash
+ps -eo pid,args | grep '[a]strall_driver_node'
+ldd install/astrall_driver/lib/libastrall_sdk_client.so | grep ASTRALL
+rg 'sw01_ws' install/setup.*
+```
+
+进程和动态库必须指向当前 3dnav/install；最后一条命令应没有匹配。只有完成实际路径核验，才能确认当前后台已使用新构建。控制权、站立/MOVE、横移和建图运动仍需现场验收，软件检查不能代替真机效果确认。
+
+## 历史：test 分支整合说明（2026-11-04）
 
 本分支以 `dev` 的 `580f543` 为现场基线，整合 `master` 的 `68bf09c` 三维导航实现。`master` 已是 `dev` 的祖先，普通 Git 合并不会恢复被现场版本替换的实现，因此本次按功能整合源文件；不改写两个原分支的历史。
 
@@ -17,7 +59,7 @@
 
 本次只整合本地 test，未向机器狗部署或重启服务。部署前必须按下文重新构建接口及依赖包，并完成二维/三维模式切换、运动与录像并发实机验收，不能仅覆盖网页。
 
-本工作空间运行于 ROS 2 Humble，支持星玑与钢镚 ZSL-1 点足机械狗，提供 Livox 点云采集、Small Point-LIO、OctoMap 建图、三维定位、Nav2 导航、地图和路线管理、巡检任务、视觉/行为识别、USB 热成像、M701 环境检测及 Web 前端。
+本工作空间运行于 ROS 2 Humble，支持星玑、钢镚 ZSL-1 点足及璇玑轮式四足，提供 Livox 点云采集、Small Point-LIO、OctoMap 建图、三维定位、Nav2 导航、地图和路线管理、巡检任务、视觉/行为识别、USB 热成像、M701 环境检测及 Web 前端。
 
 本文以 M9 Pro 小电脑的目标部署为例，网卡名称和 IP 应按现场实际配置：
 
@@ -31,6 +73,7 @@
 | Livox 雷达 | MID360s 现场模板 `192.168.1.117` |
 | 星玑本体 | `192.168.96.2:8080`；小电脑示例 `192.168.96.3/24` |
 | 钢镚 ZSL-1 点足 | 本体示例 `192.168.168.168`；小电脑示例 `192.168.168.15`；本地接收端口 `43988` |
+| 璇玑轮式四足 | 本体 `10.18.10.100`；主机 `10.18.10.201/24`；SDK 端口 `3600/3601` |
 | Python | 系统 Python 3.10；识别依赖按下文隔离安装 |
 
 项目核心导航算法不依赖 CUDA，当前识别部署也使用 CPU 运行库，不要求 NVIDIA 显卡。Intel 核显用于界面显示；实际导航与多模型识别并行负载仍需在小电脑上测量。
@@ -43,7 +86,7 @@
 | 地形导航 | 星玑三维模式下在点云俯视图设置初始点、目标点、多点路线；预览与启动分开，显示全局规划路径 |
 | 导航模式 | 设置页选择二维或三维地形增强模式；三维模式仍使用现有 Nav2 平面控制接口，视角切换不等于模式切换 |
 | 园区 / 巡检 | 路线执行、检测点、任务进度、告警、证据图片和历史记录 |
-| 遥控 / 本体 | 独立遥控；设置页选择星玑或钢镚 ZSL-1 点足，各自保存连接参数 |
+| 遥控 / 本体 | 独立遥控；设置页选择星玑、钢镚 ZSL-1 点足或璇玑，各自保存连接参数 |
 | 普通摄像头 | 设置页选择原链路 USB/本体 HTTP 图传或 C12 双光链路，供遥控、识别和巡检共享 |
 | C12 云台与录像 | 巡检页右侧云台、手动双路 MP4、浏览器录像显示开关；C12 红外测温尚未接入 |
 | 视觉识别 | 火焰、烟雾、香烟/烟头目标、人脸及车牌检测/匹配，具体结果依赖模型与登记库 |
@@ -60,7 +103,7 @@
 ```text
 /home/a/3dnav/
 ├── src/
-│   ├── ros2_humble_main/
+│   ├── ros2_humble_main/ # driver/astrall 下含璇玑 SDK 与 ROS 包
 │   ├── Livox_SDK2/ 或 livox_sdk2/
 │   ├── gtsam/              # 使用预编译包时不参与 colcon 构建
 │   └── Sophus/             # 使用预编译包时不参与 colcon 构建
@@ -330,7 +373,7 @@ sudo bash scripts/install_system_power_permissions.sh a
 cd /home/a/3dnav
 source /opt/ros/humble/setup.bash
 
-colcon build \
+./scripts/build_workspace.sh \
   --symlink-install \
   --parallel-workers 4 \
   --cmake-args \
@@ -377,7 +420,7 @@ echo '[ -f /home/a/3dnav/install/setup.bash ] && source /home/a/3dnav/install/se
 ```bash
 cd /home/a/3dnav
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select car_vel
+./scripts/build_workspace.sh --packages-select car_vel
 source /home/a/3dnav/install/setup.bash
 ```
 
@@ -388,7 +431,7 @@ source /home/a/3dnav/install/setup.bash
 ```bash
 cd /home/a/3dnav
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --executor sequential \
+./scripts/build_workspace.sh --executor sequential \
   --packages-select lzp_interface icp_registration lzp_service car_vel
 source /home/a/3dnav/install/setup.bash
 ```
@@ -639,7 +682,7 @@ cd /home/a/3dnav
 source /opt/ros/humble/setup.bash
 
 # 不要在这里 source /home/a/nav_ws/install/setup.bash。
-colcon build --symlink-install --parallel-workers 4 \
+./scripts/build_workspace.sh --parallel-workers 4 \
   --packages-select \
   lzp_interface small_point_lio lzp_service icp_registration \
   robot_navigation2 octomap_server2 car_vel
@@ -707,10 +750,10 @@ cd /home/a/3dnav
 rm -rf build/lzp_interface install/lzp_interface
 
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select lzp_interface
+./scripts/build_workspace.sh --packages-select lzp_interface
 ```
 
-成功后重新执行全量 `colcon build --symlink-install --parallel-workers 4`。
+成功后重新执行全量 `./scripts/build_workspace.sh --parallel-workers 4`。
 
 ### 7.3 找不到 OctoMap
 
@@ -733,7 +776,7 @@ cd /home/a/3dnav
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
-colcon build \
+./scripts/build_workspace.sh \
   --symlink-install \
   --packages-select octomap_server2 \
   --cmake-clean-cache
@@ -873,7 +916,7 @@ sudo apt install -y \
 cd /home/a/3dnav
 rosdep install --from-paths src --ignore-src --rosdistro humble -r -y
 
-colcon build --symlink-install --parallel-workers 4
+./scripts/build_workspace.sh --parallel-workers 4
 source install/setup.bash
 
 ros2 launch car_vel launch_manager.launch.py

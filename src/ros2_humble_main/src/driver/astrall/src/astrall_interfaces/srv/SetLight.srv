@@ -1,0 +1,5 @@
+uint16 OPEN=1
+uint16 CLOSE=2
+uint16 command
+---
+SdkResult result

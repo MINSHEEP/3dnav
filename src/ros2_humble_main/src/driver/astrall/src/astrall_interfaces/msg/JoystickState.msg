@@ -1,0 +1,14 @@
+std_msgs/Header header
+int64 sdk_timestamp
+# 六路原始摇杆量，不推测归一化范围。
+int16[6] rocker
+bool l1
+bool l2
+bool l3
+bool r1
+bool r2
+bool r3
+bool sl
+bool sr
+bool h
+uint8 switch_position

@@ -1,0 +1,2 @@
+# SDK 使用 SONAME；shell 与 dsv 两种环境入口都必须提供安装库路径。
+ament_prepend_unique_value LD_LIBRARY_PATH "$AMENT_CURRENT_PREFIX/lib"

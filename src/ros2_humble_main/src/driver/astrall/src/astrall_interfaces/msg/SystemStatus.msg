@@ -1,0 +1,13 @@
+uint8 INIT=0
+uint8 STANDBY=1
+uint8 RUNNING=2
+uint8 WARNING=3
+uint8 ERROR=4
+uint8 SHUTDOWN=5
+std_msgs/Header header
+uint8 system_status
+# 位域保留未知位；文本由后续状态适配层填充。
+uint32 error_code
+uint32 warn_code
+string[] error_messages
+string[] warn_messages

@@ -1,0 +1,4 @@
+# UTF-8 字节数必须能放入 uint16；手册 5.11 限制发送频率严格小于 5Hz。
+string text
+---
+SdkResult result

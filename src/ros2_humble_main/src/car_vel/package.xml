@@ -10,6 +10,8 @@
   <depend>rclpy</depend>
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>astrall_driver</exec_depend>
+  <exec_depend>astrall_interfaces</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
   <depend>ros2launch</depend>
   <depend>action_msgs</depend>
