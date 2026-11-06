@@ -2,6 +2,7 @@
 """Offline contracts for Xingji-only whole-route preview and patrol lease."""
 
 import ast
+import copy
 from dataclasses import dataclass
 import hashlib
 import json
@@ -42,6 +43,7 @@ def _harness(*names):
         'GoalValidationResult': Result,
         'TERRAIN_3D': 'terrain_3d',
         'time': time,
+        'copy': copy,
         'json': json,
         'hashlib': hashlib,
         'normalize_navigation_mode': lambda value: value,
@@ -422,3 +424,32 @@ if __name__ == '__main__':
     test_inspection_cancel_revokes_active_authorization()
     test_start_ticket_checked_before_any_route_state_or_nav2_send()
     test_preview_planning_never_calls_motion_action()
+
+
+def test_manual_single_pause_retains_goal_until_explicit_validated_resume():
+    manager = _harness('_control_route_callback', '_pause_route', '_resume_route', '_handle_goal_terminal')()
+    manager._lock = threading.RLock()
+    manager.VALID_CONTROLS = {'pause', 'resume'}
+    manager._mode, manager._state, manager._owner_token = 'single', 'navigating', ''
+    manager._active_pose = SimpleNamespace(target='original')
+    manager._pending_single_pose = None
+    manager._active_goal_handle, manager._sending = object(), False
+    manager._goal_context, manager._cancel_reason, manager._settled_since = 'single', None, None
+    sent = []
+    manager._send_pose = lambda pose, context: sent.append((pose.target, context))
+    manager._send_zero_velocity = lambda: None
+    manager._publish_all_status = lambda: None
+    manager._cancel_active_goal = lambda: True
+    request = SimpleNamespace(command='pause', owner_token='')
+    response = manager._control_route_callback(request, SimpleNamespace())
+    assert response.success and manager._state == 'pausing'
+    manager._handle_goal_terminal(False, 'manual pause confirmed')
+    assert manager._mode == 'single' and manager._state == 'paused_navigation'
+    assert manager._pending_single_pose.target == 'original' and sent == []
+    request.command = 'resume'
+    manager._goal_preflight = lambda pose: Result(False, 'stale', 'localization stale')
+    assert not manager._control_route_callback(request, SimpleNamespace()).success
+    assert manager._pending_single_pose.target == 'original' and sent == []
+    manager._goal_preflight = lambda pose: Result(True, 'ok', '')
+    assert manager._control_route_callback(request, SimpleNamespace()).success
+    assert sent == [('original', 'single')]

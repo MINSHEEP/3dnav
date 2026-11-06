@@ -425,3 +425,13 @@
 .behavior-branches { display:grid; gap:10px; }
 .behavior-branches span { margin-left:auto; color:var(--muted); }
 .behavior-branches input { width:auto; }
+
+.inspection-initial-tools { flex: 0 0 auto; padding: 10px 12px; border-bottom: 1px solid #405a7a; background: #15233b; }
+.inspection-initial-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.inspection-initial-actions strong { color: #a9ddff; font-size: 13px; }
+.inspection-initial-actions button { padding: 8px 10px; white-space: nowrap; font-size: 12px; }
+.inspection-initial-actions label { color: #d4e4fb; font-size: 12px; margin-left: auto; }
+.inspection-initial-actions input { width: 66px; padding: 7px; min-width: 0; }
+.inspection-initial-actions button.active { background: #20556a; border-color: #5ed9e7; }
+.inspection-initial-tools .hint { margin: 7px 0 4px; font-size: 11px; line-height: 1.5; color: #c4d8f2; }
+.inspection-initial-status { display: flex; gap: 8px 18px; flex-wrap: wrap; font-size: 10px; color: #9cb6d5; }

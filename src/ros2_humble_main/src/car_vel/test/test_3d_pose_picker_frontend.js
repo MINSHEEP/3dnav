@@ -40,7 +40,7 @@ function viewerFixture() {
     getContext: () => gl,
   };
   const browser = {
-    devicePixelRatio: 1, atob: global.atob,
+    devicePixelRatio: 1, requestAnimationFrame: callback => callback(), atob: global.atob,
     addEventListener(name, callback) { windowEvents[name] = callback; },
   };
   vm.runInNewContext(source, { window: browser, console });

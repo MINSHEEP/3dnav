@@ -12,7 +12,9 @@ PARAMETER = 'FollowPath.batch_size'
 def scoped_profile(mode, body):
     if mode not in ('map_2d', 'terrain_3d') or body not in ('xingji', 'gangben_zsl1', 'xuanji'):
         return 'unknown'
-    return 'xingji_3d' if mode == 'terrain_3d' and body == 'xingji' else 'baseline'
+    if body == 'xingji':
+        return 'xingji_3d' if mode == 'terrain_3d' else 'xingji_2d'
+    return 'baseline'
 
 
 def valid_batch(value):
@@ -86,7 +88,7 @@ class TimingProfilePolicy:
     def target(self):
         if self.baseline is None or self.profile == 'unknown':
             return None
-        if self.enabled and self.profile == 'xingji_3d' and not self.fallback:
+        if self.enabled and self.profile in ('xingji_2d', 'xingji_3d') and not self.fallback:
             return min(self.baseline, self.optimized)
         return self.baseline
 

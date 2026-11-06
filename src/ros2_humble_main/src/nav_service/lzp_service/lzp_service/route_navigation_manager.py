@@ -1757,7 +1757,7 @@ class RouteNavigationManager(Node):
             return None  # Compatibility with installations without the optimizer.
         body = (getattr(self, '_robot_body_status', None) or {}).get('config', {}).get('selected')
         mode = navigation_mode if navigation_mode is not None else self._effective_navigation_mode()
-        expected = 'xingji_3d' if mode == TERRAIN_3D and body == 'xingji' else 'baseline'
+        expected = ('xingji_3d' if mode == TERRAIN_3D else 'xingji_2d') if body == 'xingji' else 'baseline'
         matches = (status.get('navigation_mode') == mode
                    and status.get('body_id') == body
                    and status.get('profile') == expected)
@@ -4219,6 +4219,14 @@ class RouteNavigationManager(Node):
                 response.success = False
                 response.message = f'Unsupported command: {command}'
                 return response
+            if self._mode == 'single' and command in ('pause', 'resume'):
+                if self._owner_token or str(request.owner_token).strip():
+                    response.success, response.message = False, '请通过所属任务暂停或恢复单点导航'
+                else:
+                    response.success, response.message = (
+                        self._pause_route() if command == 'pause' else self._resume_route())
+                self._publish_all_status()
+                return response
             if self._mode != 'route':
                 response.success = False
                 response.message = 'No route navigation task is active'
@@ -4845,6 +4853,13 @@ class RouteNavigationManager(Node):
             return
 
         if context == 'single':
+            if cancel_reason == 'pause':
+                self._pending_single_pose = recovery_pose or self._pending_single_pose
+                self._state = 'paused_navigation'
+                self._status_message = '单点导航已暂停，目标保留，等待人工继续'
+                self._send_zero_velocity()
+                self._publish_all_status()
+                return
             if cancel_reason == 'replace_single' and self._pending_single_pose:
                 pose = self._pending_single_pose
                 self._pending_single_pose = None
@@ -5008,6 +5023,8 @@ class RouteNavigationManager(Node):
         self._dispatch_current_route_point()
 
     def _pause_route(self):
+        if self._mode == 'single' and self._active_pose is not None:
+            self._pending_single_pose = copy.deepcopy(self._active_pose)
         if self._state in (
                 'paused_navigation', 'paused_dwell', 'paused_release',
                 'paused_preflight'):
@@ -5044,6 +5061,16 @@ class RouteNavigationManager(Node):
         return False, f'Route cannot be paused from state {self._state}'
 
     def _resume_route(self):
+        if self._mode == 'single':
+            if self._state != 'paused_navigation' or self._pending_single_pose is None:
+                return False, '单点导航没有可恢复的暂停目标'
+            result = self._goal_preflight(self._pending_single_pose)
+            if not result.allowed:
+                return False, result.message
+            pose = self._pending_single_pose
+            self._pending_single_pose = None
+            self._send_pose(pose, 'single')
+            return True, '已从当前位置重新规划到原目标'
         if self._state in ('paused_navigation', 'paused_preflight'):
             self._publish_route_log('继续导航当前未完成目标点')
             self._dispatch_current_route_point()

@@ -56,6 +56,16 @@ class CmdVelTurnFloorTests(unittest.TestCase):
             output = shaper.step(0.05)
         self.assertAlmostEqual(output[2], 0.08)
 
+    def test_xingji_reversal_stops_old_direction_before_new_breakaway(self):
+        shaper = TurnCommandShaper(turn_floor=0.30, turn_start=0.30)
+        for direction in (1, -1, 1):
+            shaper.set_target(0.0, 0.0, 0.08 * direction)
+            first = shaper.step(0.05)[2]
+            self.assertGreaterEqual(first * direction, 0.0)
+            self.assertAlmostEqual(shaper.step(0.05)[2], 0.30 * direction)
+        shaper.set_target(0.0, 0.0, 0.0)
+        self.assertEqual(shaper.step(0.05), (0.0, 0.0, 0.0))
+
     def test_bridge_and_launch_use_the_calibrated_floor(self):
         bridge = (CAR_VEL_ROOT / 'car_vel' / 'cmdvel_bridge_ros2.py').read_text(
             encoding='utf-8')
@@ -65,7 +75,7 @@ class CmdVelTurnFloorTests(unittest.TestCase):
         self.assertIn('TurnCommandShaper(', bridge)
         self.assertIn("'min_in_place_turn_command'", bridge)
         selected = (CAR_VEL_ROOT / 'car_vel' / 'robot_body_bridge.py').read_text(encoding='utf-8')
-        self.assertIn('self.shaper = TurnCommandShaper()', selected)
+        self.assertIn('self.shaper = TurnCommandShaper(turn_floor=0.30, turn_start=0.30)', selected)
         self.assertEqual(TurnCommandShaper().turn_floor, 0.25)
         self.assertNotIn("executable='cmdvel_bridge_ros2'", launch)
 

@@ -4,11 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>导航 · 四足机器人巡检</title>
-    <link rel="stylesheet" href="robot_ui.css?v=20261028-speed-status">
+    <link rel="stylesheet" href="robot_ui.css?v=20261106-page-teleop">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
-    <script src="robot_ui_common.js?v=20261022-map-recovery"></script>
+    <script src="robot_ui_common.js?v=20261106-page-teleop"></script>
+    <script src="page_teleop.js?v=20261106-takeover"></script>
+    <script src="initial_pose_tools.js?v=20261106-shared-initial"></script>
     <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
-    <script src="pointcloud_viewer.js?v=20261023-draft-marker-scale"></script>
+    <script src="pointcloud_viewer.js?v=20261106-frame-batching"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
 </head>
 <body>
@@ -38,6 +40,7 @@
             <canvas id="map-canvas"></canvas>
             <div class="mapping-view-switch" aria-label="导航地图视图">
                 <button id="btn-nav-view-2d" class="active" type="button" aria-pressed="true">二维导航图</button>
+                <button id="btn-nav-scan" type="button" aria-pressed="false">显示二维点云</button>
                 <button id="btn-nav-view-3d" type="button" aria-pressed="false">全局三维地图</button>
             </div>
             <div id="map-overlay" class="map-overlay blocked">请先在右侧选择并加载一张已保存地图，然后设置初始点或导航目标。</div>
@@ -54,6 +57,7 @@
         </section>
 
         <aside class="panel navigation-panel">
+            <section id="navigation-page-teleop" class="section page-teleop" aria-label="导航人工遥控"></section>
             <h1>导航</h1>
 
             <section class="section">
@@ -109,6 +113,17 @@
                 <div class="row">
                     <button id="btn-initial-mode" class="choice-active flex" type="button" disabled>设置初始点</button>
                     <button id="btn-goal-mode" class="flex" type="button" disabled>设置目标点</button>
+                </div>
+                <div id="initial-scan-settings">
+                    <p class="hint">二维初始定位：开启点云后，选择“设置初始点”，在地图上拖拽位置和朝向，使红色激光点贴合墙体，再确认。</p>
+                    <button id="btn-confirm-2d-initial" type="button" disabled>确认二维初始位置</button>
+                    <button id="btn-cancel-2d-initial" type="button" disabled>取消候选</button>
+                    <p id="scan-preview-hint" data-pose-tool="scan-hint" class="hint" aria-live="polite">二维点云已关闭</p>
+                    <label for="initial-match-percent">二维初始匹配阈值（%）</label>
+                    <input id="initial-match-percent" data-pose-tool="percent" type="number" min="1" max="100" step="1" value="50">
+                    <button id="btn-read-initial-match" data-pose-tool="read" type="button">读取阈值</button>
+                    <button id="btn-set-initial-match" data-pose-tool="apply" type="button">应用阈值</button>
+                    <p id="initial-match-hint" data-pose-tool="match-hint" class="hint" aria-live="polite">应用后对本次导航进程生效，重启后恢复默认值；仅改变二维激光与地图匹配比例。</p>
                 </div>
                 <p id="navigation-goal-readiness" class="hint" aria-live="polite">目标未就绪：请先加载地图并完成初始定位。</p>
                 <button id="btn-reset-navigation-emergency" type="button" class="warning" disabled>确认解除停车锁（不站立）</button>
@@ -233,6 +248,42 @@
     const relocalizationMessage = document.getElementById('relocalization-message');
     const cancelRelocalizationButton = document.getElementById('btn-cancel-relocalization');
     const mapCanvas = new UI.MapCanvas(document.getElementById('map-canvas'), document.getElementById('map-wrapper'));
+    let pageTeleop = null;
+    let twoDInitialDraft = null;
+
+    function clearTwoDInitialDraft() {
+        const hadDraft = Boolean(twoDInitialDraft);
+        twoDInitialDraft = null;
+        document.getElementById('btn-confirm-2d-initial').disabled = true;
+        document.getElementById('btn-cancel-2d-initial').disabled = true;
+        if (!hadDraft) return;
+        if (latestAmclPose) mapCanvas.setRobotPose(latestAmclPose.x, latestAmclPose.y, latestAmclPose.yaw);
+        else mapCanvas.clearRobotPose();
+    }
+
+    const scanTools = window.InitialPoseTools.attach({
+        root: document.getElementById('initial-scan-settings'),
+        toggle: document.getElementById('btn-nav-scan'), canvas: mapCanvas,
+        getSession: () => session, getMode: () => threeDNavigationMode,
+        isBusy: () => navigationActive || routeIsActive() || relocalizationActive || pageTeleop?.active,
+        isInitialMode: () => clickMode === 'initial', log,
+        onToggle: enabled => {
+            clearTwoDInitialDraft();
+            if (enabled) setNavigationMapView('2d');
+        }
+    });
+    document.getElementById('btn-cancel-2d-initial').addEventListener('click', clearTwoDInitialDraft);
+    document.getElementById('btn-confirm-2d-initial').addEventListener('click', async () => {
+        const draft = twoDInitialDraft;
+        if (!draft || draft.map !== loadedMapName || draft.loadId !== currentMapLoadId
+                || !navigationMapReady || threeDNavigationMode !== 'map_2d' || navigationMapView !== '2d'
+                || navigationActive || routeIsActive()) {
+            clearTwoDInitialDraft(); log('地图或任务状态已变化，请重新选择二维初始位置。'); return;
+        }
+        clearTwoDInitialDraft();
+        await publishInitialPose(draft.x, draft.y, draft.yaw, draft.loadId);
+    });
+
     let navigationPointCloudViewer = null;
     try {
         navigationPointCloudViewer = new window.PointCloudViewer(
@@ -269,7 +320,7 @@
 
     function setNavigationRobotPose(x, y, z, yaw) {
         const safeZ = Number.isFinite(Number(z)) ? Number(z) : 0;
-        mapCanvas.setRobotPose(x, y, yaw);
+        if (!twoDInitialDraft) mapCanvas.setRobotPose(x, y, yaw);
         if (navigationPointCloudViewer) {
             navigationPointCloudViewer.setRobotPose(x, y, safeZ, yaw);
         }
@@ -549,6 +600,7 @@
     }
 
     function setNavigationMapView(view) {
+        if (view !== "2d") clearTwoDInitialDraft();
         const previousView = navigationMapView;
         navigationMapView = view === '3d' && navigationPointCloudViewer
             ? '3d' : '2d';
@@ -1829,6 +1881,8 @@
         'click', previewThreeDRoute);
 
     async function controlRoute(command) {
+        if (command === "resume" && pageTeleop?.active) { log("请先退出人工接管。"); return; }
+        if (command === "resume" && pageTeleop?.needsPreparation) return pageTeleop.resume();
         if (!routeIsActive() || routeServiceBusy) return;
         if (['pause', 'skip', 'stop'].includes(command)) {
             clearGlobalPlan(command === 'pause'
@@ -2267,6 +2321,8 @@
     }
 
     function goalReadinessIssue(nowMs = Date.now()) {
+        if (pageTeleop?.active) return "人工遥控接管中，请退出接管后再执行导航";
+        if (twoDInitialDraft) return "二维候选初始位置尚未确认，请先确认或取消候选";
         const body = typeof threeDRobotBodyStatus === 'undefined' ? null : threeDRobotBodyStatus;
         if (body && body.status && body.status.emergency_latched === true) {
             return '停车仍锁定，请先停止任务并单独确认复位';
@@ -2960,6 +3016,8 @@
     }
 
     function resetLocalizationState() {
+        clearTwoDInitialDraft();
+        mapCanvas.scanOverlay = null;
         unified3DStatus = null;
         unified3DStatusAtMs = 0;
         clearThreeDPoseDraft('定位状态已重置，三维候选点和路径预览失效。');
@@ -3658,6 +3716,7 @@
     }, 1000);
 
     function updateMapReadyUi() {
+        scanTools.syncMode();
         if (navigationMapView === '3d') tryAcceptNavigationGlobalCloud();
         const initialButton = document.getElementById('btn-initial-mode');
         const goalButton = document.getElementById('btn-goal-mode');
@@ -3847,7 +3906,7 @@
             }
             overlay.classList.remove('blocked');
             mapCanvas.setPoseInteraction(
-                !relocalizationActive && !lioFaultLatched && !routeActive
+                !pageTeleop?.active && !relocalizationActive && !lioFaultLatched && !routeActive
                     && singleGoalRefreshState !== 'refreshing',
                 handleMapPose
             );
@@ -3893,7 +3952,9 @@
         if (navigationMapView === '3d' && clickMode !== mode) {
             clearThreeDPoseDraft('交互工具已切换，请重新选择三维候选点。');
         }
+        clearTwoDInitialDraft();
         clickMode = mode;
+        if (mapCanvas.scanOverlay) mapCanvas.scanOverlay.followDrag = mode === 'initial';
         document.getElementById('btn-initial-mode').classList.toggle('choice-active', mode === 'initial');
         document.getElementById('btn-goal-mode').classList.toggle(
             'choice-active',
@@ -3905,7 +3966,7 @@
         if (mode === 'initial') {
             log(navigationMapView === '3d'
                 ? '已切换为三维初始点候选；俯视拖拽后先校验地面，再点击“确认初始点”。'
-                : '已切换为：设置初始点。下一次地图拖拽会自动启动 NDT/GICP 精修。');
+                : '拖拽初始位置和朝向，再点击“确认二维初始位置”；可打开二维点云辅助对齐。');
         } else if (mode === 'route') {
             if (routeReplaceIndex === null) {
                 log('已切换为：在地图上按顺序添加路径目标点。');
@@ -3923,6 +3984,7 @@
     }
 
     async function publishInitialPose(x, y, yaw, expectedMapLoadId = '') {
+        if (pageTeleop?.active) { log("请先退出人工遥控接管，再设置初始位置。"); return false; }
         if (expectedMapLoadId && currentMapLoadId !== expectedMapLoadId) {
             log('三维地图已重新加载，旧候选初始点未发送；请重新选择。');
             return false;
@@ -4097,6 +4159,14 @@
             return;
         }
         if (clickMode === 'initial') {
+            if (threeDNavigationMode === 'map_2d') {
+                twoDInitialDraft = {x, y, yaw, map: loadedMapName, loadId: currentMapLoadId};
+                mapCanvas.setRobotPose(x, y, yaw);
+                document.getElementById('btn-confirm-2d-initial').disabled = false;
+                document.getElementById('btn-cancel-2d-initial').disabled = false;
+                document.getElementById('scan-preview-hint').textContent = '候选初始位置未提交：对齐红色激光点后点击“确认二维初始位置”。';
+                return;
+            }
             if (!await publishInitialPose(x, y, yaw)) return;
             log(`已提交粗初始位姿：(${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${(yaw * 180 / Math.PI).toFixed(0)}°。`
                 + '图标当前为粗初始点预览，正在等待 NDT/GICP 精修和 AMCL 确认。');
@@ -4469,11 +4539,17 @@
         }
     }
 
+    pageTeleop = window.PageTeleop.attach({
+        root: document.getElementById('navigation-page-teleop'), getSession: () => session,
+        log, onChange: () => updateMapReadyUi()
+    });
+
     session = new UI.RosSession({
         log,
         onState: (connected, text) => {
             UI.setConnectionStatus(connectionStatus, connected, text);
             if (!connected) {
+                if (pageTeleop?.active) pageTeleop.release("连接已断开，已退出接管。");
                 navigationConnectionEpoch += 1;
                 navigationStartRequest = null;
                 navigationStartupStatus = null;
@@ -4504,6 +4580,8 @@
             }
         },
         onReady: async (activeSession) => {
+            pageTeleop.connect(activeSession);
+            scanTools.reconnect();
             navigationConnectionEpoch += 1;
             const startupEpoch = navigationConnectionEpoch;
             activeSession.subscribe('/navigation/startup/status', UI.TYPES.string, (message) => {
@@ -4568,7 +4646,11 @@
                         clearThreeDPoseDraft('导航模式已切换，三维候选点和预览失效。');
                         clearThreeDRoutePreview('导航模式已切换，整条路径预览失效。');
                     }
+                    if (previousMode && previousMode !== mode) clearTwoDInitialDraft();
                     threeDNavigationMode = mode;
+                    document.getElementById('initial-scan-settings').hidden = mode !== 'map_2d';
+                    document.getElementById('btn-nav-scan').hidden = mode !== 'map_2d';
+                    scanTools.syncMode();
                     threeDNavigationModeAtMs = Date.now();
                     const poseAgeLimit = Number(status.goal_preflight_pose_max_age_sec);
                     if (Number.isFinite(poseAgeLimit) && poseAgeLimit >= 0.5) {

@@ -335,14 +335,12 @@ class XingjiWorkerCallbacksTests(unittest.TestCase):
             self.now += 0.05
             self.node.nav_velocity(self.command(0, 0.08)); self.node._control_tick()
         values = [value[2] for value in self.node.sent]
-        self.assertAlmostEqual(values[0], 0.02)
-        # Existing 0.4/s ramp reaches 0.24 after 12 ticks, then the 0.25 floor.
-        self.assertAlmostEqual(values[-1], 0.24)
-        self.now += 0.05
-        self.node.nav_velocity(self.command(0, 0.08)); self.node._control_tick()
-        self.assertAlmostEqual(self.node.sent[-1][2], 0.25)
+        self.assertAlmostEqual(values[0], 0.30)
+        self.assertAlmostEqual(values[-1], 0.30)
         self.now += 0.31; self.node._control_tick()
         self.assertEqual(self.node.sent[-1], (0, 0, 0))
+        self.node.nav_velocity(self.command(0, -0.08)); self.node._control_tick()
+        self.assertAlmostEqual(self.node.sent[-1][2], -0.30)
     def test_remote_excludes_navigation_and_drops_old_target(self):
         self.arm(); self.node.nav_velocity(self.command())
         self.node._enable_callback(types.SimpleNamespace(data=True))

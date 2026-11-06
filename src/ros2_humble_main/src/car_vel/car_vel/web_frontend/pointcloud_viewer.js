@@ -170,6 +170,8 @@
             // layer does not take pointer input; all picking uses map-frame
             // coordinates and the same projection as the WebGL canvas.
             this.markerLayer = null;
+            this.markerBadges = [];
+            this.framePending = false;
             if (global.document && typeof this.container.appendChild === 'function') {
                 this.markerLayer = global.document.createElement('div');
                 Object.assign(this.markerLayer.style, {
@@ -753,9 +755,8 @@
             return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
         }
 
-        _projectMapPoint(point) {
+        _projectMapPoint(point, rect = this.canvas.getBoundingClientRect()) {
             if (!this.cloudTransform || this.canvas.hidden) return null;
-            const rect = this.canvas.getBoundingClientRect();
             if (!rect.width || !rect.height) return null;
             const t = this.cloudTransform;
             const px = (point.x - t.centerX) / t.radius + this.panX;
@@ -778,26 +779,35 @@
             if (!this.markerLayer) return;
             this.markerLayer.style.display = this.canvas.hidden || !this.cloudTransform
                 ? 'none' : '';
-            this.markerLayer.replaceChildren();
             if (this.canvas.hidden || !this.cloudTransform) return;
+            // Read layout once before badge writes, avoiding a reflow per point.
             const parentRect = this.container.getBoundingClientRect();
+            const canvasRect = this.canvas.getBoundingClientRect();
+            let badgeIndex = 0;
             const addBadge = (point, label, color, title, offsetX = 0) => {
-                const pixel = this._projectMapPoint(point);
-                if (!pixel) return;
-                const badge = global.document.createElement('span');
-                badge.textContent = label;
-                badge.title = title;
-                Object.assign(badge.style, {
-                    position: 'absolute', left: `${pixel.x - parentRect.left + offsetX}px`,
-                    top: `${pixel.y - parentRect.top}px`,
-                    transform: 'translate(-50%, -50%)',
-                    minWidth: '24px', height: '24px', lineHeight: '24px',
-                    padding: '0 3px', textAlign: 'center', borderRadius: '12px',
-                    border: '2px solid #07101c', background: color,
-                    color: '#07101c', font: 'bold 12px sans-serif',
-                    boxShadow: '0 0 0 1px rgba(255,255,255,.8)'
-                });
-                this.markerLayer.appendChild(badge);
+                const index = badgeIndex++;
+                let badge = this.markerBadges[index];
+                if (!badge) {
+                    badge = global.document.createElement('span');
+                    Object.assign(badge.style, {
+                        position: 'absolute', left: '0', top: '0',
+                        minWidth: '24px', height: '24px', lineHeight: '24px',
+                        padding: '0 3px', textAlign: 'center', borderRadius: '12px',
+                        border: '2px solid #07101c',
+                        color: '#07101c', font: 'bold 12px sans-serif',
+                        boxShadow: '0 0 0 1px rgba(255,255,255,.8)'
+                    });
+                    this.markerLayer.appendChild(badge);
+                    this.markerBadges[index] = badge;
+                }
+                if (badge.textContent !== label) badge.textContent = label;
+                if (badge.title !== title) badge.title = title;
+                badge.style.background = color;
+                const pixel = this._projectMapPoint(point, canvasRect);
+                badge.hidden = !pixel;
+                if (pixel) {
+                    badge.style.transform = `translate3d(${pixel.x - parentRect.left + offsetX}px, ${pixel.y - parentRect.top}px, 0) translate(-50%, -50%)`;
+                }
             };
             this.routePoints.forEach((point, index) => {
                 addBadge(point, String(index + 1),
@@ -807,6 +817,9 @@
             this.checkpointPoints.forEach((point) => {
                 addBadge(point, '检', '#75e0ff', point.name || '巡检检测点', 22);
             });
+            while (this.markerBadges.length > badgeIndex) {
+                this.markerBadges.pop().remove();
+            }
         }
 
         _bindProgram(program, buffer) {
@@ -828,6 +841,15 @@
         }
 
         draw() {
+            if (this.framePending) return;
+            this.framePending = true;
+            global.requestAnimationFrame(() => {
+                this.framePending = false;
+                this._drawFrame();
+            });
+        }
+
+        _drawFrame() {
             if (!this.gl) return;
             this._syncMarkerLayer();
             if (this.canvas.hidden) return;

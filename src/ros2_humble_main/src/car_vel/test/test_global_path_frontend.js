@@ -161,7 +161,7 @@ function verify3dPathLifecycle() {
     classList: { add: () => {}, remove: () => {} },
     addEventListener: () => {}, getContext: () => gl,
   };
-  const browser = { devicePixelRatio: 1, addEventListener: () => {}, atob: global.atob };
+  const browser = { devicePixelRatio: 1, requestAnimationFrame: callback => callback(), addEventListener: () => {}, atob: global.atob };
   vm.runInNewContext(viewerSource, { window: browser, console });
   const bytes = new ArrayBuffer(24);
   const view = new DataView(bytes);

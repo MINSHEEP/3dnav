@@ -25,7 +25,8 @@ from rclpy.time import Time
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformListener, TransformException
-from car_vel.initial_pose_quality import scan_map_quality
+from car_vel.initial_pose_quality import scan_map_quality, scan_points_in_base
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -65,6 +66,7 @@ class RelocalizationCoordinator(Node):
         self.declare_parameter('rough_amcl_timeout_sec', 15.0)
         self.declare_parameter('initial_scan_match_distance', 0.20)
         self.declare_parameter('initial_scan_match_ratio', 0.65)
+        self.declare_parameter('initial_scan_match_ratio_2d', 0.50)
         self.declare_parameter('amcl_confirmation_samples', 5)
         self.declare_parameter('amcl_confirmation_hold_sec', 1.5)
         self.declare_parameter('amcl_sample_max_gap_sec', 0.75)
@@ -95,6 +97,7 @@ class RelocalizationCoordinator(Node):
         self.rough_amcl_timeout = self._positive_float('rough_amcl_timeout_sec', 15.0)
         self.scan_match_distance = self._positive_float('initial_scan_match_distance', 0.20)
         self.scan_match_ratio = self._positive_float('initial_scan_match_ratio', 0.65)
+        self.scan_match_ratio_2d = self._positive_float('initial_scan_match_ratio_2d', 0.50)
         self.amcl_sample_count = max(
             3, int(self.get_parameter('amcl_confirmation_samples').value))
         self.amcl_hold = self._positive_float(
@@ -145,6 +148,8 @@ class RelocalizationCoordinator(Node):
         self.initial_map = None
         self.initial_scan = None
         self.initial_scan_at = 0.0
+        self.scan_preview_at = 0.0
+        self.scan_preview_publisher = self.create_publisher(String, '/localization/scan_preview', 1)
         self.initial_tf = Buffer()
         self.initial_tf_listener = TransformListener(self.initial_tf, self)
         self.create_subscription(OccupancyGrid, '/map', self._initial_map_callback, status_qos)
@@ -219,6 +224,7 @@ class RelocalizationCoordinator(Node):
         self.amcl_wait = None
         self.latest_amcl_stamp = None
         self.last_status_signature = None
+        self.add_on_set_parameters_callback(self._set_initial_parameters)
         self.timer = self.create_timer(0.1, self._timer_callback)
 
         self._publish_status(
@@ -995,12 +1001,44 @@ class RelocalizationCoordinator(Node):
             covariance[35] = 0.03
         message.pose.covariance = covariance
 
+    def _set_initial_parameters(self, parameters):
+        for parameter in parameters:
+            if parameter.name != 'initial_scan_match_ratio_2d':
+                continue
+            value = parameter.value
+            if type(value) not in (float, int) or not math.isfinite(value) or not 0.01 <= value <= 1:
+                return SetParametersResult(successful=False, reason='二维匹配阈值必须在 1%–100% 之间')
+            if self._global_mode != 'map_2d':
+                return SetParametersResult(successful=False, reason='仅二维导航模式可修改此阈值')
+            if self.pending_request is not None or self.active_goal_handle is not None or self.amcl_wait is not None:
+                return SetParametersResult(successful=False, reason='请等待当前初始定位结束或取消后再修改')
+        for parameter in parameters:
+            if parameter.name == 'initial_scan_match_ratio_2d':
+                self.scan_match_ratio_2d = float(parameter.value)
+        return SetParametersResult(successful=True)
+
+    def _required_scan_ratio(self):
+        return self.scan_match_ratio_2d if self._global_mode == 'map_2d' else self.scan_match_ratio
+
     def _initial_map_callback(self, message):
         self.initial_map = message
 
     def _initial_scan_callback(self, message):
         self.initial_scan = message
         self.initial_scan_at = time.monotonic()
+        if (self.scan_preview_publisher.get_subscription_count() == 0
+                or self.initial_scan_at - self.scan_preview_at < 0.25):
+            return
+        self.scan_preview_at = self.initial_scan_at
+        try:
+            transform = self.initial_tf.lookup_transform(
+                'base_footprint', message.header.frame_id, Time.from_msg(message.header.stamp))
+            points = scan_points_in_base(message, transform.transform, max_points=720)
+            payload = dict(frame_id='base_footprint', points=points[:, :2].tolist(),
+                           stamp=dict(sec=message.header.stamp.sec, nanosec=message.header.stamp.nanosec))
+        except TransformException as error:
+            payload = dict(points=[], error='激光安装变换尚未就绪：' + str(error))
+        self.scan_preview_publisher.publish(String(data=json.dumps(payload, separators=(',', ':'))))
 
     def _initial_scan_quality(self, pose):
         scan, grid = self.initial_scan, self.initial_map
@@ -1026,7 +1064,7 @@ class RelocalizationCoordinator(Node):
                                    transform.transform, self.scan_match_distance)
         if quality['valid_beams'] < 30:
             return None, '有效激光不足 30 束'
-        return quality, f"匹配率 {quality['match_ratio']:.0%}，要求 {self.scan_match_ratio:.0%}"
+        return quality, f"匹配率 {quality['match_ratio']:.0%}，要求 {self._required_scan_ratio():.0%}"
 
     def _amcl_callback(self, message):
         stamp = self._stamp_seconds(message.header.stamp)
@@ -1091,7 +1129,7 @@ class RelocalizationCoordinator(Node):
             return
 
         quality, reason = self._initial_scan_quality(message)
-        if quality is None or quality['match_ratio'] < self.scan_match_ratio:
+        if quality is None or quality['match_ratio'] < self._required_scan_ratio():
             waiting['window'] = None
             waiting['quality_error'] = reason
             self._publish_status('confirming_amcl', 'scan_map_validation', 0.86,

@@ -503,6 +503,7 @@
         constructor(options) {
             this.session = options.session;
             this.log = options.log || (() => {});
+            this.acceptInput = options.acceptInput || (() => true);
             this.onSpeed = options.onSpeed || (() => {});
             this.onReset = options.onReset || (() => {});
             this.onEmergencyStop = options.onEmergencyStop || (() => {});
@@ -520,6 +521,7 @@
 
         bind() {
             document.addEventListener('keydown', (event) => {
+                if (!this.acceptInput()) return;
                 if (this.isTextInput(event.target)) return;
                 const key = event.key.toLowerCase();
                 if (Object.prototype.hasOwnProperty.call(this.keys, key)) {
@@ -548,6 +550,7 @@
                 }
             });
             document.addEventListener('keyup', (event) => {
+                if (!this.acceptInput()) return;
                 const key = event.key.toLowerCase();
                 if (!Object.prototype.hasOwnProperty.call(this.keys, key)) return;
                 event.preventDefault();
@@ -557,8 +560,8 @@
                     if (this.enabled && this.session.connected) this.onNeutral();
                 }
             });
-            window.addEventListener('blur', () => this.stopAndZero());
-            document.addEventListener('visibilitychange', () => { if (document.hidden) this.stopAndZero(); });
+            window.addEventListener('blur', () => { if (this.acceptInput()) this.stopAndZero(); });
+            document.addEventListener('visibilitychange', () => { if (document.hidden && this.acceptInput()) this.stopAndZero(); });
         }
 
         isTextInput(target) {
@@ -632,6 +635,7 @@
             this.minZoomRatio = 0.02;
             this.maxZoomRatio = 24;
             this.robotPose = null;
+            this.scanOverlay = null;
             this.goalPose = null;
             this.globalPath = [];
             this.globalPathWarning = false;
@@ -1024,6 +1028,7 @@
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(this.offscreen, this.offsetX, this.offsetY,
                 info.width * info.resolution * this.zoom, info.height * info.resolution * this.zoom);
+            this.drawScanOverlay(ctx);
             this.drawGlobalPath(ctx);
             this.drawPoseDrag(ctx);
             this.drawEditSelection(ctx);
@@ -1037,6 +1042,28 @@
             ctx.font = '12px sans-serif';
             ctx.textAlign = 'left';
             ctx.fillText(`缩放 ${Math.round(this.zoom / this.baseZoom * 100)}%  ·  ${info.width} × ${info.height}`, 15, 25);
+        }
+
+        drawScanOverlay(ctx) {
+            const scan = this.scanOverlay;
+            if (!scan || Date.now() - scan.receivedAt > 1500) return;
+            let pose = this.robotPose;
+            if (scan.followDrag && this.dragPose) {
+                const drag = this.dragPose;
+                const dx = drag.endScreen.x - drag.startScreen.x;
+                const dy = drag.endScreen.y - drag.startScreen.y;
+                pose = { x: drag.start.x, y: drag.start.y,
+                    yaw: Math.hypot(dx, dy) > 5 ? Math.atan2(-dy, dx) : 0 };
+            }
+            if (!pose) return;
+            const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
+            ctx.save();
+            ctx.fillStyle = '#ff694f';
+            for (const [x, y] of scan.points) {
+                const p = this.mapToCanvas(pose.x + c*x - s*y, pose.y + s*x + c*y);
+                if (p) ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+            }
+            ctx.restore();
         }
 
         drawPoseDrag(ctx) {

@@ -47,9 +47,9 @@ def test_old_ready_3d_profile_cannot_authorize_new_2d_task():
 
 def test_exact_baseline_restoration_allows_2d_and_other_body():
     status = ready()
-    status.update(profile='baseline',navigation_mode='map_2d')
+    status.update(profile='xingji_2d',navigation_mode='map_2d')
     assert check(mode='map_2d',status=status) is None
-    status.update(body_id='gangben_zsl1',navigation_mode='terrain_3d')
+    status.update(profile='baseline',body_id='gangben_zsl1',navigation_mode='terrain_3d')
     assert check(body='gangben_zsl1',status=status) is None
 
 

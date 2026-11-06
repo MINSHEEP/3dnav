@@ -7,9 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from car_vel.nav2_timing_profile import BaselineStore, TimingProfilePolicy, scoped_profile
 
 
-def test_only_xingji_terrain_3d_selects_cpu_profile():
+def test_only_xingji_selects_cpu_profile_in_both_modes():
     assert scoped_profile('terrain_3d', 'xingji') == 'xingji_3d'
-    assert scoped_profile('map_2d', 'xingji') == 'baseline'
+    assert scoped_profile('map_2d', 'xingji') == 'xingji_2d'
+    assert scoped_profile('map_2d', 'xuanji') == 'baseline'
+    assert scoped_profile('terrain_3d', 'xuanji') == 'baseline'
     assert scoped_profile('terrain_3d', 'gangben_zsl1') == 'baseline'
     assert scoped_profile('map_2d', 'gangben_zsl1') == 'baseline'
     assert scoped_profile('terrain_3d', '') == 'unknown'
@@ -46,6 +48,9 @@ def test_leaving_scope_restores_exact_runtime_baseline():
     policy.set_context('terrain_3d', 'xingji', active=False)
     policy.observe_actual(400)
     policy.set_context('map_2d', 'xingji', active=False)
+    assert policy.next_operation() is None
+    assert policy.status()['ready']
+    policy.set_context('map_2d', 'gangben_zsl1', active=False)
     assert policy.next_operation() == ('set', 620)
     policy.observe_actual(620)
     assert policy.status()['ready'] is True
@@ -165,7 +170,7 @@ def test_scope_change_during_ack_uses_new_target_not_stale_completion():
     policy.observe_actual(800)
     policy.set_context('terrain_3d', 'xingji', active=False)
     policy.begin('set', 400, now=0.0)
-    policy.set_context('map_2d', 'xingji', active=False)
+    policy.set_context('map_2d', 'gangben_zsl1', active=False)
     policy.finish_set(True)
     policy.observe_actual(400)
     assert policy.status()['ready'] is False

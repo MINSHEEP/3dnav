@@ -130,7 +130,7 @@ function makeViewer() {
     addEventListener() {}, getContext: () => gl,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
   };
-  const browser = { devicePixelRatio: 1, addEventListener() {} };
+  const browser = { devicePixelRatio: 1, requestAnimationFrame: callback => callback(), addEventListener() {} };
   vm.runInNewContext(viewerSource, { window: browser, console });
   const viewer = new browser.PointCloudViewer(canvas, container);
   viewer.cloudTransform = { centerX: 0, centerY: 0, centerZ: 0, radius: 2 };

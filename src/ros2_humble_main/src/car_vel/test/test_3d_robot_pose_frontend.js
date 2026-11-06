@@ -32,7 +32,7 @@ if (!/function setNavigationRobotPose\(x, y, z, yaw\)/.test(navigation)
   throw new Error('navigation 3D view does not receive the map-frame AMCL robot pose');
 }
 for (const [pageName, page] of [['mapping', mapping], ['navigation', navigation]]) {
-  const version=pageName==='mapping'?'20260820-global-path':'20261023-draft-marker-scale';
+  const version=pageName==='mapping'?'20260820-global-path':'20261106-frame-batching';
   if (!page.includes('pointcloud_viewer.js?v='+version)) {
     throw new Error(`${pageName} page can reuse a cached 3D viewer without the robot marker`);
   }
@@ -72,7 +72,7 @@ function verifyMarkerDrawLifecycle() {
     addEventListener: () => {}, getContext: () => gl,
   };
   const browser = {
-    devicePixelRatio: 1, addEventListener: () => {}, atob: global.atob,
+    devicePixelRatio: 1, requestAnimationFrame: callback => callback(), addEventListener: () => {}, atob: global.atob,
   };
   vm.runInNewContext(viewer, { window: browser, console });
   const pointBytes = new ArrayBuffer(24);

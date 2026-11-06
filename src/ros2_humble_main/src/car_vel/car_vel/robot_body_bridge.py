@@ -31,7 +31,7 @@ def run_worker(body, profile, generation, frozen, pipe):
                     self.body_status = {}
                     self.nav_at = 0.0
                     self.nav_armed = False
-                    self.shaper = TurnCommandShaper()
+                    self.shaper = TurnCommandShaper(turn_floor=0.30, turn_start=0.30)
                     self.nav_was_active = False
                     self.navigation_gait_blocked = False
                     self.mapping_lio_paused = False

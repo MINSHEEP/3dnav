@@ -7,12 +7,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>巡检任务 · 四足机器人巡检</title>
-    <link rel="stylesheet" href="robot_ui.css?v=20261029-display">
-    <link rel="stylesheet" href="inspection.css?v=20261027-behavior-controls">
+    <link rel="stylesheet" href="robot_ui.css?v=20261106-page-teleop">
+    <link rel="stylesheet" href="inspection.css?v=20261106-initial-tools">
     <script src="rosbridge_client.js?v=20260804-map-idle-timeout"></script>
-    <script src="robot_ui_common.js?v=20261029-display"></script>
+    <script src="robot_ui_common.js?v=20261106-page-teleop"></script>
     <script src="velocity_guard_widget.js?v=20261028-speed-status"></script>
-    <script src="pointcloud_viewer.js?v=20261022-complete-pcd"></script>
+    <script src="page_teleop.js?v=20261106-takeover"></script>
+    <script src="initial_pose_tools.js?v=20261106-shared-initial"></script>
+    <script src="pointcloud_viewer.js?v=20261106-frame-batching"></script>
     <script src="saved_map_cloud.js?v=20261022-complete-pcd"></script>
     <script src="air_quality_widget.js?v=20260818-m701"></script>
     <script src="behavior_widget.js?v=20261102-exclusive"></script>
@@ -129,6 +131,21 @@
                 <button id="btn-refresh-routes" type="button" disabled>刷新路线</button>
                 <button id="btn-initial-mode" type="button" disabled>设置初始位置</button>
             </div>
+            <section id="inspection-initial-tools" class="inspection-initial-tools" aria-label="巡检初始定位">
+                <div class="inspection-initial-actions">
+                    <strong>定位准备</strong>
+                    <button id="btn-inspection-scan" type="button" aria-pressed="false">显示二维点云</button>
+                    <button id="btn-inspection-confirm-2d" class="primary" type="button" disabled>确认初始位置</button>
+                    <button id="btn-inspection-cancel-2d" type="button" disabled>取消候选</button>
+                    <label for="inspection-match-percent">匹配阈值</label>
+                    <input id="inspection-match-percent" data-pose-tool="percent" type="number" min="1" max="100" step="0.1" value="50" aria-label="二维初始匹配阈值百分比"><span>%</span>
+                    <button id="btn-inspection-match-read" data-pose-tool="read" type="button">读取</button>
+                    <button id="btn-inspection-match-apply" data-pose-tool="apply" type="button">应用</button>
+                </div>
+                <p id="inspection-initial-hint" class="hint" aria-live="polite">加载地图 → 设置初始位置 → 拖拽朝向并对齐红色点云 → 确认初始位置。任务结束后才能调整定位。</p>
+                <div class="inspection-initial-status"><span data-pose-tool="scan-hint" aria-live="polite">二维点云已关闭</span><span data-pose-tool="match-hint" aria-live="polite">阈值尚未读取；仅影响二维定位。</span></div>
+            </section>
+            <section id="inspection-page-teleop" class="page-teleop" aria-label="巡检人工遥控"></section>
             <div id="inspection-3d-toolbar" class="inspection-3d-toolbar" hidden>
                 <span id="inspection-3d-action-status" aria-live="polite">等待当前地图的三维点云与地面校验。</span>
                 <a class="button-link" href="navigation.html" title="在地形导航的三维点云图中新增、移动和保存路线点">在三维导航页编辑路线</a>
@@ -276,6 +293,42 @@
         document.getElementById('map-wrapper')
     );
     UI.bindZoomButtons(mapCanvas);
+    let pageTeleop = null;
+    let inspectionInitialDraft = null;
+    let latestInspectionPose = null;
+    let inspectionInitialPending = false;
+    function clearInspectionInitialDraft() {
+        const hadDraft = Boolean(inspectionInitialDraft);
+        inspectionInitialDraft = null;
+        document.getElementById('btn-inspection-confirm-2d').disabled = true;
+        document.getElementById('btn-inspection-cancel-2d').disabled = true;
+        if (hadDraft && latestInspectionPose) mapCanvas.setRobotPose(...latestInspectionPose);
+        else if (hadDraft) mapCanvas.clearRobotPose();
+    }
+    const scanTools = window.InitialPoseTools.attach({
+        root: document.getElementById('inspection-initial-tools'),
+        toggle: document.getElementById('btn-inspection-scan'), canvas: mapCanvas,
+        getSession: () => session, getMode: () => selectedNavigationMode,
+        isBusy: () => taskState.active || serviceBusy || inspectionStartPending || inspectionInitialPending || pageTeleop?.active,
+        isInitialMode: () => initialPoseMode, log,
+        onToggle: enabled => {
+            clearInspectionInitialDraft();
+            if (enabled && mapReady && !initialPoseMode) document.getElementById('btn-initial-mode').click();
+        }
+    });
+    document.getElementById('btn-inspection-cancel-2d').addEventListener('click', () => {
+        clearInspectionInitialDraft();
+        document.getElementById('inspection-initial-hint').textContent = '已取消候选，未修改当前定位。';
+    });
+    document.getElementById('btn-inspection-confirm-2d').addEventListener('click', () => {
+        const draft = inspectionInitialDraft;
+        if (!draft || draft.map !== loadedMapName || draft.loadId !== currentMapLoadId
+                || !isConfirmedMap2D() || taskState.active || inspectionInitialPending || !mapReady) {
+            clearInspectionInitialDraft(); log('地图或任务状态已变化，请重新设置初始位置。'); return;
+        }
+        clearInspectionInitialDraft();
+        handleInitialPose(draft.x, draft.y, draft.yaw, 'confirmed_2d');
+    });
     let inspectionPointCloudViewer = null;
     try {
         inspectionPointCloudViewer = new window.PointCloudViewer(
@@ -1165,6 +1218,14 @@
 
     function updateUi() {
         syncInspectionMapView();
+        document.getElementById('inspection-initial-tools').hidden = isTerrain3D();
+        scanTools.syncMode();
+        if (inspectionInitialDraft && (inspectionInitialDraft.map !== loadedMapName
+                || inspectionInitialDraft.loadId !== currentMapLoadId || taskState.active || !isConfirmedMap2D())) {
+            clearInspectionInitialDraft();
+        }
+        document.getElementById('btn-inspection-confirm-2d').disabled = !inspectionInitialDraft || inspectionInitialPending || serviceBusy;
+        document.getElementById('btn-inspection-cancel-2d').disabled = !inspectionInitialDraft;
         const connected = Boolean(session && session.connected);
         const active = Boolean(taskState.active);
         const interactionMode = inspectionInteractionMode();
@@ -1179,19 +1240,19 @@
             active || Boolean(pendingMapName);
         document.getElementById('route-selector').disabled = !mapReady || active;
         document.getElementById('btn-refresh-routes').disabled = !mapReady || active;
-        document.getElementById('btn-initial-mode').disabled = !mapReady || active
+        document.getElementById('btn-initial-mode').disabled = !mapReady || active || inspectionInitialPending || pageTeleop?.active
             || interactionMode === 'blocked'
             || (interactionMode === 'xingji_3d' && Boolean(threeDBaseIssue()));
         document.getElementById('btn-save-template').disabled = !connected || !hasRoute || active || serviceBusy;
         document.getElementById('btn-start-task').disabled =
             !connected || !standingConfirmed || !mapReady || !hasRoute
             || !nav2Ready || !localizationReady || !localizationMatchesMap
-            || !navigationModeSeen || active || serviceBusy
+            || !navigationModeSeen || active || serviceBusy || inspectionInitialDraft || inspectionInitialPending || pageTeleop?.active
             || interactionMode === 'blocked'
             || (interactionMode === 'xingji_3d' && !currentThreeDPreview());
         document.getElementById('btn-pause-task').disabled =
             !pauseControls.canPause || serviceBusy;
-        document.getElementById('btn-resume-task').disabled = !active
+        document.getElementById('btn-resume-task').disabled = pageTeleop?.active || !active
             || !pauseControls.canResume || serviceBusy;
         document.getElementById('btn-skip-task').disabled =
             !active || paused || !SKIPPABLE_TASK_STATES.has(taskState.state)
@@ -1205,7 +1266,7 @@
         mapCanvas.setPoseInteraction(
             (interactionMode === 'map_2d'
                 || interactionMode === 'gangben_legacy_3d')
-                && mapReady && initialPoseMode && !active,
+                && mapReady && initialPoseMode && !active && !inspectionInitialPending && !pageTeleop?.active,
             handleInitialPose
         );
         updateThreeDControls();
@@ -1347,6 +1408,8 @@
             || !pendingMapRasterReady) return false;
         const mapName = pendingMapName;
         clearPendingInspectionMapLoad();
+        clearInspectionInitialDraft();
+        inspectionInitialPending = false;
         loadedMapName = mapName;
         mapReady = true;
         localizationReady = false;
@@ -1649,6 +1712,8 @@
     }
 
     async function controlTask(command) {
+        if (command === "resume" && pageTeleop?.active) { log("请先退出人工接管。"); return; }
+        if (command === "resume" && pageTeleop?.needsPreparation) return pageTeleop.resume();
         if (inspectionStartPending && command === 'cancel') {
             if (inspectionStartCancelPending) return;
             inspectionStartCancelPending = true;
@@ -1962,11 +2027,19 @@
     }
 
     function handleInitialPose(x, y, yaw, source = '2d') {
+        if (pageTeleop?.active) { log("请先退出人工遥控接管，再设置初始位置。"); return false; }
         if (!mapReady || !initialPoseMode || taskState.active
             || (source === '3d' ? !isXingjiTerrain3D() || Boolean(threeDBaseIssue())
                 : !(isConfirmedMap2D() || isGangbenTerrain3D()))) {
             log('导航模式或地图状态未确认，初始位置未提交；请等待状态刷新后重新选点。');
             return false;
+        }
+        if (source === '2d' && isConfirmedMap2D()) {
+            inspectionInitialDraft = {x, y, yaw, map: loadedMapName, loadId: currentMapLoadId};
+            mapCanvas.setRobotPose(x, y, yaw);
+            document.getElementById('inspection-initial-hint').textContent = '候选未提交：可反复拖拽位置和朝向，使红点贴合地图墙体，再点“确认初始位置”。';
+            updateUi();
+            return true;
         }
         if (!latestOdometryStamp) {
             log('尚未收到 LIO 里程计时间戳，暂不能提交初始位置。');
@@ -1986,6 +2059,10 @@
             return false;
         }
         mapCanvas.setRobotPose(x, y, yaw);
+        inspectionInitialPending = true;
+        localizationReady = false;
+        localizedMapName = '';
+        document.getElementById('inspection-initial-hint').textContent = '初始位置已提交，正在等待后端匹配确认；结果显示在地图左下方。';
         initialPoseMode = false;
         document.getElementById('btn-initial-mode').classList.remove('choice-active');
         mapOverlay.textContent = '粗初始位置已提交，正在等待三维精修和 AMCL 确认。';
@@ -2148,11 +2225,17 @@
         thermalCameraRetryTimer = window.setTimeout(reconnectThermalCamera, 2800);
     });
 
+    pageTeleop = window.PageTeleop.attach({
+        root: document.getElementById('inspection-page-teleop'), getSession: () => session,
+        log, onChange: () => updateUi()
+    });
+
     session = new UI.RosSession({
         log,
         onState: (connected, text) => {
             UI.setConnectionStatus(connectionStatus, connected, text);
             if (!connected) {
+                if (pageTeleop?.active) pageTeleop.release("连接已断开，已退出接管。");
                 savedMapCloud?.dispose();
                 mapSnapshotRecovery?.cancel();
                 UI.setBatteryDisconnected(batteryStatus);
@@ -2167,6 +2250,9 @@
                 standingRequestPending = false;
                 navigationModeSeen = false;
                 selectedNavigationMode = '';
+                clearInspectionInitialDraft();
+                inspectionInitialPending = false;
+                scanTools.setEnabled(false);
                 selectedModeAtMs = 0;
                 robotBodyStatus = null;
                 robotBodyAtMs = 0;
@@ -2181,6 +2267,8 @@
             updateUi();
         },
         onReady: async (activeSession) => {
+            pageTeleop.connect(activeSession);
+            scanTools.reconnect();
             savedMapCloud?.dispose();
             savedMapCloud = new window.SavedMapCloud(activeSession, (message, info) => {
                 if (info.load_id !== currentMapLoadId || info.map_name !== currentMapLoadName) return;
@@ -2293,10 +2381,8 @@
             activeSession.subscribe('/localization/navigation_pose', UI.TYPES.poseWithCovariance, (message) => {
                 const pose = message && message.pose && message.pose.pose;
                 if (!pose || !mapReady) return;
-                mapCanvas.setRobotPose(
-                    Number(pose.position.x), Number(pose.position.y),
-                    UI.yawFromQuaternion(pose.orientation)
-                );
+                latestInspectionPose = [Number(pose.position.x), Number(pose.position.y), UI.yawFromQuaternion(pose.orientation)];
+                if (!inspectionInitialDraft) mapCanvas.setRobotPose(...latestInspectionPose);
                 if (inspectionPointCloudViewer) inspectionPointCloudViewer.setRobotPose(
                     Number(pose.position.x), Number(pose.position.y),
                     Number(pose.position.z || 0),
@@ -2316,6 +2402,11 @@
                     || ['succeeded', 'fallback_succeeded'].includes(status.state);
                 const terminal = Boolean(status.terminal)
                     || ['succeeded', 'fallback_succeeded', 'failed', 'canceled'].includes(status.state);
+                if (inspectionInitialPending && terminal) {
+                    inspectionInitialPending = false;
+                    document.getElementById('inspection-initial-hint').textContent = succeeded
+                        ? '初始定位已确认，可以选择路线并开始巡检。' : '初始定位未通过，请检查匹配提示并重新设置初始位置。';
+                }
                 const wasReady = localizationReady;
                 const oldMapName = localizedMapName;
                 localizationReady = succeeded && terminal;
@@ -2384,6 +2475,9 @@
     document.getElementById('btn-initial-mode').addEventListener('click', () => {
         if (taskState.active) return;
         initialPoseMode = !initialPoseMode;
+        clearInspectionInitialDraft();
+        if (initialPoseMode && isConfirmedMap2D() && !scanTools.enabled) scanTools.setEnabled(true);
+        if (mapCanvas.scanOverlay) mapCanvas.scanOverlay.followDrag = initialPoseMode;
         clearThreeDInitialDraft();
         document.getElementById('btn-initial-mode').classList.toggle('choice-active', initialPoseMode);
         const hint = initialPoseMode

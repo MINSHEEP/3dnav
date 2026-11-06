@@ -48,11 +48,12 @@ def test_mode_silence_never_resets_fallback_or_attempts_a_new_write():
     h._write_client.call_async.assert_not_called()
 
 
-def test_explicit_new_mode_still_requires_exact_baseline_restoration():
+def test_explicit_2d_mode_retains_xingji_optimized_batch():
     h = initialized()
     h._mode_callback(NS(data=json.dumps({'mode': 'map_2d'})))
     status = tick(h, 100.5, busy=True)
-    assert not status['ready'] and status['profile'] == 'baseline'
+    assert status['ready'] and status['profile'] == 'xingji_2d'
+    assert status['actual_batch_size'] == 400
     h._write_client.call_async.assert_not_called()
 
 

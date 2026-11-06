@@ -49,7 +49,7 @@ def coordinator_class():
     from pathlib import Path
     tree=ast.parse((Path(__file__).parents[1]/'car_vel/relocalization_coordinator.py').read_text())
     cls=next(n for n in tree.body if isinstance(n,ast.ClassDef))
-    names={'_begin_amcl_confirmation','_ensure_initial_covariance','_amcl_callback','_yaw','_angle_distance','_stamp_seconds','_request_initial_amcl_update'}
+    names={'_begin_amcl_confirmation','_ensure_initial_covariance','_amcl_callback','_yaw','_angle_distance','_stamp_seconds','_request_initial_amcl_update','_required_scan_ratio'}
     cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in names]
     cls.bases=[]
     ns=dict(math=math,copy=copy,time=time,Duration=lambda **kw:0,EmptyService=NS(Request=lambda:None))
@@ -86,7 +86,8 @@ def test_stable_amcl_requires_scan_quality_and_accepts_coarse_correction():
     c.amcl_position_std_limit=.55;c.amcl_yaw_std_limit=.5
     c.search_xy=3.;c.search_yaw=math.pi/2
     c.amcl_max_gap=.75;c.amcl_position_spread_limit=.15;c.amcl_yaw_spread_limit=.3
-    c.amcl_sample_count=5;c.amcl_hold=1.5;c.scan_match_ratio=.50
+    c.amcl_sample_count=5;c.amcl_hold=1.5;c.scan_match_ratio=.65
+    c._global_mode="map_2d";c.scan_match_ratio_2d=.50
     statuses=[]
     c._publish_status=lambda *a,**kw:statuses.append((a,kw))
     candidate=NS(pose=NS(pose=pose()))
@@ -122,3 +123,27 @@ def test_initial_update_uses_new_scans_without_queuing_requests():
     c.initial_scan.header.stamp.sec=3
     c._request_initial_amcl_update(waiting,31.)
     assert len(calls)==2
+
+
+def test_live_2d_threshold_is_validated_and_leaves_3d_unchanged():
+    import rclpy
+    from rclpy.parameter import Parameter
+    from car_vel.relocalization_coordinator import RelocalizationCoordinator
+    rclpy.init(domain_id=173)
+    node = RelocalizationCoordinator()
+    try:
+        node._global_mode = 'map_2d'
+        result = node.set_parameters([Parameter('initial_scan_match_ratio_2d', value=0.4)])
+        assert result[0].successful and node._required_scan_ratio() == 0.4
+        for invalid in (0.0, 1.01, float('nan')):
+            assert not node.set_parameters([Parameter('initial_scan_match_ratio_2d', value=invalid)])[0].successful
+            assert node._required_scan_ratio() == 0.4
+        node.amcl_wait = {}
+        assert not node.set_parameters([Parameter('initial_scan_match_ratio_2d', value=0.3)])[0].successful
+        node.amcl_wait = None
+        node._global_mode = 'terrain_3d'
+        assert node._required_scan_ratio() == node.scan_match_ratio
+        assert not node.set_parameters([Parameter('initial_scan_match_ratio_2d', value=0.3)])[0].successful
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()

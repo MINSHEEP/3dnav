@@ -1013,3 +1013,15 @@ input[type="checkbox"] { accent-color: var(--accent); }
 [data-camera-channel][hidden], [data-camera-grid][hidden] { display:none !important; }
 [data-camera-grid].camera-single-view { grid-template-columns:minmax(0,1fr) !important; }
 .mapping-camera-grid { display:grid; gap:8px; }
+
+.page-teleop { padding: 10px 12px; background: #17243c; border-bottom: 1px solid #405a7a; }
+.page-teleop-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.page-teleop-row strong { color: #9edcff; font-size: 13px; }
+.page-teleop button { padding: 8px 10px; font-size: 12px; }
+.page-teleop .hint { margin: 7px 0 0; font-size: 11px; line-height: 1.5; color: #b6cbe5; }
+.page-teleop-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 16px; margin-top: 9px; }
+.page-teleop-controls[hidden] { display: none; }
+.page-teleop-pad { display: grid; grid-template-columns: repeat(3, minmax(62px, 1fr)); gap: 5px; }
+.page-teleop-controls label { flex: 1 1 140px; font-size: 12px; }
+.page-teleop-controls input { width: 130px; max-width: 100%; }
+.page-teleop-controls button[data-drive] { touch-action: none; }

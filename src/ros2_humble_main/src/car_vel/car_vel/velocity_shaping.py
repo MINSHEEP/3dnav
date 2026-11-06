@@ -50,24 +50,26 @@ class TurnCommandShaper:
 
     The floor is a target, never a post-smoothing clamp. Exact zero or release
     below the lower deadband stops that axis immediately. Call reset on every
-    safety stop so neither a target nor hysteresis survives it.
+    safety stop so neither a target nor hysteresis survives it. A nonzero
+    turn_start explicitly opts a body into breakaway output for in-place turns.
     """
 
     def __init__(self, *, linear_scale=1.5, angular_scale=1.0,
                  allow_lateral=False, deadband=0.02, release_deadband=0.01,
-                 turn_floor=0.25, angular_accel=0.4):
+                 turn_floor=0.25, angular_accel=0.4, turn_start=0.0):
         if not all(math.isfinite(float(value)) for value in (
                 linear_scale, angular_scale, deadband, release_deadband,
-                turn_floor, angular_accel)):
+                turn_floor, angular_accel, turn_start)):
             raise ValueError('velocity shaping parameters must be finite')
         if not (0 <= release_deadband < deadband <= 1 and
-                0 <= turn_floor <= 1 and angular_accel > 0):
+                0 <= turn_start <= turn_floor <= 1 and angular_accel > 0):
             raise ValueError('invalid velocity shaping thresholds or acceleration')
         self.linear_scale = linear_scale
         self.angular_scale = angular_scale
         self.allow_lateral = allow_lateral
         self.deadband = deadband
         self.release_deadband = release_deadband
+        self.turn_start = turn_start
         self.turn_floor = turn_floor
         self.angular_accel = angular_accel
         self.reset()
@@ -76,6 +78,7 @@ class TurnCommandShaper:
         self._active = [False, False, False]
         self._target = (0.0, 0.0, 0.0)
         self._angular = 0.0
+        self._in_place = False
 
     def set_target(self, linear_x, linear_y, angular_z):
         values = shape_velocity_command(
@@ -91,7 +94,8 @@ class TurnCommandShaper:
                 self._active[index] = True
             filtered.append(value if self._active[index] else 0.0)
         vx, vy, yaw = filtered
-        if vx == 0.0 and vy == 0.0 and yaw != 0.0:
+        self._in_place = vx == 0.0 and vy == 0.0 and yaw != 0.0
+        if self._in_place:
             yaw = math.copysign(max(abs(yaw), self.turn_floor), yaw)
         self._target = (vx, vy, yaw)
         if yaw == 0.0:
@@ -102,6 +106,13 @@ class TurnCommandShaper:
         vx, vy, target = self._target
         if target == 0.0:
             self._angular = 0.0
+        elif self._in_place and self.turn_start > 0.0 and self._angular * target < 0.0:
+            # Stop the old turn before applying breakaway in the new direction.
+            self._angular = 0.0
+        elif (self._in_place and abs(self._angular) < self.turn_start
+              and self._angular * target >= 0.0):
+            # Short command bursts must reach the body's breakaway threshold.
+            self._angular = math.copysign(min(abs(target), self.turn_start), target)
         else:
             # Never compensate a scheduling stall with a large command jump.
             delta = self.angular_accel * max(0.0, min(float(elapsed), 0.1))
