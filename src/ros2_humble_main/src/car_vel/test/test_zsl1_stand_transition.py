@@ -18,6 +18,22 @@ class StandTransitionTests(unittest.TestCase):
             self.node.heartbeat(None)
             self.node.tick()
 
+    def test_mapping_manual_velocity_and_lio_pause(self):
+        self.node.profile['navigation_verified'] = False
+        self.node.stand(); self.advance(4.1)
+        move = self.fixture.twist()
+        self.node.nav_velocity(move)
+        self.assertEqual(self.node.command_at, 0)
+        self.node.mapping_teleop(SimpleNamespace(data=True))
+        self.node.nav_velocity(move)
+        self.assertGreater(self.node.command_at, 0)
+        self.node.mapping_lio_stop(None)
+        self.node.nav_velocity(move)
+        self.assertFalse(self.node.motion_authorized)
+        self.assertEqual(self.node.command_at, 0)
+        self.node.mapping_lio_resume(None)
+        self.assertFalse(self.node.motion_authorized)
+
     def test_wait_does_not_authorize_or_send_move(self):
         self.node.stand()
         self.assertFalse(self.node.motion_authorized)

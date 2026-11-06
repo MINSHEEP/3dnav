@@ -8,6 +8,8 @@ def topics_for_body(body):
         return '/xingji/mapping/lio_stop', '/xingji/mapping/lio_resume'
     if body == 'gangben_zsl1':
         return '/gangben/mapping/lio_stop', '/gangben/mapping/lio_resume'
+    if body == 'xuanji':
+        return '/xuanji/mapping/lio_stop', '/xuanji/mapping/lio_resume'
     raise ValueError('未知机器人本体，无法选择建图定位暂停话题')
 
 

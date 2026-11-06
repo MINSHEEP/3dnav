@@ -156,7 +156,13 @@
 }
 
 .settings-log { margin-top: 18px; }
-.settings-log .log { min-height: 120px; max-height: 210px; }
+.settings-log .log {
+    min-height: 120px;
+    max-height: 210px;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    line-height: 1.6;
+}
 .confirm-field { margin-top: 15px; }
 .confirm-field label { display: block; margin-bottom: 7px; color: #d8e2f7; }
 .confirm-field input { width: 100%; }

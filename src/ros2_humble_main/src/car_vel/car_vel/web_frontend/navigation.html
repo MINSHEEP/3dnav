@@ -713,7 +713,7 @@
             || bodyState.emergency_latched === true
             || bodyState.hardware_error === true || bodyState.error
             || selected !== body.active_body) return '';
-        return selected === 'xingji' || selected === 'gangben_zsl1' ? selected : '';
+        return ['xingji', 'gangben_zsl1', 'xuanji'].includes(selected) ? selected : '';
     }
     function isXingjiThreeD(nowMs = Date.now()) {
         return confirmedThreeDBody(nowMs) === 'xingji';
@@ -743,7 +743,7 @@
         return false;
     }
     function isGangbenThreeD(nowMs = Date.now()) {
-        return confirmedThreeDBody(nowMs) === 'gangben_zsl1';
+        return ['gangben_zsl1', 'xuanji'].includes(confirmedThreeDBody(nowMs));
     }
     let pendingMapName = '';
     let pendingMapRequestAccepted = false;

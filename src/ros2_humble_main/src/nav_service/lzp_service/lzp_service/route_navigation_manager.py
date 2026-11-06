@@ -2610,6 +2610,8 @@ class RouteNavigationManager(Node):
             if mode != TERRAIN_3D:
                 return GoalValidationResult(True, 'unchanged_2d', ''), None
             config = (self._robot_body_status or {}).get('config') or {}
+            if config.get('selected') == 'xuanji':
+                return GoalValidationResult(True, 'unchanged_xuanji', ''), None
             if config.get('selected') == 'gangben_zsl1':
                 # This feature is Xingji-only; preserve the existing ZSL-1
                 # route path rather than guessing its autonomous capability.
@@ -4272,7 +4274,7 @@ class RouteNavigationManager(Node):
         return response
 
     def _confirmed_gangben_3d_body(self) -> bool:
-        """The legacy 3D topic is permitted only for a live, selected Gangben."""
+        """The legacy 3D topic requires a live Gangben or Xuanji body."""
         status = self._robot_body_status
         if (
             not isinstance(status, dict)
@@ -4285,14 +4287,14 @@ class RouteNavigationManager(Node):
         worker = status.get('status')
         profiles = config.get('profiles') if isinstance(config, dict) else None
         profile = (
-            profiles.get('gangben_zsl1')
+            profiles.get(config.get('selected'))
             if isinstance(profiles, dict) else None
         )
         return bool(
             isinstance(worker, dict)
             and isinstance(profile, dict)
-            and config.get('selected') == 'gangben_zsl1'
-            and status.get('active_body') == 'gangben_zsl1'
+            and config.get('selected') in ('gangben_zsl1', 'xuanji')
+            and status.get('active_body') == config.get('selected')
             and type(status.get('generation')) is int
             and status['generation'] >= 1
             and status.get('connected') is True

@@ -23,7 +23,9 @@
                 else input.value = String(profile[key]);
             });
             formVersion = latest.config.version;
-            const sdk = model.value === 'gangben_zsl1';
+            const sdk = model.value !== 'xingji';
+            const xuanji = model.value === 'xuanji';
+            inputs.max_vy.min = xuanji ? '0' : '0.1';
             get('robot-body-sdk-options').hidden = !sdk;
             get('robot-body-port-label').textContent = sdk ? '小电脑 SDK 接收端口' : '星玑控制端口';
         }
@@ -34,6 +36,9 @@
                 || latest.switching);
             model.disabled = busy;
             Object.values(inputs).forEach(input => { input.disabled = busy; });
+            if (model.value === 'xuanji') {
+                ['robot_ip', 'port', 'max_vy'].forEach(key => { inputs[key].disabled = true; });
+            }
             if (!fresh) {
                 state.textContent = '未收到本体管理状态，切换不可用';
                 return;
@@ -45,7 +50,9 @@
                 + (latest.connected ? (names[active] || '未知') : '未连接')
                 + (latest.switching ? '；正在切换' : '');
             get('robot-body-note').textContent = latest.error
-                || '确认切换后将停止建图、导航和当前巡检任务，并退出旧本体控制。';
+                || (model.value === 'xuanji'
+                    ? '璇玑：只允许前进和原地转向；主机雷达沿用现有配置，导航前仍需确认安装与安全参数。网卡 IP 请在主机配置。'
+                    : '确认切换后将停止建图、导航和当前巡检任务，并退出旧本体控制。');
         }
 
         function receive(message) {
@@ -61,7 +68,7 @@
             } catch (_error) { /* a malformed status must not enable switching */ }
         }
 
-        model.addEventListener('change', () => { populate(); dirty = true; });
+        model.addEventListener('change', () => { populate(); dirty = true; render(); });
         Object.values(inputs).forEach(input => input.addEventListener('input', () => { dirty = true; }));
         apply.addEventListener('click', async () => {
             if (apply.disabled || !session) return;
@@ -70,7 +77,10 @@
                 profile[key] = input.type === 'checkbox' ? input.checked
                     : input.type === 'number' ? Number(input.value) : input.value.trim();
             });
-            if (!get('robot-body-form').reportValidity()) return;
+            if (!get('robot-body-form').reportValidity()) {
+                log('本体配置未通过校验，请检查 IP、端口和速度；璇玑横移速度必须为 0。');
+                return;
+            }
             if (!root.confirm('确认切换本体？请确认现场安全。当前建图、导航、巡检和园区任务将停止，切换后不会自动站立或恢复任务。')) return;
             profile.switch_confirmed = true;
             busy = true;

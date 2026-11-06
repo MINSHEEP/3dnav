@@ -163,7 +163,7 @@ class AutomaticTerrainNavigationNode(Node):
             profile = config.get('profiles', {}).get(selected, {})
             state = data.get('status')
             generation = data.get('generation')
-            valid = (selected in ('xingji', 'gangben_zsl1')
+            valid = (selected in ('xingji', 'gangben_zsl1', 'xuanji')
                      and data.get('active_body') == selected
                      and data.get('connected') is True
                      and type(generation) is int and generation >= 1
@@ -370,7 +370,7 @@ class AutomaticTerrainNavigationNode(Node):
             elif not fixed and self._fixed_body_identity is not None:
                 if (self._navigation_mode == TERRAIN_3D
                         and self.get_parameter('xingji_3d_fixed_obstacle_enabled').value is True
-                        and (self._body_id != 'gangben_zsl1'
+                        and (self._body_id not in ('gangben_zsl1', 'xuanji')
                              or not 0.0 <= now - self._body_at <= 2.0)):
                     self._controller.assume_mode('unconfirmed')
                     self._publish(self._controller._decision(

@@ -435,7 +435,7 @@ class TerrainObserverNode(Node):
             geometry = dict(forward_min=self.forward_min,
                             forward_max=self.forward_max, half_width=self.half_width)
             evidence_source = 'current'
-            if self._navigation_mode == 'terrain_3d' and self._body not in ('xingji', 'gangben_zsl1'):
+            if self._navigation_mode == 'terrain_3d' and self._body not in ('xingji', 'gangben_zsl1', 'xuanji'):
                 raise ValueError('3D导航本体身份尚未确认，不能授权地形通行')
             if (self._body == 'xingji' and self._navigation_mode == 'terrain_3d'
                     and now - self._body_at <= 2.0 and now-self._mode_at <= 1.0):

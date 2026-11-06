@@ -393,6 +393,12 @@ def run_worker(body, profile, generation, frozen, pipe):
         elif body == 'gangben_zsl1':
             from car_vel.zsl1_bridge import Zsl1Bridge
             node = Zsl1Bridge(profile, frozen=frozen)
+        elif body == 'xuanji':
+            try:
+                from car_vel.xuanji_bridge import XuanjiBridge
+            except ImportError as error:
+                raise RuntimeError('璇玑依赖未加载：请先编译并 source sw01_ws/install/setup.bash') from error
+            node = XuanjiBridge(profile, frozen=frozen)
         else:
             raise ValueError('不支持的本体')
 

@@ -378,7 +378,7 @@ class VelocityArbiter(Node):
             selected = data.get('config', {}).get('selected', '')
             state = data.get('status') or {}
             profile = data.get('config', {}).get('profiles', {}).get(selected, {})
-            valid = (selected in ('xingji', 'gangben_zsl1')
+            valid = (selected in ('xingji', 'gangben_zsl1', 'xuanji')
                      and data.get('active_body') == selected and data.get('connected') is True
                      and not data.get('switching') and not data.get('error')
                      and not state.get('stale') and not state.get('emergency_latched')
@@ -514,7 +514,7 @@ class VelocityArbiter(Node):
             elif source == 'nav':
                 guard_fresh = (
                     now - self._terrain_guard_at <= self.terrain_timeout)
-                body_known = self._body_id in ('xingji', 'gangben_zsl1') and now-self._body_at <= 2.
+                body_known = self._body_id in ('xingji', 'gangben_zsl1', 'xuanji') and now-self._body_at <= 2.
                 forward_only = self._terrain_guard_enabled and self._body_id == 'xingji'
                 reason = ''
                 if self._terrain_guard_enabled and not body_known:
@@ -581,7 +581,7 @@ class VelocityArbiter(Node):
                     terrain_enabled=self._terrain_guard_enabled,body_id=self._body_id,
                     terrain_stop_bypassed=terrain_stop_bypassed,
                     body_generation=self._body_generation,body_age_sec=age(now,self._body_at),
-                    body_known=self._body_id in ('xingji','gangben_zsl1') and now-self._body_at<=2.,
+                    body_known=self._body_id in ('xingji','gangben_zsl1','xuanji') and now-self._body_at<=2.,
                     terrain_fresh=now-self._terrain_guard_at<=self.terrain_timeout,
                     terrain_status_age_sec=age(now,self._terrain_guard_at),
                     terrain_safe=self._terrain_safe,evidence=self._terrain_evidence,

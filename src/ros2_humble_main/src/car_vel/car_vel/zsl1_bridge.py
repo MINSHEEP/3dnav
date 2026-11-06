@@ -33,6 +33,7 @@ class Zsl1Bridge(Node):
         self.last_tick = time.monotonic()
         self.motion_authorized = False
         self.mapping_lio_paused = False
+        self.mapping_teleop_active = False
         self.mapping_rearm_allowed = False
         self.adapter = Zsl1Adapter(profile)
         self.last_error = ''
@@ -45,6 +46,7 @@ class Zsl1Bridge(Node):
         self.events = self.create_publisher(String, '/dog_remote/events', 10)
         self._stop_publisher = self.create_publisher(Empty, '/motion_stop', 10)
         self.create_subscription(Twist, '/cmd_vel_safe', self.nav_velocity, 1)
+        self.create_subscription(Bool, '/mapping/teleop_active', self.mapping_teleop, 10)
         self.create_subscription(Twist, '/dog_remote/cmd_vel', self.remote_velocity, 1)
         self.create_subscription(String, '/dog_remote/command', self.command, 10)
         self.create_subscription(Bool, '/dog_remote/enable', self.enable, 10)
@@ -58,6 +60,7 @@ class Zsl1Bridge(Node):
         self.stand_services = ReentrantCallbackGroup()
         self.create_service(Trigger, '/dog_remote/ensure_standing', self.ensure_standing,
                             callback_group=self.stand_services)
+        self.create_service(Trigger, '/dog_remote/ensure_mapping_motion', self.ensure_mapping_motion, callback_group=self.stand_services)
         self.create_service(SetTraversalMode, '/dog_remote/set_traversal_mode', self.traversal,
                             callback_group=self.stand_services)
         self.create_timer(0.05, self.tick)
@@ -127,8 +130,23 @@ class Zsl1Bridge(Node):
         except Exception as error:
             self._fault(error)
 
+    def mapping_teleop(self, message):
+        self.mapping_teleop_active = bool(message.data)
+        if not self.mapping_teleop_active:
+            self.stop()
+
+    async def ensure_mapping_motion(self, _request, response):
+        try:
+            if self.remote_active:
+                raise RuntimeError('请先退出独立遥控，再开启建图遥控')
+            response.success, response.message = await self.stand()
+            self.mapping_teleop_active = response.success
+        except RuntimeError as error:
+            response.success, response.message = False, str(error)
+        return response
+
     def nav_velocity(self, message):
-        if not self.remote_active and self.profile['navigation_verified']:
+        if not self.remote_active and (self.mapping_teleop_active or self.profile['navigation_verified']):
             self.accept_velocity(message)
 
     def remote_velocity(self, message):

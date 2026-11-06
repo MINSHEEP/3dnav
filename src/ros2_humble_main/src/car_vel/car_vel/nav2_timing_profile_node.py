@@ -86,7 +86,7 @@ class Nav2TimingProfileNode(Node):
         try:
             value = json.loads(message.data)
             selected = value.get('config', {}).get('selected', '')
-            valid = (selected in ('xingji', 'gangben_zsl1')
+            valid = (selected in ('xingji', 'gangben_zsl1', 'xuanji')
                      and value.get('active_body') == selected and value.get('connected') is True
                      and not value.get('switching') and not value.get('error'))
             self._body = selected if valid else ''

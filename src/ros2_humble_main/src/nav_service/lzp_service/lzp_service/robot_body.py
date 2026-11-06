@@ -12,7 +12,8 @@ import tempfile
 import time
 
 
-BODY_NAMES = {'xingji': '星玑', 'gangben_zsl1': '钢镚 ZSL-1 点足'}
+BODY_NAMES = {'xingji': '星玑', 'gangben_zsl1': '钢镚 ZSL-1 点足',
+              'xuanji': '璇玑 Hypertron 轮式四足'}
 
 
 def default_config():
@@ -22,7 +23,10 @@ def default_config():
                    'max_yaw': 0.6},
         'gangben_zsl1': {'robot_ip': '192.168.168.168', 'local_ip': '',
                         'port': 43988, 'navigation_verified': False,
-                        'max_vx': 0.5, 'max_vy': 0.2, 'max_yaw': 0.6}}}
+                        'max_vx': 0.5, 'max_vy': 0.2, 'max_yaw': 0.6},
+        'xuanji': {'robot_ip': '10.18.10.100', 'local_ip': '10.18.10.201',
+                   'port': 3601, 'navigation_verified': False,
+                   'max_vx': 0.5, 'max_vy': 0.0, 'max_yaw': 0.6}}}
 
 
 def validate_profile(body, profile):
@@ -54,9 +58,19 @@ def validate_profile(body, profile):
         raise ValueError('导航安装参数确认必须为布尔值')
     for key, maximum in (('max_vx', 0.8), ('max_vy', 0.3), ('max_yaw', 1.0)):
         value = result[key]
+        if body == 'xuanji' and key == 'max_vy':
+            if type(value) not in (int, float) or value != 0:
+                raise ValueError('璇玑禁止横移，max_vy 必须为 0')
+            result[key] = 0.0
+            continue
         if type(value) not in (int, float) or not 0.1 <= value <= maximum:
             raise ValueError(f'{key} 超出本项目首版安全范围 0.1–{maximum}')
         result[key] = float(value)
+    if body == 'xuanji':
+        if result['robot_ip'] != '10.18.10.100' or result['port'] != 3601:
+            raise ValueError('璇玑 SDK 固定机器人地址 10.18.10.100，接收端口 3601')
+        if result['local_ip'] not in [f'10.18.10.{n}' for n in range(200, 210)]:
+            raise ValueError('璇玑 SDK 要求本机网卡配置在 10.18.10.200–209；网页不会设置网卡')
     return result
 
 
@@ -74,6 +88,9 @@ class BodyConfigStore:
         raw = json.loads(self.path.read_text(encoding='utf-8'))
         if not isinstance(raw, dict):
             raise ValueError('本体配置必须为 JSON 对象，禁止自动回退')
+        # Extend the previous two-body schema without changing saved settings.
+        if set(raw.get('profiles', {})) == {'xingji', 'gangben_zsl1'}:
+            raw['profiles']['xuanji'] = default_config()['profiles']['xuanji']
         if (raw.get('selected') not in BODY_NAMES or
                 type(raw.get('version')) is not int or raw['version'] < 1 or
                 set(raw.get('profiles', {})) != set(BODY_NAMES)):

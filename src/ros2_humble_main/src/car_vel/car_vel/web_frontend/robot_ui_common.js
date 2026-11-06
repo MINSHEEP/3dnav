@@ -1295,7 +1295,7 @@
             }
             updateBatteryStatus(batteryElement, status);
             if (batteryElement && status.body_id) {
-                batteryElement.title = '当前本体：' + (status.body_id === 'gangben_zsl1' ? '钢镚 ZSL-1 点足' : '星玑');
+                batteryElement.title = '当前本体：' + ({xingji: '星玑', gangben_zsl1: '钢镚 ZSL-1 点足', xuanji: '璇玑轮式四足'}[status.body_id] || '未知本体');
             }
             if (onStatus) onStatus(status);
         });

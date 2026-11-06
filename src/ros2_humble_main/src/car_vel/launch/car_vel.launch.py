@@ -1,5 +1,6 @@
 import os
 from car_vel.lidar_network import runtime_config_path
+from car_vel.xuanji_navigation import selected_nav2_params
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -15,7 +16,8 @@ def generate_launch_description():
     # Locate the URDF installed by robot_navigation2.
     package_path = get_package_share_directory('robot_navigation2')
     urdf_file_path = os.path.join(package_path, 'urdf', 'base.xacro')
-    nav2_params_file = os.path.join(package_path, 'config', 'nav2_params.yaml')
+    nav2_params_file = selected_nav2_params(
+        os.path.join(package_path, 'config', 'nav2_params.yaml'))
 
     # The URDF owns only the fixed base_link -> livox_frame transform.
     # Small Point-LIO publishes odom -> base_footprint -> base_link dynamically.

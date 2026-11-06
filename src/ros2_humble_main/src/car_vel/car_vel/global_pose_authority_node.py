@@ -157,7 +157,7 @@ class GlobalPoseAuthorityNode(Node):
             selected = data['config']['selected']
             state = data.get('status') or {}
             profile = data.get('config', {}).get('profiles', {}).get(selected, {})
-            valid = (selected in ('xingji', 'gangben_zsl1') and data.get('active_body') == selected
+            valid = (selected in ('xingji', 'gangben_zsl1', 'xuanji') and data.get('active_body') == selected
                      and data.get('connected') is True and not data.get('switching')
                      and not data.get('error') and not state.get('stale')
                      and not state.get('emergency_latched') and not state.get('hardware_error')

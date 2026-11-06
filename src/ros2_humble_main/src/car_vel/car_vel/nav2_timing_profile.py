@@ -10,7 +10,7 @@ PARAMETER = 'FollowPath.batch_size'
 
 
 def scoped_profile(mode, body):
-    if mode not in ('map_2d', 'terrain_3d') or body not in ('xingji', 'gangben_zsl1'):
+    if mode not in ('map_2d', 'terrain_3d') or body not in ('xingji', 'gangben_zsl1', 'xuanji'):
         return 'unknown'
     return 'xingji_3d' if mode == 'terrain_3d' and body == 'xingji' else 'baseline'
 

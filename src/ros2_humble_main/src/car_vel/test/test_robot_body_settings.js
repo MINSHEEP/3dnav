@@ -94,5 +94,18 @@ function fixture() {
     f.session.call=async()=>{throw new Error('timeout');};
     await f.get('apply').events.click();
     assert.ok(f.logs.some(text=>text.includes('未确认切换结果')));
+    f=fixture(); f.app.connection(true);
+    f.payload.config.profiles.xuanji={robot_ip:'10.18.10.100',local_ip:'10.18.10.201',
+        port:3601,max_vx:0.5,max_vy:0,max_yaw:0.6,navigation_verified:false};
+    f.emit(); f.get('select').value='xuanji'; f.get('select').events.change();
+    assert.equal(f.get('max-vy').value,'0');
+    assert.equal(f.get('max-vy').disabled,true);
+    await f.get('apply').events.click();
+    assert.equal(f.calls[0][2].body_id,'xuanji');
+    assert.equal(JSON.parse(f.calls[0][2].profile_json).max_vy,0);
+    f.get('select').value='gangben_zsl1'; f.get('select').events.change();
+    assert.equal(f.get('max-vy').disabled,false);
+    assert.equal(f.get('max-vy').min,'0.1');
+
     console.log('robot body settings: connection, stale, locks, profile, CAS, cancel, timeout PASS');
 })().catch(error=>{console.error(error);process.exit(1);});

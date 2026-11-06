@@ -508,7 +508,7 @@
         if (!isTerrain3D()) return 'blocked';
         const body = confirmedRobotBody(nowMs);
         if (body === 'xingji') return 'xingji_3d';
-        if (body === 'gangben_zsl1') return 'gangben_legacy_3d';
+        if (body === 'gangben_zsl1' || body === 'xuanji') return 'gangben_legacy_3d';
         return 'blocked';
     }
 

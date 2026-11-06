@@ -195,6 +195,8 @@
     let pendingNavigationUrl = null;
     let session;
     let teleop;
+    let mappingBody = '';
+    let enablingTeleop = false;
     let lioFaultLatched = false;
     let lioWarningCode = '';
     let latestProjectedMapStamp = -Infinity;
@@ -488,6 +490,7 @@
     function publishMappingTeleopActive(enabled) {
         if (session && session.connected) {
             session.publish('/xingji/mapping/teleop_active', UI.TYPES.bool, { data: Boolean(enabled) });
+            session.publish('/mapping/teleop_active', UI.TYPES.bool, { data: Boolean(enabled) });
         }
     }
 
@@ -777,6 +780,19 @@
         },
         onReady: async (activeSession) => {
             UI.subscribeDogStatus(activeSession, batteryStatus);
+            activeSession.subscribe('/robot_body/status', UI.TYPES.string, (message) => {
+                let data;
+                try { data = JSON.parse(message.data); } catch (_) { return; }
+                mappingBody = data.config?.selected || '';
+                if (!['gangben_zsl1', 'xuanji'].includes(mappingBody) || enablingTeleop || !teleop?.enabled) return;
+                const state = data.status || {};
+                if (!data.connected || state.motion_authorized !== true || state.emergency_latched || state.error) {
+                    teleop.setEnabled(false);
+                    publishMappingTeleopActive(false);
+                    setRemoteUi(false);
+                    log('建图遥控已暂停：' + (state.error || '本体移动未授权或定位暂停；恢复后重新开启遥控。'));
+                }
+            });
             activeSession.subscribe('/terrain_grid/status', UI.TYPES.string, (message) => {
                 try {
                     const status = JSON.parse(message && message.data || '{}');
@@ -991,15 +1007,21 @@
         const button = document.getElementById('remote-toggle');
         if (enabled) {
             button.disabled = true;
+            enablingTeleop = true;
             try {
-                const result = await session.call('/dog_remote/ensure_standing', UI.TYPES.trigger, {});
+                if (!mappingBody) throw new Error('尚未收到本体状态，请稍候');
+                const service = ['gangben_zsl1', 'xuanji'].includes(mappingBody)
+                    ? '/dog_remote/ensure_mapping_motion' : '/dog_remote/ensure_standing';
+                const result = await session.call(service, UI.TYPES.trigger, {});
                 if (!result.success) throw new Error(result.message || '本体站立未确认');
                 if (!session.connected) throw new Error('ROS2 连接已断开');
             } catch (error) {
+                publishMappingTeleopActive(false);
                 log(`未启用建图遥控：${error.message}`);
                 return;
             } finally {
                 button.disabled = false;
+                enablingTeleop = false;
             }
         }
         teleop.setEnabled(enabled);

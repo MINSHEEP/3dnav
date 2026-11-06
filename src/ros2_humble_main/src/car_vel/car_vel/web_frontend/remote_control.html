@@ -9,6 +9,13 @@
     <script src="robot_ui_common.js?v=20261029-display"></script>
     <script src="air_quality_widget.js?v=20260818-m701"></script>
     <script defer src="c12_controls.js?v=20261031"></script>
+    <style>
+        #xuanji-controls { padding: 12px; margin-bottom: 12px; border: 1px solid #46577a; border-radius: 10px; }
+        #xuanji-control-state { margin: 0 0 8px; font-weight: 600; }
+        #xuanji-next-step { margin: 0 0 12px; color: #9dcfff; }
+        #xuanji-controls details { margin-bottom: 12px; color: #b7c5dd; font-size: 13px; line-height: 1.7; }
+        #xuanji-controls .command-grid { gap: 10px; }
+    </style>
 </head>
 <body>
 <div class="app-shell">
@@ -104,6 +111,23 @@
 
             <section class="section">
                 <div class="section-title">基础命令</div>
+                <div id="xuanji-controls" hidden>
+                    <p id="xuanji-control-state"></p>
+                    <p id="xuanji-next-step" aria-live="polite"></p>
+                    <details id="xuanji-guide"><summary>操作指南：开始、停止与恢复控制权</summary>
+                        <p><strong>开始遥控</strong><br>① 手柄三档开关回到 1 档。② 按 9，等“SDK 已取得控制权”。③ 按 Y 站立，等“站立 / 0xB102”。④ 按 4，等“可以遥控 / 0xB104”。已经站立可跳过 Y；已可遥控则不必重复切换。</p>
+                        <p><strong>移动与普通停止</strong><br>W/S 前后，A/D 横移（最高 0.2 m/s），Q/E 原地转向。按住移动，松开停止；0 或 X 请求零速度。转向时不同时平移。零速度不等于趴下，也不保证取消已发给机器人的站立动作。</p>
+                        <p><strong>站立、趴下不是任何时候都能用</strong><br>先停止移动，确认已取得控制权、没有锁定且上一个动作已完成。Y 请求固定站立，U 请求趴下；是否接受还取决于机器人实际状态。站立完成后不会自动进入 MOVE；从 MOVE 回到固定站立可先停止，再按 Y。站立和进入 MOVE 要求已知电量高于 15%。充电、故障或动作过渡期间不要反复切换。</p>
+                        <p><strong>R 什么时候用？</strong><br>仅在停车锁定、SDK 故障或无法重新取得控制权时使用；先确认机器狗已安全停稳。R 会重启璇玑 SDK 会话，不是普通停止键，不会自动申请控制权、站立或恢复运动。等“reset 已确认”后再按 9。连接或复位过程中不要重复按 R。遥控会话已停用时先刷新页面。</p>
+                        <p><strong>突然失去控制权（ctrl:0）</strong><br>松开方向键，查看日志并确认手柄回到 1 档。没有锁定：按 9 等确认。有锁定：R → 等复位完成 → 9 → 等取得控制权。再根据姿态执行 Y → 等站立完成 → 4。若已有 0xB102 可跳过 Y；若复位后虽显示 MOVE 却未放行，先回固定站立再进入 MOVE。反复失败时停止重试，保留第一条报错，检查网络或重新应用本体。</p>
+                        <p><strong>T 与普通停止不同</strong><br>T/1 请求阻尼并锁定运动，会改变关节支撑；不是保持站立的刹车。没有 SDK 控制权时，网页不能保证停止机器狗，请使用现场手柄处置。</p>
+                        <p><strong>建图与导航</strong><br>仍使用主机雷达。独立遥控页会停止建图和导航节点；需要建图时请进入建图页操作。导航维持前进和原地转向，禁止横移、倒车。先校准雷达外参、碰撞轮廓及速度，再在设置页确认导航参数；不能仅为解除限制而勾选确认。</p>
+                    </details>
+                    <div class="command-grid">
+                        <button class="command-button" type="button" data-command="request_control">9 申请 SDK 控制权</button>
+                        <button class="command-button" type="button" data-command="move_mode">4 进入 MOVE</button>
+                    </div>
+                </div>
                 <div class="command-grid">
                     <button class="command-button" type="button" data-command="reset"><span class="key">R</span>复位/解除急停</button>
                     <button class="command-button danger" type="button" data-command="emergency"><span class="key">T</span>紧急停止</button>
@@ -204,6 +228,7 @@
     let session;
     let controlReady = false;
     let specialActionsSupported = true;
+    let isXuanji = false;
     let speed = 0.5;
     let heartbeatTimer = null;
     let motionTimer = null;
@@ -393,13 +418,36 @@
 
     function updateDogStatus(status) {
         specialActionsSupported = status.capabilities?.special_actions !== false;
+        isXuanji = status.body_id === 'xuanji';
+        document.getElementById('xuanji-controls').hidden = !isXuanji;
+        document.querySelectorAll('[data-command="request_control"], [data-command="move_mode"], [data-command="stand"], [data-command="lie_down"]')
+            .forEach(button => { button.disabled = isXuanji && Boolean(status.active_action); });
+        if (isXuanji) {
+            const mode = Number.isInteger(status.sdk_sport_status) ? '0x' + status.sdk_sport_status.toString(16).toUpperCase() : '未知';
+            document.getElementById('xuanji-control-state').textContent = `${status.sdk_control_authority ? 'SDK 已取得控制权' : 'SDK 未取得控制权'} · ${status.posture || '未知姿态'}（${mode}）`;
+            const actions = {connect: '连接', reset: '重启 SDK 会话', authority: '申请控制权', fixed_stand: '站立', move: '进入 MOVE', lie_down: '趴下', emergency: '阻尼'};
+            const next = status.active_action ? `正在${actions[status.active_action] || status.active_action}，请等待确认…`
+                : !status.remote_active ? '遥控会话已停用，请刷新页面重新开启。'
+                : status.error || status.emergency_latched ? '已锁定：确认安全及手柄 1 档，按 R 复位，等待完成后按 9。'
+                : !status.sdk_control_authority ? '下一步：手柄回到 1 档，按 9 申请控制权。'
+                : status.motion_authorized ? '可以遥控：W/S 前后 · A/D 横移 · Q/E 原地转向。'
+                : status.sdk_sport_status === 0xB102 ? '站立已完成：按 4 进入 MOVE。'
+                : '下一步：按 Y 站立，等待完成后按 4。';
+            document.getElementById('xuanji-next-step').textContent = next;
+        }
+        document.querySelectorAll('[data-move]').forEach(button => {
+            button.disabled = false;
+            button.title = isXuanji && ['a', 'd'].includes(button.dataset.move) ? '遥控横移最高 0.2 m/s；导航不横移' : '';
+        });
         document.querySelectorAll('[data-custom-action], [data-official-action], #btn-model, #btn-obstacle, #btn-idle')
             .forEach(button => {
+                button.hidden = isXuanji;
                 button.disabled = !specialActionsSupported;
-                button.title = specialActionsSupported ? '' : '钢镚 ZSL-1 首版不支持此功能';
+                button.title = specialActionsSupported ? '' : '当前本体不支持此功能';
             });
+        document.querySelectorAll('[data-custom-action], [data-official-action]').forEach(button => { button.closest('section').hidden = isXuanji; });
         const fresh = status.connected === true && status.stale !== true;
-        const bodyName = status.body_id === 'gangben_zsl1' ? '钢镚 ZSL-1' : '星玑';
+        const bodyName = {xingji: '星玑', gangben_zsl1: '钢镚 ZSL-1', xuanji: '璇玑轮式四足'}[status.body_id] || '未知本体';
         document.getElementById('dog-link').textContent = `${bodyName} · ${fresh ? '在线' : '状态失联'}`;
         updateCardState('card-dog-link', fresh ? 'good' : 'stale');
 
@@ -520,6 +568,12 @@
     document.getElementById('speed-up').addEventListener('click', () => setSpeed(speed + 0.1));
     speedSlider.addEventListener('input', (event) => setSpeed(event.target.value));
     document.getElementById('btn-help').addEventListener('click', () => {
+        if (isXuanji) {
+            const guide = document.getElementById('xuanji-guide');
+            guide.open = true;
+            guide.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            return;
+        }
         const help = document.getElementById('help-box');
         help.hidden = !help.hidden;
         if (!help.hidden) help.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -543,6 +597,12 @@
             return;
         }
         if (event.repeat) return;
+        const sdkKeys = {'9': 'request_control', '0': 'stop', '1': 'emergency', '2': 'stand', '3': 'lie_down', '4': 'move_mode'};
+        if (isXuanji && sdkKeys[key]) {
+            event.preventDefault();
+            runCommand(sdkKeys[key]);
+            return;
+        }
         if (key === 'x') {
             event.preventDefault();
             stopMotion(true);
