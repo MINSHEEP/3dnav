@@ -8,12 +8,25 @@
 
 三种底盘（星玑、钢镚 ZSL-1 点足、璇玑 Hypertron 轮式四足）由同一个 3dnav 仓库管理。璇玑 SDK 1.1.1 的头文件、x86_64 厂商库和三个 ROS 包已纳入 `src/ros2_humble_main/src/driver/astrall/`，不再依赖旧 SDK 工作空间；无需子模块或另行下载。SDK 库不支持本次未验证的 ARM/Windows 运行环境。
 
-在 3dnav 根目录构建：
+### 全工作空间编译（ROS 2 Humble）
+
+先进入本机的 3dnav 仓库根目录。首次克隆后，Livox 驱动的 `package.xml` 不在 Git 中，需要从 ROS 2 模板生成，之后再编译整个工作空间：
 
 ```bash
-./scripts/build_workspace.sh --parallel-workers 2 --cmake-args -DBUILD_TESTING=OFF -DROS_EDITION=ROS2 -DHUMBLE_ROS=humble -DCMAKE_BUILD_TYPE=Release
+cd ~/3dnav
+test -e src/ros2_humble_main/src/driver/livox_ros_driver2/package.xml || cp src/ros2_humble_main/src/driver/livox_ros_driver2/package_ROS2.xml src/ros2_humble_main/src/driver/livox_ros_driver2/package.xml
+
+colcon build --symlink-install \
+  --parallel-workers 2 \
+  --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DROS_EDITION=ROS2 \
+  -DHUMBLE_ROS=humble
+
 source install/setup.bash
 ```
+
+如果仓库不在 `~/3dnav`，请将第一行替换成实际路径。已有 `package.xml` 时上面的命令不会覆盖；若之前使用过 ROS 1，应先确认它是 ROS 2 版本。直接运行 `colcon build` 不会自动生成这个文件，可能导致 Livox 包未被发现。
 
 只更新璇玑接口和控制代码时：
 
