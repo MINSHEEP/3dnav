@@ -28,3 +28,5 @@
 
 # Livox 编译产物
 /src/Livox_SDK2/build-target/
+*.onnx
+*.pdiparams
